@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Karlon — Download</title>
+  <meta name="description" content="Karlon is KARLCON's private real-time messenger. Download the Android APK." />
+
+  <!-- Favicons / app icons -->
+  <link rel="icon" href="favicon.ico" sizes="any" />
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/logo-192.png" />
+  <meta name="theme-color" content="#1D7A4C" />
+
+  <!-- Social preview -->
+  <meta property="og:title" content="Karlon — KARLCON's private messenger" />
+  <meta property="og:description" content="Real-time chat for KARLCON staff and partners — bridged with WhatsApp, self-hosted, accessible from any device." />
+  <meta property="og:image" content="assets/og-image.png" />
+  <meta property="og:type" content="website" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <!-- Google Sans Flex via jsDelivr (LineageOS mirror, OFL licensed) -->
+  <style>
+    @font-face {
+      font-family: 'Google Sans';
+      src: url('https://cdn.jsdelivr.net/gh/LineageOS/android_external_google-fonts_google-sans-flex@lineage-23.2/GoogleSansFlex-Regular.ttf') format('truetype');
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --gold:        #C9962E;
+      --gold-light:  #E8B84D;
+      --gold-dim:    #f5e9c8;
+      --green:       #1D7A4C;
+      --green-dark:  #155C39;
+      --brown:       #26201A;
+      --brown-soft:  #5B5148;
+      --white:       #FFFFFF;
+      --off-white:   #F7F3EC;
+      --radius:      14px;
+      --font:        'Google Sans', 'Product Sans', 'Roboto', sans-serif;
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font);
+      background: var(--white);
+      color: var(--brown);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── NAV ─────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(201,150,46,0.12);
+      padding: 0 5vw;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+    }
+
+    .nav-logo {
+      width: 34px;
+      height: 34px;
+      display: block;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(38,32,26,0.18);
+    }
+
+    .nav-name {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--brown);
+    }
+
+    .nav-name span { color: var(--gold); }
+
+    .nav-pill {
+      background: var(--gold);
+      color: var(--white);
+      font-size: 13px;
+      font-weight: 600;
+      padding: 8px 20px;
+      border-radius: 100px;
+      text-decoration: none;
+      transition: background 0.18s;
+    }
+    .nav-pill:hover { background: var(--gold-light); }
+
+    /* ── HERO ─────────────────────────────────────── */
+    .hero {
+      min-height: calc(100svh - 64px);
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      align-items: center;
+      padding: 60px 5vw 80px;
+      gap: 48px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Signature element: soft brand-color glows */
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -120px;
+      right: -80px;
+      width: 520px;
+      height: 520px;
+      background: linear-gradient(135deg, var(--gold-dim) 0%, transparent 65%);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .hero::after {
+      content: '';
+      position: absolute;
+      bottom: -160px;
+      left: -120px;
+      width: 460px;
+      height: 460px;
+      background: radial-gradient(circle, rgba(29,122,76,0.10) 0%, transparent 70%);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .hero-text { position: relative; z-index: 1; }
+
+    .hero-eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 20px;
+    }
+
+    .hero-eyebrow::before {
+      content: '';
+      display: block;
+      width: 20px;
+      height: 2px;
+      background: var(--gold);
+      border-radius: 2px;
+    }
+
+    .hero-h1 {
+      font-size: clamp(36px, 5vw, 62px);
+      font-weight: 700;
+      line-height: 1.1;
+      letter-spacing: -0.02em;
+      margin-bottom: 18px;
+      color: var(--brown);
+    }
+
+    .hero-h1 em {
+      font-style: normal;
+      color: var(--gold);
+    }
+
+    .hero-sub {
+      font-size: 17px;
+      font-weight: 400;
+      color: var(--brown-soft);
+      max-width: 420px;
+      margin-bottom: 40px;
+      line-height: 1.7;
+    }
+
+    .cta-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .btn-download {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      background: var(--gold);
+      color: var(--white);
+      font-family: var(--font);
+      font-size: 15px;
+      font-weight: 600;
+      padding: 14px 28px;
+      border-radius: 100px;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      transition: background 0.18s, box-shadow 0.18s, transform 0.12s;
+      box-shadow: 0 4px 18px rgba(201,150,46,0.28);
+    }
+    .btn-download:hover {
+      background: var(--gold-light);
+      box-shadow: 0 6px 24px rgba(201,150,46,0.38);
+      transform: translateY(-1px);
+    }
+    .btn-download:active { transform: translateY(0); }
+
+    .btn-ghost {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--brown-soft);
+      font-family: var(--font);
+      font-size: 14px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: color 0.15s;
+    }
+    .btn-ghost:hover { color: var(--gold); }
+
+    .hero-note {
+      margin-top: 22px;
+      font-size: 12px;
+      color: var(--brown-soft);
+      opacity: 0.7;
+    }
+
+    /* ── PHONE MOCKUP ─────────────────────────────── */
+    .phone-wrap {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      position: relative;
+    }
+
+    .phone-svg {
+      width: min(320px, 42vw);
+      filter: drop-shadow(0 24px 48px rgba(38,32,26,0.18));
+    }
+
+    .app-badge {
+      position: absolute;
+      top: -6%;
+      right: 6%;
+      width: 76px;
+      height: 76px;
+      border-radius: 20px;
+      box-shadow: 0 14px 32px rgba(29,122,76,0.28), 0 3px 8px rgba(38,32,26,0.12);
+      animation: float 4.5s ease-in-out infinite;
+      z-index: 2;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-12px); }
+    }
+
+    @media (max-width: 768px) {
+      .app-badge { width: 56px; height: 56px; top: -4%; right: 10%; }
+    }
+
+    /* ── BACKRONYM (name meaning) ──────────────────── */
+    .backronym {
+      padding: 72px 5vw 80px;
+      background: var(--white);
+      text-align: center;
+    }
+
+    .backronym .section-label,
+    .backronym .section-heading {
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    .backronym-grid {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 14px;
+      margin-top: 44px;
+    }
+
+    .backronym-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 22px 10px 20px;
+      background: var(--off-white);
+      border: 1px solid rgba(201,150,46,0.14);
+      border-radius: var(--radius);
+      transition: transform 0.15s, box-shadow 0.18s, border-color 0.18s;
+    }
+
+    .backronym-item:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 10px 26px rgba(38,32,26,0.08);
+      border-color: rgba(201,150,46,0.35);
+    }
+
+    .backronym-letter {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: var(--gold);
+      color: var(--white);
+      font-size: 22px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 6px 16px rgba(201,150,46,0.32);
+    }
+
+    .backronym-word {
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--brown-soft);
+      letter-spacing: 0.01em;
+    }
+
+    .backronym-word strong {
+      color: var(--brown);
+      font-weight: 700;
+    }
+
+    @media (max-width: 900px) {
+      .backronym-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    }
+
+    @media (max-width: 480px) {
+      .backronym-grid { grid-template-columns: repeat(2, 1fr); gap: 14px; }
+      .backronym { padding: 56px 6vw 64px; }
+      .backronym-letter { width: 42px; height: 42px; font-size: 19px; }
+      .backronym-word { font-size: 12.5px; }
+    }
+
+    /* ── FEATURES ─────────────────────────────────── */
+    .features {
+      background: var(--off-white);
+      padding: 80px 5vw;
+    }
+
+    .section-label {
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--gold);
+      margin-bottom: 10px;
+    }
+
+    .section-heading {
+      font-size: clamp(24px, 3vw, 36px);
+      font-weight: 700;
+      color: var(--brown);
+      margin-bottom: 48px;
+      max-width: 480px;
+    }
+
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 24px;
+    }
+
+    .feature-card {
+      background: var(--white);
+      border-radius: var(--radius);
+      padding: 28px 24px;
+      border: 1px solid rgba(201,150,46,0.10);
+      transition: box-shadow 0.18s, transform 0.15s;
+    }
+    .feature-card:hover {
+      box-shadow: 0 8px 28px rgba(38,32,26,0.08);
+      transform: translateY(-2px);
+    }
+
+    .feature-icon {
+      width: 44px;
+      height: 44px;
+      background: var(--gold-dim);
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 18px;
+    }
+
+    .feature-icon.is-green { background: rgba(29,122,76,0.12); }
+
+    .feature-icon svg { width: 22px; height: 22px; }
+
+    .feature-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--brown);
+      margin-bottom: 8px;
+    }
+
+    .feature-desc {
+      font-size: 14px;
+      color: var(--brown-soft);
+      line-height: 1.65;
+    }
+
+    /* ── INSTALL STEPS ────────────────────────────── */
+    .install {
+      padding: 80px 5vw;
+    }
+
+    .steps {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0;
+      margin-top: 48px;
+      position: relative;
+    }
+
+    .steps::before {
+      content: '';
+      position: absolute;
+      top: 22px;
+      left: calc(50% / 3 + 22px);
+      right: calc(50% / 3 + 22px);
+      height: 2px;
+      background: linear-gradient(90deg, var(--gold) 0%, var(--gold-light) 50%, var(--gold) 100%);
+      opacity: 0.3;
+    }
+
+    .step {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      text-align: center;
+      padding: 0 20px;
+    }
+
+    .step-num {
+      width: 44px;
+      height: 44px;
+      border-radius: 50%;
+      background: var(--gold);
+      color: var(--white);
+      font-size: 16px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 1;
+    }
+
+    .step-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--brown);
+      margin-bottom: 8px;
+    }
+
+    .step-desc {
+      font-size: 13px;
+      color: var(--brown-soft);
+      line-height: 1.65;
+      max-width: 220px;
+    }
+
+    /* ── BOTTOM CTA ───────────────────────────────── */
+    .bottom-cta {
+      background: var(--brown);
+      color: var(--white);
+      padding: 72px 5vw;
+      text-align: center;
+    }
+
+    .bottom-cta h2 {
+      font-size: clamp(26px, 4vw, 44px);
+      font-weight: 700;
+      margin-bottom: 14px;
+      letter-spacing: -0.02em;
+    }
+
+    .bottom-cta p {
+      font-size: 16px;
+      opacity: 0.7;
+      margin-bottom: 36px;
+      max-width: 400px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* ── FOOTER ───────────────────────────────────── */
+    footer {
+      background: var(--white);
+      border-top: 1px solid rgba(201,150,46,0.12);
+      padding: 28px 5vw;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .footer-brand {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--brown-soft);
+      letter-spacing: 0.04em;
+    }
+
+    .footer-copy {
+      font-size: 12px;
+      color: var(--brown-soft);
+      opacity: 0.6;
+    }
+
+    .footer-links {
+      display: flex;
+      gap: 18px;
+    }
+
+    .footer-links a {
+      font-size: 12px;
+      color: var(--brown-soft);
+      text-decoration: none;
+      opacity: 0.6;
+      transition: opacity 0.15s;
+    }
+    .footer-links a:hover { opacity: 1; color: var(--gold); }
+
+    /* ── RESPONSIVE ───────────────────────────────── */
+    @media (max-width: 768px) {
+      .hero {
+        grid-template-columns: 1fr;
+        padding: 44px 5vw 56px;
+        text-align: center;
+      }
+
+      .hero-eyebrow { justify-content: center; }
+      .hero-sub { margin-left: auto; margin-right: auto; }
+      .cta-row { justify-content: center; }
+      .phone-wrap { order: -1; }
+      .phone-svg { width: min(260px, 72vw); }
+
+      .features-grid { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: 1fr; gap: 32px; }
+      .steps::before { display: none; }
+      .step { align-items: flex-start; text-align: left; flex-direction: row; gap: 18px; }
+      .step-num { flex-shrink: 0; margin-bottom: 0; }
+      .step-content { flex: 1; }
+
+      footer { flex-direction: column; align-items: flex-start; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── NAV ────────────────────────────────────────── -->
+  <nav>
+    <a class="nav-brand" href="#">
+      <img class="nav-logo" src="assets/logo-128.png" width="34" height="34" alt="Karlon logo" />
+      <span class="nav-name">Karl<span>on</span></span>
+    </a>
+    <a class="nav-pill" href="#download">Download APK</a>
+  </nav>
+
+  <!-- ── HERO ───────────────────────────────────────── -->
+  <section class="hero">
+    <div class="hero-text">
+      <div class="hero-eyebrow">KARLCON Consultancy</div>
+      <h1 class="hero-h1">
+        Your team's<br />
+        private <em>messenger</em>
+      </h1>
+      <p class="hero-sub">
+        Real-time chat for KARLCON staff and partners — bridged seamlessly
+        with WhatsApp and accessible from any device.
+      </p>
+      <div class="cta-row">
+        <a class="btn-download" href="karlon.apk" id="download" download>
+          <!-- Android icon -->
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zM15.53 2.16l1.3-1.3c.2-.2.2-.51 0-.71-.2-.2-.51-.2-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-.588 0-1.153.08-1.645.63L8.88.15c-.2-.2-.51-.2-.71 0-.2.2-.2.51 0 .71l1.31 1.31C8.02 3.27 7 5 7 7h10c0-2-.97-3.73-2.47-4.84zM10 5H9V4h1v1zm5 0h-1V4h1v1z" fill="white"/>
+          </svg>
+          Download APK
+        </a>
+        <a class="btn-ghost" href="#how-to-install">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z" fill="currentColor"/></svg>
+          How to install
+        </a>
+      </div>
+      <p class="hero-note">Android 7.0+ required &nbsp;·&nbsp; ~12 MB &nbsp;·&nbsp; No Play Store needed</p>
+    </div>
+
+    <!-- Phone mockup -->
+    <div class="phone-wrap">
+      <img class="app-badge" src="assets/logo-192.png" width="76" height="76" alt="Karlon app icon" />
+      <svg class="phone-svg" viewBox="0 0 280 560" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <!-- Phone body -->
+        <rect x="2" y="2" width="276" height="556" rx="38" fill="#26201A" stroke="#3d342c" stroke-width="3"/>
+        <rect x="10" y="10" width="260" height="540" rx="32" fill="#FFFFFF"/>
+
+        <!-- Status bar -->
+        <rect x="10" y="10" width="260" height="32" rx="32" fill="#FFFFFF"/>
+        <rect x="10" y="36" width="260" height="4" fill="#FFFFFF"/>
+        <text x="24" y="28" font-family="Google Sans, sans-serif" font-size="10" fill="#26201A" font-weight="600">9:41</text>
+        <text x="210" y="28" font-family="Google Sans, sans-serif" font-size="10" fill="#26201A">●●● 100%</text>
+        <!-- Notch -->
+        <ellipse cx="140" cy="18" rx="28" ry="9" fill="#26201A"/>
+
+        <!-- App bar -->
+        <rect x="10" y="40" width="260" height="50" fill="#FFFFFF"/>
+        <text x="24" y="71" font-family="Google Sans, sans-serif" font-size="15" fill="#26201A" font-weight="700">Sthandazile</text>
+        <!-- avatar -->
+        <circle cx="232" cy="64" r="14" fill="#C9962E" fill-opacity="0.15"/>
+        <text x="228" y="68" font-family="Google Sans, sans-serif" font-size="11" fill="#C9962E" font-weight="700">S</text>
+        <!-- divider -->
+        <line x1="10" y1="90" x2="270" y2="90" stroke="#f0ebe4" stroke-width="1"/>
+
+        <!-- Chat background - subtle -->
+        <rect x="10" y="90" width="260" height="400" fill="#FFFFFF"/>
+
+        <!-- DATE CHIP -->
+        <rect x="100" y="100" width="80" height="18" rx="9" fill="#f0ebe4"/>
+        <text x="140" y="113" font-family="Google Sans, sans-serif" font-size="9" fill="#5B5148" text-anchor="middle">Today</text>
+
+        <!-- INBOUND bubble 1 -->
+        <rect x="18" y="128" width="148" height="42" rx="4" rx2="16" fill="#f0ebe4"/>
+        <path d="M18 152 L10 158 L18 152Z" fill="#f0ebe4"/>
+        <text x="28" y="144" font-family="Google Sans, sans-serif" font-size="9.5" fill="#26201A">Hey, did you see the</text>
+        <text x="28" y="158" font-family="Google Sans, sans-serif" font-size="9.5" fill="#26201A">project update?</text>
+        <text x="148" y="165" font-family="Google Sans, sans-serif" font-size="8" fill="#5B5148">9:12 AM</text>
+
+        <!-- OUTBOUND bubble 1 -->
+        <rect x="110" y="182" width="150" height="42" rx="16" fill="#DCEFE2"/>
+        <path d="M260 206 L268 212 L260 206Z" fill="#DCEFE2"/>
+        <text x="122" y="198" font-family="Google Sans, sans-serif" font-size="9.5" fill="#26201A">Yes! Just reviewed it.</text>
+        <text x="122" y="212" font-family="Google Sans, sans-serif" font-size="9.5" fill="#26201A">Looks great 👍</text>
+        <text x="225" y="219" font-family="Google Sans, sans-serif" font-size="8" fill="#5B5148">9:13</text>
+        <!-- double tick -->
+        <text x="247" y="219" font-family="Google Sans, sans-serif" font-size="9" fill="#1D7A4C">✓✓</text>
+
+        <!-- INBOUND bubble 2 -->
+        <rect x="18" y="238" width="162" height="28" rx="4" rx2="16" fill="#f0ebe4"/>
+        <text x="28" y="256" font-family="Google Sans, sans-serif" font-size="9.5" fill="#26201A">Send me the final PDF?</text>
+        <text x="162" y="262" font-family="Google Sans, sans-serif" font-size="8" fill="#5B5148">9:14 AM</text>
+
+        <!-- OUTBOUND bubble 2 -->
+        <rect x="130" y="280" width="130" height="28" rx="16" fill="#DCEFE2"/>
+        <text x="142" y="298" font-family="Google Sans, sans-serif" font-size="9.5" fill="#26201A">On it, 2 minutes!</text>
+        <text x="225" y="305" font-family="Google Sans, sans-serif" font-size="8" fill="#5B5148">9:15</text>
+        <text x="247" y="305" font-family="Google Sans, sans-serif" font-size="9" fill="#1D7A4C">✓✓</text>
+
+        <!-- Input bar -->
+        <rect x="10" y="490" width="260" height="60" fill="#FFFFFF"/>
+        <line x1="10" y1="490" x2="270" y2="490" stroke="#f0ebe4" stroke-width="1"/>
+        <rect x="18" y="500" width="196" height="38" rx="19" fill="#f7f3ec"/>
+        <text x="36" y="523" font-family="Google Sans, sans-serif" font-size="11" fill="#9b9085">Message</text>
+        <!-- send btn -->
+        <circle cx="242" cy="519" r="16" fill="#C9962E"/>
+        <path d="M235 519l10-5v10z" fill="white"/>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ── BACKRONYM (what the name stands for) ─────────── -->
+  <section class="backronym">
+    <p class="section-label">The Name</p>
+    <h2 class="section-heading">What KARLON stands for</h2>
+    <div class="backronym-grid">
+      <div class="backronym-item">
+        <span class="backronym-letter">K</span>
+        <span class="backronym-word"><strong>K</strong>nowledge</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">A</span>
+        <span class="backronym-word"><strong>A</strong>ccess</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">R</span>
+        <span class="backronym-word"><strong>R</strong>elationships</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">L</span>
+        <span class="backronym-word"><strong>L</strong>eadership</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">O</span>
+        <span class="backronym-word"><strong>O</strong>pportunities</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">N</span>
+        <span class="backronym-word"><strong>N</strong>etwork</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── FEATURES ────────────────────────────────────── -->
+  <section class="features">
+    <p class="section-label">Why Karlon</p>
+    <h2 class="section-heading">Built for KARLCON. Not for everyone.</h2>
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" fill="#C9962E"/></svg>
+        </div>
+        <h3 class="feature-title">Real-time messaging</h3>
+        <p class="feature-desc">WebSocket-powered chat with sub-second delivery. Messages land before you finish reading them.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon is-green">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M17.498 14.382c-.301-.15-1.767-.867-2.04-.966-.273-.101-.473-.15-.673.15-.197.295-.771.964-.944 1.162-.175.195-.349.21-.646.075-.3-.15-1.263-.465-2.403-1.485-.888-.795-1.484-1.77-1.66-2.07-.174-.3-.019-.465.13-.615.136-.135.301-.345.451-.523.146-.181.194-.301.297-.496.1-.21.049-.375-.025-.524-.075-.15-.672-1.62-.922-2.206-.24-.584-.487-.51-.672-.51-.172-.015-.371-.015-.571-.015-.2 0-.523.074-.797.359-.273.3-1.045 1.02-1.045 2.475s1.07 2.865 1.219 3.075c.149.195 2.105 3.195 5.1 4.485.714.3 1.27.48 1.704.629.714.227 1.365.195 1.88.121.574-.091 1.767-.721 2.016-1.426.255-.705.255-1.29.18-1.425-.074-.135-.27-.21-.57-.345z" fill="#1D7A4C"/><path d="M11.998 2C6.476 2 2 6.476 2 12c0 1.73.45 3.355 1.23 4.77L2 22l5.35-1.21C8.69 21.575 10.32 22 11.998 22 17.52 22 22 17.524 22 12S17.52 2 11.998 2z" stroke="#1D7A4C" stroke-width="1.5" fill="none"/></svg>
+        </div>
+        <h3 class="feature-title">WhatsApp bridge</h3>
+        <p class="feature-desc">Mirror incoming and outgoing WhatsApp messages into Karlon automatically, via the WA web harvester.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4z" fill="#C9962E"/></svg>
+        </div>
+        <h3 class="feature-title">Private by design</h3>
+        <p class="feature-desc">Self-hosted on your own Hugging Face Space. No third-party servers see your conversations.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── INSTALL STEPS ───────────────────────────────── -->
+  <section class="install" id="how-to-install">
+    <p class="section-label">Installation</p>
+    <h2 class="section-heading">Three steps to get started</h2>
+    <div class="steps">
+
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <p class="step-title">Download the APK</p>
+          <p class="step-desc">Tap the button above or the one below to save <code>karlon.apk</code> to your phone's Downloads folder.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <p class="step-title">Allow unknown sources</p>
+          <p class="step-desc">Open <strong>Settings → Apps → Special app access → Install unknown apps</strong> and allow your file manager or browser.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <p class="step-title">Enter the server URL</p>
+          <p class="step-desc">Launch Karlon and paste the KARLCON server address. You're in — your chats load instantly.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── BOTTOM CTA ──────────────────────────────────── -->
+  <section class="bottom-cta">
+    <img src="assets/logo-128.png" width="56" height="56" alt="" style="border-radius:14px;margin-bottom:20px;box-shadow:0 10px 24px rgba(0,0,0,0.35);" />
+    <h2>Ready to chat?</h2>
+    <p>Download Karlon and join the KARLCON team channel.</p>
+    <a class="btn-download" href="karlon.apk" download style="display:inline-flex;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M5 20h14v-2H5v2zm7-18L5.33 8h3.84v5h5.66V8h3.84L12 2z" fill="white"/></svg>
+      Download APK
+    </a>
+  </section>
+
+  <!-- ── FOOTER ──────────────────────────────────────── -->
+  <footer>
+    <span class="footer-brand">
+      <img src="assets/logo-128.png" width="20" height="20" alt="" style="border-radius:5px;vertical-align:-4px;margin-right:8px;" />
+      KARLCON CONSULTANCY (PVT) LTD &nbsp;·&nbsp; Reg. 15017/2023
+    </span>
+    <div class="footer-links">
+      <a href="#">Privacy</a>
+      <a href="#">Support</a>
+      <a href="mailto:admin@karlcon.co.zw">Contact</a>
+    </div>
+    <span class="footer-copy">© 2026 KARLCON Consultancy. Harare, Zimbabwe.</span>
+  </footer>
+
+</body>
+</html>
