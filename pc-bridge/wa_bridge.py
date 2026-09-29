@@ -73,7 +73,11 @@ from playwright.sync_api import Page, sync_playwright
 
 # ─────────────────────────────────── config ───────────────────────────────────
 
-from local_config import KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, print_active_config
+from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_session
+from local_config import (
+    KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, WA_FULL_SWEEP_EVERY,
+    print_active_config,
+)
 
 # PowerShell's default code page can't encode ✓ ✗ or emoji — reconfigure
 # stdout/stderr so prints never raise UnicodeEncodeError (karlon_supervisor
@@ -350,7 +354,7 @@ def ensure_chat(name: str, pic_url: Optional[str] = None) -> str:
         if backoff:
             time.sleep(backoff)
         try:
-            requests.post(f"{KARLON_URL}/api/chats", json=payload, timeout=15).raise_for_status()
+            get_session().post(f"{KARLON_URL}/api/chats", json=payload, timeout=HTTP_TIMEOUT).raise_for_status()
             return cid
         except requests.RequestException as e:
             last_exc = e
@@ -359,24 +363,35 @@ def ensure_chat(name: str, pic_url: Optional[str] = None) -> str:
 def import_messages(chat_id: str, messages: list[dict]) -> dict:
     if not messages:
         return {"imported": 0, "skipped": 0}
-    r = requests.post(
+    r = get_session().post(
         f"{KARLON_URL}/api/chats/{chat_id}/import",
         json={"messages": messages},
-        timeout=30,
+        timeout=UPLOAD_TIMEOUT,
     )
     r.raise_for_status()
     return r.json()
 
 def _ack_wa_message(chat_id: str, msg_id: str, status: str = "sent") -> None:
-    """Tell Karlon the WA-delivery result for one outbound message."""
-    try:
-        requests.patch(
-            f"{KARLON_URL}/api/chats/{chat_id}/messages/{msg_id}/wa-ack",
-            params={"status": status},
-            timeout=5,
-        )
-    except Exception as e:
-        print(f"  [outbox] ack failed ({status}): {e}")
+    """Tell Karlon the WA-delivery result for one outbound message.
+
+    The message is already on WhatsApp by the time we ack "sent". A single
+    lost ack used to leave it 'pending' server-side, and the next bridge
+    restart (fresh dedup set) would send it to the customer a second time.
+    The PATCH just sets a status, so replaying it is safe — retry it here
+    (the transport layer won't, for non-GET methods)."""
+    for attempt, backoff in enumerate((0, 1, 3)):
+        if backoff:
+            time.sleep(backoff)
+        try:
+            r = get_session().patch(
+                f"{KARLON_URL}/api/chats/{chat_id}/messages/{msg_id}/wa-ack",
+                params={"status": status},
+                timeout=HTTP_TIMEOUT,
+            )
+            r.raise_for_status()
+            return
+        except Exception as e:
+            print(f"  [outbox] ack failed ({status}, attempt {attempt + 1}/3): {e}")
 
 # ─────────────────────────────── DOM send ─────────────────────────────────────
 
@@ -627,10 +642,7 @@ def download_to_temp(url: str, suffix: str = "") -> Optional[str]:
     hand WhatsApp. Returns None on failure."""
     try:
         full_url = url if url.startswith("http") else f"{KARLON_URL}{url}"
-        r = requests.get(
-            full_url, timeout=(15, 60),
-            headers={"User-Agent": "Mozilla/5.0 (KarlonBridge)"},
-        )
+        r = get_session().get(full_url, timeout=DOWNLOAD_TIMEOUT)
         r.raise_for_status()
         if not r.content:
             raise RuntimeError("empty body")
@@ -660,7 +672,7 @@ def _outbox_poller(stop_event: threading.Event) -> None:
     print("[outbox-thread] started — polling every %ds" % OUTBOX_POLL_SEC)
     while not stop_event.is_set():
         try:
-            r = requests.get(f"{KARLON_URL}/api/outbox", timeout=10)
+            r = get_session().get(f"{KARLON_URL}/api/outbox", timeout=HTTP_TIMEOUT)
             r.raise_for_status()
             items = r.json()
             if items:
@@ -698,7 +710,7 @@ def _urgent_outbox_poller(stop_event: threading.Event) -> None:
     print(f"[urgent-outbox-thread] started — polling every {URGENT_OUTBOX_POLL_SEC}s")
     while not stop_event.is_set():
         try:
-            r = requests.get(f"{KARLON_URL}/api/outbox/urgent", timeout=10)
+            r = get_session().get(f"{KARLON_URL}/api/outbox/urgent", timeout=HTTP_TIMEOUT)
             r.raise_for_status()
             items = r.json()
             if items:
@@ -718,6 +730,28 @@ def _urgent_outbox_poller(stop_event: threading.Event) -> None:
 
 
 # ─────────────────────────────── process outbox (main thread) ─────────────────
+
+def outbox_pending() -> bool:
+    """True if either queue has work. Both must be checked: process_outbox()
+    drains urgent first, but callers used to gate it on `not _outbox.empty()`
+    alone — so an urgent reply arriving mid-sync sat unsent, however quickly
+    its own 2 s poller had fetched it, until the *normal* queue happened to
+    fill or the whole pass over every chat finished."""
+    return not (_urgent_outbox.empty() and _outbox.empty())
+
+
+def idle_wait(page: Page, seconds: float) -> None:
+    """Sleep `seconds`, but wake every 0.5 s to deliver anything that arrives.
+    Replaces a flat time.sleep(POLL_INTERVAL) during which outbound messages
+    just waited (Little's law, L = λW: added dwell time is added queue length;
+    here the "service" is instant once the browser is free, so the fix is to
+    be free — not to poll faster)."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if outbox_pending():
+            process_outbox(page)
+        time.sleep(0.5)
+
 
 def process_outbox(page: Page) -> None:
     """
@@ -870,7 +904,10 @@ def _process_items(
                     ids_set.discard(msg_id)
             else:
                 item["_retries"] = retries + 1
-                _outbox.put_nowait(item)
+                # Back onto the queue it came from: an urgent reply that hit a
+                # transient failure used to be demoted into the normal queue,
+                # losing its priority exactly when it most needed a retry.
+                (_urgent_outbox if queue_name == "urgent" else _outbox).put_nowait(item)
                 # Don't discard from ids_set — keeps it in the queue
 
         # Open the WhatsApp chat by clicking the correct row in the sidebar
@@ -1198,7 +1235,7 @@ def get_all_chat_rows(page: Page) -> list[dict]:
     no_new_streak = 0
 
     while no_new_streak < 3:
-        batch = get_chat_rows(page)
+        batch = get_chat_rows(page, skip_names=seen_names)
         new_this_pass = 0
         for row in batch:
             name = row.get("name", "")
@@ -1225,7 +1262,11 @@ def get_all_chat_rows(page: Page) -> list[dict]:
     return all_rows
 
 
-def get_chat_rows(page: Page) -> list[dict]:
+def get_chat_rows(page: Page, skip_names: Optional[set] = None) -> list[dict]:
+    """Visible sidebar rows. `skip_names` lets the full-list sweep avoid
+    re-reading rows it already captured: the virtual list keeps ~25 rows in the
+    DOM and each 900 px scroll step overlaps the last, so every row used to be
+    re-extracted (4-5 DOM calls each) several times per pass."""
     if not _wait_for_rows(page, timeout_s=10):
         print("  [warn] No chat rows found after 10 s — WA might still be loading")
     row_sel = _resolve_row_selector(page)
@@ -1239,7 +1280,10 @@ def get_chat_rows(page: Page) -> list[dict]:
             name = _get_name_from_row(row, page)
             if not name or is_wa_section_header(name):
                 continue
+            if skip_names and name in skip_names:
+                continue
             preview = _get_preview_from_row(row)
+            fingerprint = hashlib.sha1(_safe_inner_text(row).encode("utf-8", "replace")).hexdigest()
             unread = 0
             try:
                 badge = row.query_selector('span[aria-label*="unread"], [data-testid*="unread"]')
@@ -1258,7 +1302,8 @@ def get_chat_rows(page: Page) -> list[dict]:
                     pic_src = _safe_get_attr(img, "src")
             except Exception:
                 pass
-            out.append({"name": name, "preview": preview, "unread": unread, "pic_src": pic_src or None})
+            out.append({"name": name, "preview": preview, "unread": unread,
+                        "pic_src": pic_src or None, "fingerprint": fingerprint})
         except Exception:
             continue
     return out
@@ -1483,59 +1528,107 @@ def parse_wa_timestamp(raw: str) -> Optional[str]:
             continue
     return None
 
-def detect_direction(row) -> str:
-    """
-    'out' = sent by you, 'in' = sent by the other party, 'unknown' = can't tell
-    (system notices, contact-info cards, not-yet-rendered virtualized rows).
+# One browser round-trip per message: direction AND the WhatsApp message id.
+# (detect_direction used to cost a CDP call per message and the data-id needed
+# for de-duplication would have cost a second one.) Signals are tried in order
+# of how well each has survived WhatsApp's DOM changes; the first that answers
+# wins, and `via` records which one for debugging.
+_PROBE_JS = """el => {
+    const msgRow = el.closest('[data-id]') || el;
+    const dataId = (msgRow.getAttribute && msgRow.getAttribute('data-id')) || '';
+    const done = (direction, via) => ({ direction, via, dataId });
 
-    WhatsApp Web moved to Meta's atomic/hashed CSS ("x1n2onr6", "xa0aww2", ...)
-    at some point — the message-in/message-out class names this used to check
-    first no longer exist anywhere in the DOM, which meant this was silently
-    returning 'unknown' for every message. Checked in this order, each one
-    used only if the one before it comes up empty:
-      1. aria-label="You:" vs aria-label="<contact>:" on the sender span WA
-         renders for accessibility — verified by hand against a real chat
-         export, holds even across grouped/consecutive messages from the
-         same sender.
-      2. data-testid/data-icon "tail-out" vs "tail-in" on the bubble's tail
-         icon — only present on the first message of a consecutive group,
-         but a clean fallback when (1) is empty.
-      3. the original message-in/message-out class + data-id "true_"/"false_"
-         prefix check, kept in case a future WA build (or a different WA
-         Business variant) still renders that markup.
-    """
+    // 1. accessibility label on the sender span: "You:" vs "<contact>:"
+    const ariaSpan = msgRow.querySelector('span[aria-label$=":"]');
+    if (ariaSpan) {
+        const label = ariaSpan.getAttribute('aria-label') || '';
+        if (label === 'You:') return done('out', 'aria');
+        if (label.endsWith(':')) return done('in', 'aria');
+    }
+
+    // 2. bubble tail icon (first message of a consecutive group only)
+    const tail = msgRow.querySelector('[data-testid="tail-out"], [data-testid="tail-in"], [data-icon="tail-out"], [data-icon="tail-in"]');
+    if (tail) {
+        const t = (tail.getAttribute('data-testid') || tail.getAttribute('data-icon') || '');
+        if (t.includes('tail-out')) return done('out', 'tail');
+        if (t.includes('tail-in'))  return done('in', 'tail');
+    }
+
+    // 3. legacy class names
+    const cls = msgRow.className || '';
+    if (/\\bmessage-out\\b/.test(cls)) return done('out', 'class');
+    if (/\\bmessage-in\\b/.test(cls))  return done('in', 'class');
+
+    // 4. WhatsApp's own message key: "true_<jid>_<id>" = sent by this account
+    if (dataId.startsWith('true_'))  return done('out', 'data-id');
+    if (dataId.startsWith('false_')) return done('in', 'data-id');
+
+    // 5. geometry — the WhatsApp layout itself. Outgoing bubbles sit in the
+    // right half of the message pane, incoming in the left. Independent of
+    // any class name or attribute, so it still answers when WA reshuffles its
+    // markup. A dead-centre bubble (within 5% of the pane midpoint) is
+    // refused rather than guessed.
+    const pane = el.closest('[data-testid="conversation-panel-messages"], [role="application"], #main');
+    if (pane) {
+        const p = pane.getBoundingClientRect(), r = el.getBoundingClientRect();
+        if (p.width > 0 && r.width > 0) {
+            const offset = ((r.left + r.width / 2) - (p.left + p.width / 2)) / p.width;
+            if (offset >  0.05) return done('out', 'geometry');
+            if (offset < -0.05) return done('in',  'geometry');
+        }
+    }
+    return done('unknown', 'none');
+}"""
+
+
+def probe_message(el) -> dict:
+    """{'direction': 'in'|'out'|'unknown', 'via': str, 'dataId': str} for one
+    message element, in a single browser round-trip."""
     try:
-        return row.evaluate(
-            """el => {
-                const msgRow = el.closest('[data-id]') || el;
-
-                const ariaSpan = msgRow.querySelector('span[aria-label$=":"]');
-                if (ariaSpan) {
-                    const label = ariaSpan.getAttribute('aria-label') || '';
-                    if (label === 'You:') return 'out';
-                    if (label.endsWith(':')) return 'in';
-                }
-
-                const tail = msgRow.querySelector('[data-testid="tail-out"], [data-testid="tail-in"], [data-icon="tail-out"], [data-icon="tail-in"]');
-                if (tail) {
-                    const t = (tail.getAttribute('data-testid') || tail.getAttribute('data-icon') || '');
-                    if (t.includes('tail-out')) return 'out';
-                    if (t.includes('tail-in'))  return 'in';
-                }
-
-                const cls = msgRow.className || '';
-                if (/\\bmessage-out\\b/.test(cls)) return 'out';
-                if (/\\bmessage-in\\b/.test(cls))  return 'in';
-                const id = msgRow.getAttribute && msgRow.getAttribute('data-id');
-                if (id) {
-                    if (id.startsWith('true_'))  return 'out';
-                    if (id.startsWith('false_')) return 'in';
-                }
-                return 'unknown';
-            }"""
-        )
+        res = el.evaluate(_PROBE_JS)
+        if isinstance(res, dict):
+            return res
     except Exception:
-        return "unknown"
+        pass
+    return {"direction": "unknown", "via": "error", "dataId": ""}
+
+
+def detect_direction(row) -> str:
+    """'out' = sent by you, 'in' = sent by the other party, 'unknown' = no
+    signal answered. Kept as a thin wrapper for callers that only need the
+    direction; scrape paths use probe_message() + resolve_directions()."""
+    return probe_message(row)["direction"]
+
+
+def resolve_directions(entries: list[dict]) -> None:
+    """Make every entry's 'direction' exactly 'in' or 'out', in place.
+
+    The app draws a message on the right if direction == 'out' and on the left
+    otherwise, so the layout is only as persistent as this field is
+    deterministic. An 'unknown' used to be shipped to the server as-is, and
+    whatever the client did with it (usually: left) put some of *your*
+    messages on the wrong side, differently on different screens.
+
+    Resolution, strongest evidence first, all from the same scrape:
+      1. the same raw sender was classified elsewhere in this chat
+         (majority vote — your own display name always maps to 'out');
+      2. otherwise 'in' — the safe default, since a contact's message on the
+         left is the WhatsApp norm and 'out' needs positive evidence.
+    Each entry needs 'raw_sender' (the name WhatsApp printed, '' if unknown).
+    """
+    votes: dict[str, dict[str, int]] = {}
+    for e in entries:
+        if e["direction"] in ("in", "out") and e.get("raw_sender"):
+            v = votes.setdefault(e["raw_sender"], {"in": 0, "out": 0})
+            v[e["direction"]] += 1
+    for e in entries:
+        if e["direction"] in ("in", "out"):
+            continue
+        v = votes.get(e.get("raw_sender") or "")
+        if v and v["out"] != v["in"]:
+            e["direction"] = "out" if v["out"] > v["in"] else "in"
+        else:
+            e["direction"] = "in"
 
 def scrape_image_messages(page: Page, chat_name: str) -> list[dict]:
     out = []
@@ -1569,8 +1662,7 @@ def scrape_image_messages(page: Page, chat_name: str) -> list[dict]:
                 caption = caption[len(pre_plain):].strip()
             m = re.match(r"\[(.*?)\]\s*(.*?):\s*$", pre_plain) if pre_plain else None
             ts_raw, sender = (m.group(1), m.group(2)) if m else ("", "")
-            direction = detect_direction(row)
-            display_sender = "You (WhatsApp)" if direction == "out" else (sender or chat_name)
+            direction = probe_message(row)["direction"]
             src = _safe_get_attr(img_el, "src")
             b64 = fetch_blob_b64(page, src) if src else None
             if not b64:
@@ -1580,7 +1672,7 @@ def scrape_image_messages(page: Page, chat_name: str) -> list[dict]:
                 except Exception:
                     continue
             out.append({
-                "sender":       display_sender,
+                "raw_sender":   sender,
                 "caption":      caption,
                 "created_at":   parse_wa_timestamp(ts_raw),
                 "external_key": hashlib.sha1(f"img|{data_id}".encode()).hexdigest(),
@@ -1589,6 +1681,9 @@ def scrape_image_messages(page: Page, chat_name: str) -> list[dict]:
             })
         except Exception:
             continue
+    resolve_directions(out)
+    for e in out:
+        e["sender"] = "You (WhatsApp)" if e["direction"] == "out" else (e["raw_sender"] or chat_name)
     return out
 
 def save_incoming_image(b64_data: str) -> Path:
@@ -1617,7 +1712,7 @@ def import_image_message(
     """
     try:
         with open(image_path, "rb") as f:
-            r = requests.post(
+            r = get_session().post(
                 f"{KARLON_URL}/api/chats/{chat_id}/images/import",
                 data={
                     "sender": sender,
@@ -1626,7 +1721,7 @@ def import_image_message(
                     "direction": direction,
                 },
                 files={"file": (image_path.name, f, "image/jpeg")},
-                timeout=30,
+                timeout=UPLOAD_TIMEOUT,
             )
         r.raise_for_status()
         return r.json()
@@ -1680,6 +1775,7 @@ def scrape_messages(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> 
 
     out = []
     seen_keys: set[str] = set()
+    covered_ids: set[str] = set()   # WA data-ids the timestamped pass below already emitted
 
     try:
         meta_nodes = page.query_selector_all(
@@ -1700,16 +1796,20 @@ def scrape_messages(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> 
             if not text:
                 continue
             text = reformat_ad_context_card(text)
-            direction = detect_direction(meta_el)
-            display_sender = "You (WhatsApp)" if direction == "out" else (sender or chat_name)
+            probe = probe_message(meta_el)
+            if probe["dataId"]:
+                covered_ids.add(probe["dataId"])
+            # NOTE: external_key formulas below are the persisted identity of
+            # every message already in Karlon — do not change them without a
+            # server-side migration or the whole history re-imports as new.
             ext_key = hashlib.sha1(f"{pre_plain}|{text}".encode()).hexdigest()
             seen_keys.add(ext_key)
             out.append({
-                "sender":       display_sender,
+                "raw_sender":   sender,
                 "text":         text,
                 "created_at":   parse_wa_timestamp(ts_raw),
                 "external_key": ext_key,
-                "direction":    direction,
+                "direction":    probe["direction"],
             })
         except Exception:
             continue
@@ -1726,6 +1826,12 @@ def scrape_messages(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> 
         try:
             data_id = _safe_get_attr(row, "data-id")
             if not data_id:
+                continue
+            if data_id in covered_ids:
+                # Already exported (with its timestamp and real sender) by the
+                # data-pre-plain-text pass. This pass keys on "row|<id>|<text>",
+                # which can never match that pass's key, so without this skip
+                # every text message was emitted twice.
                 continue
             has_real_image = any(
                 (candidate.bounding_box() or {"width": 0, "height": 0})["width"]
@@ -1749,18 +1855,22 @@ def scrape_messages(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> 
             if ext_key in seen_keys:
                 continue
             seen_keys.add(ext_key)
-            direction = detect_direction(row)
-            display_sender = "You (WhatsApp)" if direction == "out" else chat_name
             out.append({
-                "sender":       display_sender,
+                "raw_sender":   "",
                 "text":         text,
                 "created_at":   None,
                 "external_key": ext_key,
-                "direction":    direction,
+                "direction":    probe_message(row)["direction"],
             })
         except Exception:
             continue
 
+    # Every message leaves here with direction exactly 'in' or 'out' — the
+    # contract the app's left/right bubble layout depends on.
+    resolve_directions(out)
+    for e in out:
+        raw = e.pop("raw_sender", "")
+        e["sender"] = "You (WhatsApp)" if e["direction"] == "out" else (raw or chat_name)
     return out
 
 # ─────────────────────────────── sync loop ────────────────────────────────────
@@ -1836,24 +1946,48 @@ def _looks_like_profile_pic(media_url: str) -> bool:
     return "profile_pic" in low
 
 
+# Incremental sync. Every pass used to open and scroll every chat (~2-6 s
+# each) whether or not anything had happened in it. The sidebar row's text —
+# name, last-message time, preview, unread badge — changes whenever a chat
+# has new activity, so an unchanged fingerprint means "nothing new to read".
+# A fingerprint is only recorded after a chat imported cleanly, and every
+# WA_FULL_SWEEP_EVERY-th pass ignores fingerprints entirely, so a message the
+# fingerprint failed to reflect (identical text, same minute) is picked up at
+# most that many passes later. Same idea as version vectors (Parker et al.,
+# UCLA, 1983): cheap per-replica summary to detect divergence, full
+# reconciliation only where the summaries differ — plus a periodic
+# anti-entropy sweep as the backstop.
+_chat_fingerprints: dict[str, str] = {}
+_sync_pass = 0
+
+
 def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: int = 12) -> None:
+    global _sync_pass
+    _sync_pass += 1
+    full_sweep = (_sync_pass - 1) % WA_FULL_SWEEP_EVERY == 0
     # Scroll the entire sidebar so ALL contacts are collected, not just the
     # ~20 rows WhatsApp's virtual scroll keeps visible at any given time.
     chats   = get_all_chat_rows(page)
     targets = [c for c in chats if should_sync(c, sync_all)]
     unsaved = [c for c in targets if is_unsaved_number(c["name"])]
     saved   = [c for c in targets if not is_unsaved_number(c["name"])]
+    skipped = 0
     print(
         f"{len(chats)} chats found (full scroll) — syncing {len(targets)} "
         f"({len(unsaved)} unsaved numbers, {len(saved)} saved contacts)"
+        f"{'  [full sweep]' if full_sweep else ''}"
     )
     pics_fetched = 0
     for c in targets:
         # Outbound (messages / invoices) always jumps the queue ahead of
         # continuing to walk the chat list — check before every chat, not
         # just once the whole sync pass finishes.
-        if not _outbox.empty():
+        if outbox_pending():
             process_outbox(page)
+        fp = c.get("fingerprint")
+        if not full_sweep and fp and _chat_fingerprints.get(c["name"]) == fp:
+            skipped += 1
+            continue
         try:
             cid = ensure_chat(c["name"])
         except requests.RequestException as e:
@@ -1901,6 +2035,10 @@ def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: i
             f"  {label}{c['name']}: "
             f"+{result['imported']} new (skipped {result['skipped']}){pic_tag}{img_tag}"
         )
+        if c.get("fingerprint"):
+            _chat_fingerprints[c["name"]] = c["fingerprint"]
+    if skipped:
+        print(f"  ({skipped} chat(s) unchanged since last pass — not re-read)")
     if fetch_pics:
         print(f"  Got {pics_fetched} profile picture(s)")
 
@@ -1926,7 +2064,7 @@ def main() -> None:
     print_active_config()
 
     try:
-        requests.get(KARLON_URL, timeout=5)
+        get_session().get(KARLON_URL, timeout=(5, 20))
     except requests.RequestException:
         print(f"! Can't reach Karlon at {KARLON_URL}. Start it first:")
         print("    uvicorn app.main:app --host 0.0.0.0 --port 8000")
@@ -1978,8 +2116,9 @@ def main() -> None:
 
             if args.once:
                 break
-            print(f"Sleeping {POLL_INTERVAL}s...  (outbox thread polls every {OUTBOX_POLL_SEC}s)\n")
-            time.sleep(POLL_INTERVAL)
+            print(f"Idle {POLL_INTERVAL}s (delivering outbound as it arrives)...  "
+                  f"(outbox thread polls every {OUTBOX_POLL_SEC}s)\n")
+            idle_wait(page, POLL_INTERVAL)
 
     finally:
         stop_event.set()

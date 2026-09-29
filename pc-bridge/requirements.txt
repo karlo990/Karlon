@@ -1,0 +1,6 @@
+requests>=2.31
+urllib3>=2
+playwright>=1.40
+aiohttp>=3.9
+python-docx>=1.1
+pytest>=8
