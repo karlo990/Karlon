@@ -33,11 +33,14 @@ from pathlib import Path
 
 from local_config import KARLON_URL, LOG_DIR, print_active_config
 
+# One-for-one restart with exponential backoff: 5s, 10s, 20s ... capped at
+# MAX_BACKOFF_SEC. A run that stayed up at least STABLE_RUN_SEC counts as
+# healthy and resets the ladder, so a process that crashes once a day always
+# restarts in 5s, while one that dies on launch backs off to a slow retry
+# instead of hammering the server (or Airbnb, or WhatsApp Web) every 30s.
 RESTART_BACKOFF_SEC = 5
-# If a process dies again within this long after its *previous* restart,
-# treat it as crash-looping and back off longer instead of hammering it.
-CRASH_LOOP_WINDOW_SEC = 30
-CRASH_LOOP_BACKOFF_SEC = 30
+MAX_BACKOFF_SEC = 300
+STABLE_RUN_SEC = 60
 
 
 @dataclass
@@ -56,7 +59,8 @@ class ManagedProcess:
     env: dict[str, str] = field(default_factory=dict)
     proc: subprocess.Popen | None = None
     last_restart: float = 0.0
-    restart_count: int = 0
+    restart_count: int = 0        # lifetime total, for the log line
+    consecutive_fast_failures: int = 0
 
     def start(self) -> None:
         # Force every child to *emit* UTF-8 (PYTHONIOENCODING / PYTHONUTF8) and
@@ -99,6 +103,11 @@ ALL_PROCESSES: dict[str, ManagedProcess] = {
 _stop = threading.Event()
 
 
+def compute_backoff(consecutive_fast_failures: int) -> int:
+    """Seconds to wait before restart number `consecutive_fast_failures + 1`."""
+    return min(MAX_BACKOFF_SEC, RESTART_BACKOFF_SEC * (2 ** consecutive_fast_failures))
+
+
 def _reader_thread(proc_entry: ManagedProcess, log_fh) -> None:
     """Forwards one child's stdout to this console (and the combined log
     file), prefixed with its tag, until the child exits or we're stopping.
@@ -138,9 +147,11 @@ def _watch(proc_entry: ManagedProcess, log_fh) -> None:
             print(f"[supervisor] {proc_entry.key} exited (code {exit_code}) during shutdown — not restarting")
             return
 
-        since_last = time.time() - proc_entry.last_restart
-        crash_looping = since_last < CRASH_LOOP_WINDOW_SEC and proc_entry.restart_count > 0
-        backoff = CRASH_LOOP_BACKOFF_SEC if crash_looping else RESTART_BACKOFF_SEC
+        uptime = time.time() - proc_entry.last_restart
+        if uptime >= STABLE_RUN_SEC:
+            proc_entry.consecutive_fast_failures = 0
+        backoff = compute_backoff(proc_entry.consecutive_fast_failures)
+        proc_entry.consecutive_fast_failures += 1
         proc_entry.restart_count += 1
 
         print(

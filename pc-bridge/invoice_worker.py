@@ -30,13 +30,13 @@ import tempfile
 import time
 from pathlib import Path
 
-import requests
 from docx import Document
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 
 from io import BytesIO
 
+from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_session
 from local_config import KARLON_URL, INVOICE_POLL_SEC, LIBREOFFICE_PATH, print_active_config
 
 # PowerShell's cp1252 console can't encode the ✓/✗ this worker prints; without
@@ -51,12 +51,8 @@ for _stream in (sys.stdout, sys.stderr):
 
 POLL_INTERVAL_SEC = INVOICE_POLL_SEC
 
-# (connect timeout, read timeout). A HuggingFace Space woken from idle can
-# take 20-30s to answer its first request — the old flat timeout=10 made
-# every poll after the Space went to sleep fail with "Read timed out" /
-# "Max retries exceeded". 15s to connect, 60s to read covers a cold start.
-HTTP_TIMEOUT = (15, 60)
-DOWNLOAD_TIMEOUT = (15, 60)
+# Timeouts, retry policy and the pooled session live in karlon_client.py so
+# wa_bridge.py and this worker can't drift apart again.
 
 
 # ─────────────────────────────── docx generation ───────────────────────────────
@@ -72,8 +68,7 @@ def _fetch_listing_photo(invoice: dict) -> BytesIO | None:
     url = images[0]
     full = url if url.startswith("http") else f"{KARLON_URL}{url}"
     try:
-        r = requests.get(full, timeout=DOWNLOAD_TIMEOUT,
-                          headers={"User-Agent": "Mozilla/5.0 (KarlonInvoice)"})
+        r = get_session().get(full, timeout=DOWNLOAD_TIMEOUT)
         r.raise_for_status()
         if r.content and "image" in r.headers.get("content-type", "image"):
             return BytesIO(r.content)
@@ -163,8 +158,14 @@ def convert_docx_to_pdf(docx_path: Path, out_dir: Path) -> Path:
             "set LIBREOFFICE_PATH to its soffice executable."
         )
 
+    # Private LibreOffice profile per conversion. With the default shared
+    # profile, a second soffice (or an open LibreOffice window on this PC)
+    # holds the profile lock and headless convert exits 0 without producing a
+    # PDF — an intermittent "conversion failed" that looks unrelated to us.
+    profile_uri = (out_dir / "lo_profile").as_uri()
     result = subprocess.run(
-        [soffice, "--headless", "--convert-to", "pdf", "--outdir", str(out_dir), str(docx_path)],
+        [soffice, f"-env:UserInstallation={profile_uri}", "--headless",
+         "--convert-to", "pdf", "--outdir", str(out_dir), str(docx_path)],
         capture_output=True,
         text=True,
         timeout=60,
@@ -181,30 +182,30 @@ def convert_docx_to_pdf(docx_path: Path, out_dir: Path) -> Path:
 # ─────────────────────────────── server calls ──────────────────────────────────
 
 def fetch_pending() -> list[dict]:
-    r = requests.get(f"{KARLON_URL}/api/invoices/worker/pending", timeout=HTTP_TIMEOUT)
+    r = get_session().get(f"{KARLON_URL}/api/invoices/worker/pending", timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
 
 def claim(invoice_id: str) -> bool:
-    r = requests.patch(f"{KARLON_URL}/api/invoices/{invoice_id}/claim", timeout=HTTP_TIMEOUT)
+    r = get_session().patch(f"{KARLON_URL}/api/invoices/{invoice_id}/claim", timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     return bool(r.json().get("claimed"))
 
 
 def upload_pdf(invoice_id: str, pdf_path: Path) -> None:
     with open(pdf_path, "rb") as f:
-        r = requests.post(
+        r = get_session().post(
             f"{KARLON_URL}/api/invoices/{invoice_id}/pdf",
             files={"file": (pdf_path.name, f, "application/pdf")},
-            timeout=(15, 120),
+            timeout=UPLOAD_TIMEOUT,
         )
     r.raise_for_status()
 
 
 def mark_error(invoice_id: str, message: str) -> None:
     try:
-        requests.patch(
+        get_session().patch(
             f"{KARLON_URL}/api/invoices/{invoice_id}/error",
             json={"error_message": message[:500]},
             timeout=HTTP_TIMEOUT,

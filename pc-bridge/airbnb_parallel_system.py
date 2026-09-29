@@ -167,7 +167,7 @@ USER_AGENT = (
 # silently push listings to a *different* server than wa_bridge.py/
 # invoice_worker.py were talking to. Now reads the same KARLON_URL as
 # everything else (override via the KARLON_URL env var, or local_config.py).
-from local_config import KARLON_URL as KARLON_SERVER_URL
+from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN
 ENABLE_KARLON_PUSH = True
 # Cold HuggingFace Spaces can take 20-30s to answer their first request after
 # idling — 10s made the very first ingest of a cycle fail. 60s covers a wake-up.
@@ -292,6 +292,22 @@ async def fetch_zar_to_usd_rate() -> float:
     return ZAR_TO_USD_RATE_FALLBACK
 
 
+_karlon_session = None
+
+
+async def _karlon_http():
+    """One pooled aiohttp session for every Karlon call this process makes.
+    push_listing_to_karlon and the on-demand poller each used to open (and
+    tear down) a new ClientSession — a fresh TCP+TLS handshake per listing and
+    per 20 s poll against a HuggingFace Space."""
+    global _karlon_session
+    import aiohttp
+    if _karlon_session is None or _karlon_session.closed:
+        headers = {"Authorization": f"Bearer {KARLON_API_TOKEN}"} if KARLON_API_TOKEN else {}
+        _karlon_session = aiohttp.ClientSession(headers=headers)
+    return _karlon_session
+
+
 async def push_listing_to_karlon(
     data: Dict,
     price_detail: Dict,
@@ -345,14 +361,14 @@ async def push_listing_to_karlon(
     }
     try:
         import aiohttp
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{KARLON_SERVER_URL}/api/houses/ingest",
-                json=payload,
-                timeout=KARLON_PUSH_TIMEOUT_SECONDS,
-            ) as resp:
-                if resp.status != 200:
-                    print(f"  ⚠️  Karlon ingest returned {resp.status} for {data['url']}")
+        session = await _karlon_http()
+        async with session.post(
+            f"{KARLON_SERVER_URL}/api/houses/ingest",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=KARLON_PUSH_TIMEOUT_SECONDS),
+        ) as resp:
+            if resp.status != 200:
+                print(f"  ⚠️  Karlon ingest returned {resp.status} for {data['url']}")
     except Exception as e:
         print(f"  ⚠️  Karlon push failed for {data['url']}: {e} "
               f"(check KARLON_SERVER_URL={KARLON_SERVER_URL})")
@@ -2363,24 +2379,24 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
     if not ENABLE_ONDEMAND_REFRESH:
         return
     import aiohttp
+    session = await _karlon_http()
     pending_url = f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/pending"
     warned_missing_endpoint = False
     while True:
         jobs = []
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(pending_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                    if resp.status == 404:
-                        if not warned_missing_endpoint:
-                            print(f"[ondemand] ℹ️ {pending_url} not found (server-side job "
-                                  f"endpoint not built yet) — on-demand refresh stays idle "
-                                  f"until it exists. Full sweep is unaffected.")
-                            warned_missing_endpoint = True
-                    elif resp.status == 200:
-                        jobs = await resp.json()
-                        warned_missing_endpoint = False
-                    else:
-                        print(f"[ondemand] ⚠️ {pending_url} returned {resp.status}")
+            async with session.get(pending_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status == 404:
+                    if not warned_missing_endpoint:
+                        print(f"[ondemand] ℹ️ {pending_url} not found (server-side job "
+                              f"endpoint not built yet) — on-demand refresh stays idle "
+                              f"until it exists. Full sweep is unaffected.")
+                        warned_missing_endpoint = True
+                elif resp.status == 200:
+                    jobs = await resp.json()
+                    warned_missing_endpoint = False
+                else:
+                    print(f"[ondemand] ⚠️ {pending_url} returned {resp.status}")
         except Exception as e:
             print(f"[ondemand] ⚠️ couldn't poll {pending_url}: {e}")
 
@@ -2396,12 +2412,11 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
 
             pushed = await run_ondemand_job(context, checkpoint, location, check_in, check_out, job_id=job_id)
             try:
-                async with aiohttp.ClientSession() as session:
-                    await session.post(
-                        f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/{job_id}/complete",
-                        json={"pushed": pushed},
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    )
+                await session.post(
+                    f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/{job_id}/complete",
+                    json={"pushed": pushed},
+                    timeout=aiohttp.ClientTimeout(total=60),
+                )
             except Exception as e:
                 print(f"[ondemand] ⚠️ couldn't ack job {job_id} complete: {e}")
 
@@ -2559,6 +2574,8 @@ async def main():
                 await ondemand_task
             except asyncio.CancelledError:
                 pass
+            if _karlon_session is not None and not _karlon_session.closed:
+                await _karlon_session.close()
             await browser.close()
 
 if __name__ == "__main__":
