@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 14 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 24 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -17,6 +17,71 @@ python -m pytest tests               # 14 tests, no WhatsApp/Airbnb/network need
 | `karlon_supervisor.py` | starts the three above, restarts them with backoff |
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
+| `wa_clean.py` | good-vs-bad data rules (names, notices, times); identical copy in `server/app/` |
+
+## Syncing chats: one JSON snapshot per chat
+
+Each pass reads the **15 most recent chats** (`WA_SYNC_LAST_N_CHATS`, in
+WhatsApp's own sidebar order). For each chat the bridge:
+
+1. opens it, checks the header shows the chat it meant to open (otherwise it
+   skips the chat), and scrolls up to load history;
+2. reads the entire conversation in **one** browser call: every message and
+   every divider, in on-screen order;
+3. builds one JSON **snapshot** for the chat (`build_chat_snapshot`), where
+   every row is either a message or is listed under `rejected` with a reason:
+
+   | rejected as | what it is |
+   |---|---|
+   | `system_notice` | "Messages and calls are end-to-end encrypted…", deleted-message notices, unknown dividers |
+   | `no_message_metadata` | rows with neither WhatsApp's `[time, date] sender:` metadata nor a bubble time, e.g. "X changed their profile photo" |
+   | `time_only` / `empty` / `unsupported_media` | a bare "20:16", voice notes and stickers with no text |
+
+   Times come from the metadata, or from the bubble's time plus the date
+   divider above it ("TODAY", "Yesterday", "Monday", "29/09/2026"). Failing
+   both, a message takes its neighbour's time. Times never go backwards on
+   screen, and messages sharing a minute get +1 ms each, so sorting by time
+   reproduces WhatsApp's order exactly. All times are sent in UTC.
+4. writes it to `chat_snapshots/<chat id>.json` so you can inspect exactly what
+   was read and rejected;
+5. POSTs it to `POST /api/chats/{id}/sync`, which applies it in one transaction
+   (see `server/app/routers/chat_sync.py`). The server merges the old
+   "1 unread message…" duplicate chats and corrects existing rows. It removes
+   stale rows in the snapshot's time window, capped by a safety limit. It
+   reports which photos it doesn't have yet, and the bridge uploads only
+   those, each with its WhatsApp time.
+
+Try it on one chat first:
+
+```
+python wa_bridge.py --chat "Karl" --dry-run   # writes chat_snapshots/<id>.json, sends nothing
+python wa_bridge.py --chat "Karl"             # applies that one chat on the server
+python wa_bridge.py                           # continuous, 15 most recent chats
+```
+
+If the server hasn't been updated yet, the bridge falls back to the old
+endpoints and still sends cleaned, ordered, UTC-timed data, but stale rows
+can't be removed until `server/` is deployed.
+
+### Deploying the server part
+
+Copy `server/app/` over `app/` in the Hugging Face Space repo
+(`Davincii-code/Karlcon`) and push. The new column and indexes are added
+automatically on start. Then, once:
+
+```
+curl -X POST "https://davincii-code-karlcon.hf.space/api/chats/repair-names"             # dry run: shows the merges
+curl -X POST "https://davincii-code-karlcon.hf.space/api/chats/repair-names?apply=true"  # merge "1 unread message…" chats
+```
+
+Chats whose name has no real name in it at all (just "3 unread messages")
+are listed as `unrecoverable`. Add `&delete_unrecoverable=true` to delete
+those that hold nothing composed in the app and no invoices. The bridge's
+next pass then re-syncs each chat cleanly.
+
+If a sync reports `prune skipped`, the snapshot would have removed more than
+half the chat's imported rows in that window. Check its JSON, then re-run
+the POST with `?force=true` if it's right.
 
 ## Chat layout: the contract the app must honour
 

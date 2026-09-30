@@ -64,10 +64,10 @@ def test_geometry_refuses_dead_centre(page):
     assert got["direction"] == "unknown"
 
 
-def test_scrape_messages_only_emits_in_or_out_and_no_duplicates(page):
+def test_scan_chat_only_emits_in_or_out_and_no_duplicates(page):
     rows = [_msg(d, s, t, "10:1%d, 12/03/2025" % i, side, a, tl)
             for i, (d, s, t, side, a, tl, _) in enumerate(CASES)]
-    # Dead-centre, no signals, but printed under the same name as known 'out'
+    # Dead-centre, no signals, printed under the same name as known 'out'
     # messages ("Karlo") -> the sender vote must resolve it to 'out'.
     rows.append(
         '<div data-id="x_C" style="display:flex;justify-content:center">'
@@ -82,13 +82,13 @@ def test_scrape_messages_only_emits_in_or_out_and_no_duplicates(page):
     )
     page.set_content(_chat_html(rows))
 
-    out = w.scrape_messages(page, "Thabo", max_scroll_rounds=4)
+    out = w.scan_chat(page, "Thabo", max_scroll_rounds=4)["messages"]
 
     n = len(CASES) + 2
     assert len(out) == n, [o["text"] for o in out]                # no double import
     assert len({o["external_key"] for o in out}) == n
     assert all(o["direction"] in ("in", "out") for o in out)      # binary contract
-    assert all(o["created_at"] is not None for o in out)          # timestamped pass, not the fallback
+    assert all(o["time_source"] == "metadata" for o in out)
     by_text = {o["text"]: o for o in out}
     for d, s, t, side, a, tl, (direction, via) in CASES:
         assert by_text[t]["direction"] == direction, (t, via)
@@ -99,19 +99,19 @@ def test_scrape_messages_only_emits_in_or_out_and_no_duplicates(page):
             assert o["sender"] == "You (WhatsApp)"
         else:
             assert o["sender"] and o["sender"] != "You (WhatsApp)"
-    assert "raw_sender" not in out[0]
 
 
-def test_row_fallback_still_used_when_no_timestamp_metadata(page):
-    # A message with no data-pre-plain-text (e.g. WA changed the attribute)
-    # must still be imported through the data-id row pass.
+def test_message_without_metadata_but_with_bubble_time_is_kept(page):
+    # No data-pre-plain-text (e.g. WA changed the attribute), but the bubble
+    # shows its time -> still a real message.
     row = (
         '<div data-id="true_9@c.us_Z" style="display:flex;justify-content:flex-end">'
-        '<span aria-label="You:"></span><span class="selectable-text">no metadata</span></div>'
+        '<span aria-label="You:"></span><span class="selectable-text">no metadata</span>'
+        '<span data-testid="msg-meta"><span>09:15</span></span></div>'
     )
     page.set_content(_chat_html([row]))
-    out = w.scrape_messages(page, "Thabo", max_scroll_rounds=4)
-    assert [(o["text"], o["direction"], o["created_at"]) for o in out] == [("no metadata", "out", None)]
+    out = w.scan_chat(page, "Thabo", max_scroll_rounds=4)["messages"]
+    assert [(o["text"], o["direction"]) for o in out] == [("no metadata", "out")]
 
 
 def test_resolve_directions_pure():

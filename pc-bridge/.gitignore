@@ -4,3 +4,4 @@ __pycache__/
 logs/
 wa_session/
 airbnb_data/
+chat_snapshots/

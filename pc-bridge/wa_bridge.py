@@ -32,6 +32,9 @@ ENVIRONMENT:
     KARLON_URL=http://localhost:8000   (default: HF Space URL)
 
 RUN:
+    python wa_bridge.py --chat "Karl" --dry-run    # read ONE chat, write chat_snapshots/<id>.json, send nothing
+    python wa_bridge.py --chat "Karl"              # sync one chat (applies its snapshot on the server)
+    python wa_bridge.py                            # continuous: the 15 most recent chats (WA_SYNC_LAST_N_CHATS)
     python wa_bridge.py --once --all           # one-time full clone
     python wa_bridge.py --once --all --deep-history  # one-time full clone, scroll every chat back much further (use once, not on the routine loop)
     python wa_bridge.py                # continuous sync
@@ -58,12 +61,13 @@ if sys.platform == "win32":
 import argparse
 import base64
 import hashlib
+import json
 import queue
 import re
 import tempfile
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -76,7 +80,13 @@ from playwright.sync_api import Page, sync_playwright
 from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_session
 from local_config import (
     KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, WA_FULL_SWEEP_EVERY,
+    WA_SYNC_LAST_N_CHATS, CHAT_SNAPSHOT_DIR, WA_UTC_OFFSET_MINUTES,
     print_active_config,
+)
+from wa_clean import (
+    chat_slug, clean_chat_name, combine, detect_dayfirst, is_system_notice,
+    is_time_only, is_unread_divider, parse_divider_date, parse_pre_plain,
+    parse_pre_timestamp, split_trailing_time,
 )
 
 # PowerShell's default code page can't encode ✓ ✗ or emoji — reconfigure
@@ -92,7 +102,6 @@ SESSION_DIR         = "./wa_session"
 POLL_INTERVAL       = WA_POLL_INTERVAL     # seconds between WA→Karlon import cycles
 OUTBOX_POLL_SEC     = WA_OUTBOX_POLL_SEC   # seconds between outbox REST polls
 PROFILE_PICS_DIR    = Path("./static/profile_pics")
-INCOMING_IMAGES_DIR = Path("./wa_incoming_images")
 
 FLAG_KEYWORDS      = ["new order", "pending payment", "invoice", "deposit", "paid"]
 FLAG_NAME_PREFIXES = ["+27", "+263"]
@@ -317,10 +326,6 @@ def reformat_ad_context_card(text: str) -> str:
     lines = [ln.strip() for ln in spaced.split("\n") if ln.strip()]
     return "\n".join(lines)
 
-
-def chat_slug(name: str) -> str:
-    h = hashlib.md5(name.strip().encode()).hexdigest()[:12]
-    return f"wa-{h}"
 
 def ensure_chat(name: str, pic_url: Optional[str] = None) -> str:
     """
@@ -816,7 +821,9 @@ def _process_items(
         chat_id    = item.get("chat_id", "")
         msg_id     = item.get("id", "")
         text       = (item.get("text") or "").strip()
-        wa_name    = (item.get("wa_name") or "").strip()
+        # clean_chat_name: chats created by older builds stored names like
+        # "1 unread message\nKarl", which match no sidebar row and no header.
+        wa_name    = clean_chat_name(item.get("wa_name")) or (item.get("wa_name") or "").strip()
         retries    = item.get("_retries", 0)
         chat_name  = item.get("chat_name", wa_name or chat_id)
         kind       = item.get("kind", "text")
@@ -1156,19 +1163,22 @@ def _resolve_row_selector(page: Page) -> str:
             continue
     return '#pane-side [role="listitem"]'
 
-def _get_name_from_row(row, page: Page) -> str:
+def _get_name_from_row(row, page: Optional[Page] = None) -> str:
+    """The contact/group name in a sidebar row, cleaned (see
+    wa_clean.clean_chat_name). The first candidate used to be returned as-is,
+    and on current WhatsApp Web that was "1 unread message\nKarl" — the
+    screen-reader unread label plus the name — which created one Karlon chat
+    per unread count instead of one "Karl"."""
     for sel in _TITLE_SELECTOR_CANDIDATES:
         try:
-            el = row.query_selector(sel)
-            if not el:
-                continue
-            name = _safe_get_attr(el, "title")
-            if not name:
-                name = _safe_inner_text(el)
-            if name:
-                return name
+            els = row.query_selector_all(sel)
         except Exception:
             continue
+        for el in els:
+            for raw in (_safe_get_attr(el, "title"), _safe_inner_text(el)):
+                name = clean_chat_name(raw)
+                if name:
+                    return name
     return ""
 
 def _get_preview_from_row(row) -> str:
@@ -1262,7 +1272,62 @@ def get_all_chat_rows(page: Page) -> list[dict]:
     return all_rows
 
 
-def get_chat_rows(page: Page, skip_names: Optional[set] = None) -> list[dict]:
+def get_recent_chat_rows(page: Page, limit: int) -> list[dict]:
+    """The `limit` most recent chats, in WhatsApp's own sidebar order (most
+    recent activity first; pinned chats first, as WhatsApp shows them).
+
+    The sidebar is a virtual list whose DOM order is not guaranteed to match
+    what's on screen, so rows are ranked by their position in the scrolled
+    list, not by DOM index. Scrolls only as far as needed to see `limit` rows.
+    """
+    if limit <= 0 or not _wait_for_rows(page, timeout_s=10):
+        return []
+    pane = None
+    for sel in ("#pane-side", '[data-testid="chat-list"]', '[aria-label*="Chat list"]'):
+        try:
+            pane = page.query_selector(sel)
+            if pane:
+                break
+        except Exception:
+            continue
+    if pane:
+        try:
+            pane.evaluate("el => el.scrollTop = 0")
+            time.sleep(0.4)
+        except Exception:
+            pass
+
+    best: dict[str, dict] = {}
+    stall = 0
+    while True:
+        offset = 0.0
+        if pane:
+            try:
+                box = pane.bounding_box() or {"y": 0}
+                offset = pane.evaluate("el => el.scrollTop") - box["y"]
+            except Exception:
+                pass
+        new = 0
+        for r in get_chat_rows(page, skip_names=set(best), with_position=True):
+            r["abs_y"] = r.pop("_y", 0.0) + offset
+            best[r["name"]] = r
+            new += 1
+        stall = 0 if new else stall + 1
+        if len(best) >= limit + 2 or stall >= 2 or not pane:
+            break
+        try:
+            pane.evaluate("el => el.scrollTop += 600")
+            time.sleep(0.5)
+        except Exception:
+            break
+    rows = sorted(best.values(), key=lambda r: r["abs_y"])[:limit]
+    for r in rows:
+        r.pop("abs_y", None)
+    return rows
+
+
+def get_chat_rows(page: Page, skip_names: Optional[set] = None,
+                  with_position: bool = False) -> list[dict]:
     """Visible sidebar rows. `skip_names` lets the full-list sweep avoid
     re-reading rows it already captured: the virtual list keeps ~25 rows in the
     DOM and each 900 px scroll step overlaps the last, so every row used to be
@@ -1302,8 +1367,14 @@ def get_chat_rows(page: Page, skip_names: Optional[set] = None) -> list[dict]:
                     pic_src = _safe_get_attr(img, "src")
             except Exception:
                 pass
-            out.append({"name": name, "preview": preview, "unread": unread,
-                        "pic_src": pic_src or None, "fingerprint": fingerprint})
+            entry = {"name": name, "preview": preview, "unread": unread,
+                     "pic_src": pic_src or None, "fingerprint": fingerprint}
+            if with_position:
+                box = row.bounding_box()
+                if not box:
+                    continue
+                entry["_y"] = box["y"]
+            out.append(entry)
         except Exception:
             continue
     return out
@@ -1325,12 +1396,12 @@ def get_open_chat_title(page: Page) -> Optional[str]:
     """
     try:
         for el in page.query_selector_all('#main header span[title]'):
-            title = (_safe_get_attr(el, "title") or "").strip()
+            title = clean_chat_name(_safe_get_attr(el, "title"))
             if title and title.lower() not in _HEADER_TITLE_DENYLIST:
                 return title
-        # Fallback: any header span with real text, same denylist filter.
+        # Fallback: any header span with real text, same filters.
         for el in page.query_selector_all('#main header span[dir="auto"]'):
-            text = (_safe_inner_text(el) or "").strip()
+            text = clean_chat_name(_safe_inner_text(el))
             if text and text.lower() not in _HEADER_TITLE_DENYLIST:
                 return text
     except Exception:
@@ -1520,20 +1591,10 @@ def open_chat_row(page: Page, chat_name: str) -> bool:
 
     return False
 
-def parse_wa_timestamp(raw: str) -> Optional[str]:
-    for fmt in ("%H:%M, %d/%m/%Y", "%I:%M %p, %m/%d/%Y", "%H:%M, %m/%d/%Y"):
-        try:
-            return datetime.strptime(raw, fmt).isoformat()
-        except ValueError:
-            continue
-    return None
-
-# One browser round-trip per message: direction AND the WhatsApp message id.
-# (detect_direction used to cost a CDP call per message and the data-id needed
-# for de-duplication would have cost a second one.) Signals are tried in order
-# of how well each has survived WhatsApp's DOM changes; the first that answers
-# wins, and `via` records which one for debugging.
-_PROBE_JS = """el => {
+# Direction signals for one message element, tried in order of how well each
+# has survived WhatsApp's DOM changes; the first that answers wins and `via`
+# records which one. Shared by probe_message() and the whole-chat walk below.
+_PROBE_FN = """function probe(el) {
     const msgRow = el.closest('[data-id]') || el;
     const dataId = (msgRow.getAttribute && msgRow.getAttribute('data-id')) || '';
     const done = (direction, via) => ({ direction, via, dataId });
@@ -1563,11 +1624,9 @@ _PROBE_JS = """el => {
     if (dataId.startsWith('true_'))  return done('out', 'data-id');
     if (dataId.startsWith('false_')) return done('in', 'data-id');
 
-    // 5. geometry — the WhatsApp layout itself. Outgoing bubbles sit in the
-    // right half of the message pane, incoming in the left. Independent of
-    // any class name or attribute, so it still answers when WA reshuffles its
-    // markup. A dead-centre bubble (within 5% of the pane midpoint) is
-    // refused rather than guessed.
+    // 5. geometry — outgoing bubbles sit in the right half of the pane,
+    // incoming in the left. A dead-centre bubble (within 5% of the pane
+    // midpoint) is refused rather than guessed.
     const pane = el.closest('[data-testid="conversation-panel-messages"], [role="application"], #main');
     if (pane) {
         const p = pane.getBoundingClientRect(), r = el.getBoundingClientRect();
@@ -1579,6 +1638,8 @@ _PROBE_JS = """el => {
     }
     return done('unknown', 'none');
 }"""
+
+_PROBE_JS = "el => { " + _PROBE_FN + " return probe(el); }"
 
 
 def probe_message(el) -> dict:
@@ -1593,29 +1654,14 @@ def probe_message(el) -> dict:
     return {"direction": "unknown", "via": "error", "dataId": ""}
 
 
-def detect_direction(row) -> str:
-    """'out' = sent by you, 'in' = sent by the other party, 'unknown' = no
-    signal answered. Kept as a thin wrapper for callers that only need the
-    direction; scrape paths use probe_message() + resolve_directions()."""
-    return probe_message(row)["direction"]
-
-
 def resolve_directions(entries: list[dict]) -> None:
     """Make every entry's 'direction' exactly 'in' or 'out', in place.
 
     The app draws a message on the right if direction == 'out' and on the left
-    otherwise, so the layout is only as persistent as this field is
-    deterministic. An 'unknown' used to be shipped to the server as-is, and
-    whatever the client did with it (usually: left) put some of *your*
-    messages on the wrong side, differently on different screens.
-
-    Resolution, strongest evidence first, all from the same scrape:
-      1. the same raw sender was classified elsewhere in this chat
-         (majority vote — your own display name always maps to 'out');
-      2. otherwise 'in' — the safe default, since a contact's message on the
-         left is the WhatsApp norm and 'out' needs positive evidence.
-    Each entry needs 'raw_sender' (the name WhatsApp printed, '' if unknown).
-    """
+    otherwise, so the layout is only as stable as this field. Unresolved
+    entries take the majority direction of the same raw sender elsewhere in the
+    chat, else 'in' ('out' needs positive evidence). Each entry needs
+    'raw_sender' (the name WhatsApp printed, '' if unknown)."""
     votes: dict[str, dict[str, int]] = {}
     for e in entries:
         if e["direction"] in ("in", "out") and e.get("raw_sender"):
@@ -1630,96 +1676,493 @@ def resolve_directions(entries: list[dict]) -> None:
         else:
             e["direction"] = "in"
 
-def scrape_image_messages(page: Page, chat_name: str) -> list[dict]:
-    out = []
-    try:
-        rows = page.query_selector_all(
-            '[data-testid="conversation-panel-messages"] [data-id],'
-            ' #main [role="application"] [data-id]'
-        )
-    except Exception:
-        return out
-    for row in rows:
-        try:
-            data_id = _safe_get_attr(row, "data-id")
-            if not data_id:
-                continue
-            img_el = None
-            for candidate in row.query_selector_all("img[src]"):
-                src_attr = _safe_get_attr(candidate, "src")
-                if not src_attr or src_attr.startswith("data:image/svg"):
-                    continue
-                box = candidate.bounding_box()
-                if box and box["width"] * box["height"] > 2_000:
-                    img_el = candidate
-                    break
-            if not img_el:
-                continue
-            caption_el = row.query_selector("[data-pre-plain-text]")
-            pre_plain = _safe_get_attr(caption_el, "data-pre-plain-text") if caption_el else ""
-            caption = _safe_inner_text(caption_el) if caption_el else ""
-            if pre_plain and caption.startswith(pre_plain):
-                caption = caption[len(pre_plain):].strip()
-            m = re.match(r"\[(.*?)\]\s*(.*?):\s*$", pre_plain) if pre_plain else None
-            ts_raw, sender = (m.group(1), m.group(2)) if m else ("", "")
-            direction = probe_message(row)["direction"]
-            src = _safe_get_attr(img_el, "src")
-            b64 = fetch_blob_b64(page, src) if src else None
-            if not b64:
-                try:
-                    png_bytes = img_el.screenshot()
-                    b64 = base64.b64encode(png_bytes).decode("ascii")
-                except Exception:
-                    continue
-            out.append({
-                "raw_sender":   sender,
-                "caption":      caption,
-                "created_at":   parse_wa_timestamp(ts_raw),
-                "external_key": hashlib.sha1(f"img|{data_id}".encode()).hexdigest(),
-                "b64":          b64,
-                "direction":    direction,
-            })
-        except Exception:
-            continue
-    resolve_directions(out)
-    for e in out:
-        e["sender"] = "You (WhatsApp)" if e["direction"] == "out" else (e["raw_sender"] or chat_name)
-    return out
 
-def save_incoming_image(b64_data: str) -> Path:
-    INCOMING_IMAGES_DIR.mkdir(parents=True, exist_ok=True)
-    fname = f"{hashlib.sha1(b64_data[:256].encode()).hexdigest()}.jpg"
-    path = INCOMING_IMAGES_DIR / fname
-    path.write_bytes(base64.b64decode(b64_data))
+# ─────────────────────────── whole-chat scan → one snapshot ────────────────
+#
+# A chat is read in ONE browser round-trip: _WALK_JS returns every row of the
+# open conversation — messages and the dividers between them — in on-screen
+# order, with the raw facts about each (WhatsApp message id, the
+# "[time, date] sender:" metadata, text, the bubble's own time label, image
+# presence, direction). build_chat_snapshot() then turns that into a single
+# validated JSON document for the chat. It never guesses silently: every row is
+# either a message in the snapshot or listed under "rejected" with a reason.
+#
+# Ordering. The on-screen order IS the conversation order, so it is kept as
+# the source of truth, and timestamps are derived to agree with it:
+#   * "[20:16, 29/09/2026] Karl:" metadata when present (exact to the minute);
+#   * otherwise the bubble's own time label on the date of the nearest date
+#     divider above it ("TODAY", "Yesterday", "Monday", "29/09/2026");
+#   * otherwise inherited from the neighbouring message (marked "inferred").
+# Old builds sent no time at all for photos and for messages without metadata,
+# so the server stamped them with the *import* time and they sank to the
+# bottom of the chat — the "04:38" photo in the screenshots.
+# Times are then made non-decreasing in screen order, and messages that share a
+# minute get +1 ms each, so "ORDER BY created_at" reproduces the screen exactly.
+# Everything is sent in UTC; old builds sent naive local time, which sorted
+# two hours off against app-sent messages (stored in UTC).
+
+_WALK_JS = """() => {
+    """ + _PROBE_FN + """
+    const panel = document.querySelector('[data-testid="conversation-panel-messages"]')
+               || document.querySelector('#main [role="application"]');
+    if (!panel) return null;
+    const TIME = /^\\d{1,2}[:.]\\d{2}(\\s?[AaPp]\\.?\\s?[Mm]\\.?)?$/;
+    const QUOTE = '[data-testid="quoted-message"], [aria-label="Quoted message"], [aria-label^="Quoted"]';
+    const inQuote = n => !!(n.closest && n.closest(QUOTE));
+    const txt = n => ((n && n.innerText) || '').trim();
+    const y = n => n.getBoundingClientRect().top + panel.scrollTop;
+    const MEDIA = ['audio-play', 'ptt', 'audio-download', 'document', 'video-pip', 'media-play', 'sticker'];
+
+    const outermost = Array.from(panel.querySelectorAll('[data-id]'))
+        .filter(e => !(e.parentElement && e.parentElement.closest('[data-id]')));
+    const units = [];
+    const rows = Array.from(panel.querySelectorAll('[role="row"]'))
+        .filter(r => !(r.parentElement && r.parentElement.closest('[role="row"]')));
+    if (rows.length) {
+        for (const r of rows) {
+            const m = r.matches('[data-id]') ? r : r.querySelector('[data-id]');
+            if (m) units.push({ kind: 'msg', el: m });
+            else if (txt(r)) units.push({ kind: 'divider', el: r });
+        }
+        for (const m of outermost) if (!m.closest('[role="row"]')) units.push({ kind: 'msg', el: m });
+    } else {
+        for (const m of outermost) units.push({ kind: 'msg', el: m });
+    }
+
+    const out = [];
+    for (const u of units) {
+        const el = u.el;
+        if (u.kind === 'divider') { out.push({ type: 'divider', text: txt(el), y: y(el) }); continue; }
+        const preEl = Array.from(el.querySelectorAll('[data-pre-plain-text]')).find(n => !inQuote(n));
+        const pre = preEl ? (preEl.getAttribute('data-pre-plain-text') || '') : '';
+        let text = preEl ? txt(preEl) : '';
+        if (!text) {
+            const s = Array.from(el.querySelectorAll('span.selectable-text, [data-testid="selectable-text"]'))
+                .find(n => !inQuote(n));
+            text = txt(s);
+        }
+        if (!text) {
+            const s = Array.from(el.querySelectorAll("span[dir='ltr'], span[dir='auto']"))
+                .find(n => !inQuote(n) && !n.hasAttribute('aria-label') && !TIME.test(txt(n)));
+            text = txt(s);
+        }
+        let time = '';
+        const meta = el.querySelector('[data-testid="msg-meta"], [data-testid="msg-time"]');
+        const cands = meta ? [meta, ...meta.querySelectorAll('span')]
+                           : Array.from(el.querySelectorAll('span, div')).filter(n => !inQuote(n));
+        for (const n of cands) { const t = txt(n); if (TIME.test(t)) time = t; }
+        let hasImage = false;
+        for (const c of el.querySelectorAll('img[src]')) {
+            const s = c.getAttribute('src') || '';
+            if (s.startsWith('data:image/svg') || inQuote(c)) continue;
+            const r = c.getBoundingClientRect();
+            if (r.width * r.height > 2000) { hasImage = true; break; }
+        }
+        let media = '';
+        for (const i of el.querySelectorAll('[data-icon], [data-testid]')) {
+            const k = (i.getAttribute('data-icon') || i.getAttribute('data-testid') || '');
+            if (MEDIA.some(m => k.includes(m))) { media = k; break; }
+        }
+        const p = probe(el);
+        out.push({ type: 'msg', dataId: p.dataId, pre, text, time, hasImage, media,
+                   direction: p.direction, via: p.via, y: y(el) });
+    }
+    out.sort((a, b) => a.y - b.y);   // Array.prototype.sort is stable
+    return out;
+}"""
+
+SNAPSHOT_SCHEMA = "karlon.chat_snapshot/1"
+WA_SELF_SENDER = "You (WhatsApp)"
+
+
+def walk_chat(page: Page) -> Optional[list[dict]]:
+    """Raw rows of the open conversation in screen order (one round-trip)."""
+    try:
+        return page.evaluate(_WALK_JS)
+    except Exception as e:
+        print(f"    ! chat walk failed: {e}")
+        return None
+
+
+def _local_tz():
+    if WA_UTC_OFFSET_MINUTES is not None:
+        return timezone(timedelta(minutes=WA_UTC_OFFSET_MINUTES))
+    return datetime.now().astimezone().tzinfo
+
+
+def _to_utc_iso(local_naive: datetime, tz) -> str:
+    return local_naive.replace(tzinfo=tz).astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _external_key(wa_id: str, pre: str, key_text: str, kind: str, chat: str, local: str) -> str:
+    # These formulas are the persisted identity of every message already in
+    # Karlon (they match every earlier bridge build) — changing them would
+    # re-import history as new rows.
+    if kind == "image" and wa_id:
+        return hashlib.sha1(f"img|{wa_id}".encode()).hexdigest()
+    if pre:
+        return hashlib.sha1(f"{pre}|{key_text}".encode()).hexdigest()
+    if wa_id:
+        return hashlib.sha1(f"row|{wa_id}|{key_text}".encode()).hexdigest()
+    return hashlib.sha1(f"noid|{chat}|{local}|{key_text}".encode()).hexdigest()
+
+
+def _choose_dayfirst(units: list[dict], today) -> bool:
+    """dd/mm or mm/dd for this chat's "[time, date]" metadata. Decided by any
+    unambiguous date (a field > 12); if every date is ambiguous (05/09), by
+    which reading agrees with the chat's own date dividers, and never one that
+    puts messages in the future. Matters beyond display: the snapshot's
+    window start is its oldest message, and the server prunes inside that
+    window, so a misread month must not stretch it backwards."""
+    pres = [u.get("pre", "") for u in units if u.get("type") == "msg" and u.get("pre")]
+    decided = detect_dayfirst(pres, default=None)
+    if decided is not None or not pres:
+        return True if decided is None else decided
+    score = {True: 0, False: 0}
+    for df in (True, False):
+        current = None
+        for u in units:
+            if u.get("type") == "divider":
+                current = parse_divider_date(u.get("text", ""), today, df) or current
+                continue
+            ts = parse_pre_timestamp(parse_pre_plain(u.get("pre", ""))[0], df)
+            if ts is None:
+                continue
+            if ts.date() > today + timedelta(days=1):
+                score[df] -= 5
+            elif current is not None:
+                score[df] += 1 if ts.date() == current else -1
+    return score[False] <= score[True]
+
+
+def build_chat_snapshot(
+    units: list[dict],
+    chat_name: str,
+    *,
+    reached_top: bool = False,
+    now_local: Optional[datetime] = None,
+    tz=None,
+) -> dict:
+    """Turn _WALK_JS output into the chat's single JSON snapshot. Pure: no
+    browser, no network — which is what lets it be tested exhaustively."""
+    tz = tz or _local_tz()
+    now_local = now_local or datetime.now(tz).replace(tzinfo=None)
+    today = now_local.date()
+    dayfirst = _choose_dayfirst(units, today)
+
+    rejected: list[dict] = []
+    entries: list[dict] = []
+    seen_ids: set[str] = set()
+    stats = {"rows": len(units), "unread_dividers": 0, "date_dividers": 0, "duplicates": 0}
+    current_date = None
+
+    def reject(reason: str, text: str) -> None:
+        rejected.append({"reason": reason, "text": (text or "")[:120]})
+
+    for u in units:
+        if u.get("type") == "divider":
+            t = u.get("text", "")
+            d = parse_divider_date(t, today, dayfirst)
+            if d:
+                current_date = d
+                stats["date_dividers"] += 1
+            elif is_unread_divider(t):
+                stats["unread_dividers"] += 1
+            else:
+                reject("system_notice", t)
+            continue
+
+        wa_id = u.get("dataId") or ""
+        if wa_id and wa_id in seen_ids:
+            stats["duplicates"] += 1
+            continue
+        pre = u.get("pre") or ""
+        ts_raw, raw_sender = parse_pre_plain(pre)
+        raw_text = (u.get("text") or "").strip()
+        if pre and raw_text.startswith(pre):
+            raw_text = raw_text[len(pre):].strip()
+        key_text = reformat_ad_context_card(raw_text)
+        body, trailing_time = split_trailing_time(key_text)
+        bubble_time = (u.get("time") or "").strip() or trailing_time
+        kind = "image" if u.get("hasImage") else "text"
+
+        if is_system_notice(body):
+            reject("system_notice", body)
+            continue
+        if kind == "text" and not body:
+            reject("unsupported_media" if u.get("media") else "empty", u.get("media") or "")
+            continue
+        if kind == "text" and is_time_only(body):
+            reject("time_only", body)
+            continue
+        if kind == "text" and not pre and not bubble_time:
+            # Real message bubbles always carry a time; WhatsApp's own
+            # notices ("X added Y", "You're now an admin") never do.
+            reject("no_message_metadata", body)
+            continue
+
+        local, source = None, None
+        if pre:
+            local = parse_pre_timestamp(ts_raw, dayfirst)
+            if local:
+                source = "metadata"
+                current_date = local.date()
+        if local is None and bubble_time and current_date:
+            local = combine(current_date, bubble_time)
+            source = "divider+bubble" if local else None
+
+        if wa_id:
+            seen_ids.add(wa_id)
+        entries.append({
+            "wa_id": wa_id, "pre": pre, "raw_sender": raw_sender,
+            "direction": u.get("direction") or "unknown", "via": u.get("via") or "",
+            "kind": kind, "text": body, "key_text": key_text,
+            "_local": local, "_bubble": bubble_time, "time_source": source,
+        })
+
+    resolve_directions(entries)
+
+    # Fill missing times from neighbours, forwards then backwards.
+    prev = None
+    for e in entries:
+        if e["_local"] is None and prev is not None:
+            guess = combine(prev.date(), e["_bubble"]) if e["_bubble"] else None
+            e["_local"] = guess if guess and guess >= prev else prev
+            e["time_source"] = "inferred"
+        prev = e["_local"] or prev
+    nxt = None
+    for e in reversed(entries):
+        if e["_local"] is None and nxt is not None:
+            guess = combine(nxt.date(), e["_bubble"]) if e["_bubble"] else None
+            e["_local"] = guess if guess and guess <= nxt else nxt
+            e["time_source"] = "inferred"
+        nxt = e["_local"] or nxt
+    for e in entries:
+        if e["_local"] is None:
+            e["_local"], e["time_source"] = now_local.replace(second=0, microsecond=0), "inferred"
+
+    # Screen order wins: non-decreasing times, +1 ms per message within a minute.
+    clamped = 0
+    prev, minute, k = None, None, 0
+    for e in entries:
+        if prev is not None and e["_local"] < prev:
+            e["_local"] = prev
+            clamped += 1
+        prev = e["_local"]
+        m = e["_local"].replace(second=0, microsecond=0)
+        k = k + 1 if m == minute else 0
+        minute = m
+        e["_final"] = e["_local"] + timedelta(milliseconds=k)
+
+    messages = []
+    for seq, e in enumerate(entries):
+        local_iso = e["_final"].isoformat()
+        messages.append({
+            "seq": seq,
+            "external_key": _external_key(e["wa_id"], e["pre"], e["key_text"], e["kind"], chat_name, local_iso),
+            "wa_id": e["wa_id"] or None,
+            "direction": e["direction"],
+            "sender": WA_SELF_SENDER if e["direction"] == "out" else (e["raw_sender"] or chat_name),
+            "kind": e["kind"],
+            "text": e["text"],
+            "created_at": _to_utc_iso(e["_final"], tz),
+            "time_source": e["time_source"],
+        })
+
+    by_reason: dict[str, int] = {}
+    for r in rejected:
+        by_reason[r["reason"]] = by_reason.get(r["reason"], 0) + 1
+    by_source: dict[str, int] = {}
+    for m in messages:
+        by_source[m["time_source"]] = by_source.get(m["time_source"], 0) + 1
+    stats.update(messages=len(messages), rejected=by_reason, time_sources=by_source, clamped=clamped)
+
+    scanned_at = _to_utc_iso(now_local, tz)
+    return {
+        "schema": SNAPSHOT_SCHEMA,
+        "chat": {
+            "id": chat_slug(chat_name),
+            "name": chat_name,
+            "wa_name": chat_name,
+            "avatar_emoji": avatar_tag(chat_name),
+        },
+        "scanned_at": scanned_at,
+        "window_start": messages[0]["created_at"] if messages else None,
+        "window_end": scanned_at,
+        "reached_top": reached_top,
+        "messages": messages,
+        "rejected": rejected,
+        "stats": stats,
+    }
+
+
+def _load_history(page: Page, max_scroll_rounds: int) -> bool:
+    """Scroll the open chat up until the oldest message stops changing (True:
+    reached the top of what WhatsApp will load) or the round cap is hit."""
+    panel = page.query_selector(
+        '[data-testid="conversation-panel-messages"], #main [role="application"]'
+    )
+    if not panel:
+        return False
+    probe_sel = (
+        '[data-testid="conversation-panel-messages"] [data-id],'
+        ' #main [role="application"] [data-id]'
+    )
+    prev_top, stall = None, 0
+    for _ in range(max_scroll_rounds):
+        try:
+            panel.evaluate("el => el.scrollTop = 0")
+        except Exception:
+            return False
+        time.sleep(0.5)
+        try:
+            top_id = page.eval_on_selector(probe_sel, "el => el.getAttribute('data-id')")
+        except Exception:
+            top_id = None
+        if top_id is not None and top_id == prev_top:
+            stall += 1
+            if stall >= 2:
+                return True
+        else:
+            stall = 0
+        prev_top = top_id
+    return False
+
+
+def scan_chat(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> Optional[dict]:
+    """Load the open chat's history and return its snapshot (None on failure)."""
+    reached_top = _load_history(page, max_scroll_rounds)
+    units = walk_chat(page)
+    if units is None:
+        return None
+    return build_chat_snapshot(units, chat_name, reached_top=reached_top)
+
+
+def save_snapshot(snapshot: dict) -> Path:
+    """Write the chat's JSON to CHAT_SNAPSHOT_DIR/<chat id>.json (atomically,
+    so a crash never leaves half a file). This is the audit copy: exactly what
+    was read from WhatsApp and what was rejected, per chat."""
+    out_dir = Path(CHAT_SNAPSHOT_DIR)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{snapshot['chat']['id']}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, path)
     return path
+
+
+def push_snapshot(snapshot: dict) -> Optional[dict]:
+    """POST the snapshot to /api/chats/{id}/sync, where the server applies it
+    in one transaction. Returns the server's report, or None if this server
+    predates the endpoint (caller falls back to the legacy per-message path)."""
+    body = {k: v for k, v in snapshot.items() if k != "rejected"}
+    r = get_session().post(
+        f"{KARLON_URL}/api/chats/{snapshot['chat']['id']}/sync",
+        json=body, timeout=UPLOAD_TIMEOUT,
+    )
+    if r.status_code in (404, 405):
+        return None
+    r.raise_for_status()
+    return r.json()
+
+
+def _image_b64_for(page: Page, wa_id: str) -> Optional[str]:
+    """Bytes of the photo in message `wa_id` of the open chat, as base64."""
+    try:
+        row = page.query_selector(f'[data-id="{wa_id}"]') if '"' not in wa_id else None
+    except Exception:
+        row = None
+    if not row:
+        return None
+    for img in row.query_selector_all("img[src]"):
+        src = _safe_get_attr(img, "src")
+        if not src or src.startswith("data:image/svg"):
+            continue
+        box = img.bounding_box()
+        if not box or box["width"] * box["height"] <= 2_000:
+            continue
+        b64 = fetch_blob_b64(page, src)
+        if b64:
+            return b64
+        try:
+            return base64.b64encode(img.screenshot()).decode("ascii")
+        except Exception:
+            return None
+    return None
+
+
+def upload_snapshot_images(page: Page, snapshot: dict, keys: set) -> int:
+    """Upload the photos whose external_key is in `keys`, each with its
+    WhatsApp time so it lands in the right place in the thread."""
+    sent = 0
+    chat_id = snapshot["chat"]["id"]
+    for m in snapshot["messages"]:
+        if m["kind"] != "image" or m["external_key"] not in keys or not m.get("wa_id"):
+            continue
+        b64 = _image_b64_for(page, m["wa_id"])
+        if not b64:
+            print(f"    ! couldn't read photo {m['wa_id']}")
+            continue
+        fd, tmp = tempfile.mkstemp(prefix="karlon_img_", suffix=".jpg")
+        with os.fdopen(fd, "wb") as f:
+            f.write(base64.b64decode(b64))
+        try:
+            if import_image_message(chat_id, m["sender"], m["text"], Path(tmp),
+                                    external_key=m["external_key"], direction=m["direction"],
+                                    created_at=m["created_at"]):
+                _imported_image_keys.add(m["external_key"])
+                sent += 1
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    return sent
+
+
+def _push_snapshot_legacy(page: Page, snapshot: dict) -> dict:
+    """For a server without /sync: same cleaned, ordered, UTC-timed data via
+    the old endpoints (no pruning of stale rows — that needs /sync)."""
+    chat = snapshot["chat"]
+    ensure_chat(chat["name"])
+    texts = [
+        {k: m[k] for k in ("sender", "text", "created_at", "external_key", "direction")}
+        for m in snapshot["messages"] if m["kind"] == "text"
+    ]
+    result = import_messages(chat["id"], texts)
+    keys = {m["external_key"] for m in snapshot["messages"]
+            if m["kind"] == "image" and m["external_key"] not in _imported_image_keys}
+    result["images_uploaded"] = upload_snapshot_images(page, snapshot, keys)
+    result["legacy"] = True
+    return result
+
 
 def import_image_message(
     chat_id: str, sender: str, caption: str, image_path: Path,
-    external_key: str, direction: str = "in",
+    external_key: str, direction: str = "in", created_at: Optional[str] = None,
 ) -> Optional[dict]:
     """
     Posts to /images/import (the wa_bridge-scraped path, dedup'd by
-    external_key), NOT /images (the app/staff-composed path). This used to
-    hit /images, which is documented server-side as hardcoding
-    direction='out' + wa_status='pending' — meaning every image scraped off
-    WhatsApp, incoming or outgoing, went in flagged as a pending outbound
-    send. The outbox poller would then pick it straight back up and DOM-send
-    it back to WhatsApp: every image ever scraped by wa_bridge was getting
-    echoed back into the chat it came from. /images/import is the endpoint
-    that was actually built to prevent exactly this (dedup + direction='in'
-    + wa_status=NULL, so the outbox never touches it) — it just wasn't
-    being called.
+    external_key, stored with wa_status=NULL so the outbox never re-sends it),
+    NOT /images (the app/staff-composed path, which queues a WhatsApp send).
+
+    `created_at` is the photo's WhatsApp time. Earlier builds never sent it,
+    so every scraped photo was stamped with the moment it was uploaded and
+    appeared at the bottom of the chat, after messages sent hours later.
     """
+    data = {
+        "sender": sender,
+        "caption": caption,
+        "external_key": external_key,
+        "direction": direction,
+    }
+    if created_at:
+        data["created_at"] = created_at
     try:
         with open(image_path, "rb") as f:
             r = get_session().post(
                 f"{KARLON_URL}/api/chats/{chat_id}/images/import",
-                data={
-                    "sender": sender,
-                    "caption": caption,
-                    "external_key": external_key,
-                    "direction": direction,
-                },
+                data=data,
                 files={"file": (image_path.name, f, "image/jpeg")},
                 timeout=UPLOAD_TIMEOUT,
             )
@@ -1729,149 +2172,6 @@ def import_image_message(
         print(f"    ! image upload to Karlon failed: {e}")
         return None
 
-def scrape_messages(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> list[dict]:
-    """
-    Scroll up and collect every message currently loadable in this chat.
-
-    Used to scroll a fixed 4 rounds regardless of chat length, which meant
-    long-running chats only ever contributed their most recent slice —
-    everything older just never made it into Karlon. Scrolling to the top
-    is now adaptive: keep hitting scrollTop=0 (which triggers WA to lazy-load
-    the next older batch) until the topmost rendered message stops changing
-    for two rounds running — that's the actual top of history, not a guess —
-    or `max_scroll_rounds` is hit as a safety cap so one enormous chat can't
-    stall the whole sync cycle. Pass a larger `max_scroll_rounds` (e.g. via
-    --deep-history) for a genuine one-time full-history clone of every chat.
-    """
-    panel = page.query_selector(
-        '[data-testid="conversation-panel-messages"], #main [role="application"]'
-    )
-    if not panel:
-        return []
-
-    row_probe_sel = (
-        '[data-testid="conversation-panel-messages"] [data-id],'
-        ' #main [role="application"] [data-id]'
-    )
-    prev_top_id: Optional[str] = None
-    stall = 0
-    for _ in range(max_scroll_rounds):
-        try:
-            panel.evaluate("el => el.scrollTop = 0")
-        except Exception:
-            break
-        time.sleep(0.5)
-        try:
-            top_id = page.eval_on_selector(row_probe_sel, "el => el.getAttribute('data-id')")
-        except Exception:
-            top_id = None
-        if top_id is not None and top_id == prev_top_id:
-            stall += 1
-            if stall >= 2:
-                break
-        else:
-            stall = 0
-        prev_top_id = top_id
-
-    out = []
-    seen_keys: set[str] = set()
-    covered_ids: set[str] = set()   # WA data-ids the timestamped pass below already emitted
-
-    try:
-        meta_nodes = page.query_selector_all(
-            '[data-testid="conversation-panel-messages"] [data-pre-plain-text],'
-            ' #main [data-pre-plain-text]'
-        )
-    except Exception:
-        meta_nodes = []
-
-    for meta_el in meta_nodes:
-        try:
-            pre_plain = _safe_get_attr(meta_el, "data-pre-plain-text")
-            m = re.match(r"\[(.*?)\]\s*(.*?):\s*$", pre_plain)
-            ts_raw, sender = (m.group(1), m.group(2)) if m else ("", "")
-            text = _safe_inner_text(meta_el)
-            if pre_plain and text.startswith(pre_plain):
-                text = text[len(pre_plain):].strip()
-            if not text:
-                continue
-            text = reformat_ad_context_card(text)
-            probe = probe_message(meta_el)
-            if probe["dataId"]:
-                covered_ids.add(probe["dataId"])
-            # NOTE: external_key formulas below are the persisted identity of
-            # every message already in Karlon — do not change them without a
-            # server-side migration or the whole history re-imports as new.
-            ext_key = hashlib.sha1(f"{pre_plain}|{text}".encode()).hexdigest()
-            seen_keys.add(ext_key)
-            out.append({
-                "raw_sender":   sender,
-                "text":         text,
-                "created_at":   parse_wa_timestamp(ts_raw),
-                "external_key": ext_key,
-                "direction":    probe["direction"],
-            })
-        except Exception:
-            continue
-
-    try:
-        rows = page.query_selector_all(
-            '[data-testid="conversation-panel-messages"] [data-id],'
-            ' #main [role="application"] [data-id]'
-        )
-    except Exception:
-        rows = []
-
-    for row in rows:
-        try:
-            data_id = _safe_get_attr(row, "data-id")
-            if not data_id:
-                continue
-            if data_id in covered_ids:
-                # Already exported (with its timestamp and real sender) by the
-                # data-pre-plain-text pass. This pass keys on "row|<id>|<text>",
-                # which can never match that pass's key, so without this skip
-                # every text message was emitted twice.
-                continue
-            has_real_image = any(
-                (candidate.bounding_box() or {"width": 0, "height": 0})["width"]
-                * (candidate.bounding_box() or {"width": 0, "height": 0})["height"] > 2_000
-                for candidate in row.query_selector_all("img[src]")
-                if not _safe_get_attr(candidate, "src").startswith("data:image/svg")
-            )
-            if has_real_image:
-                continue
-            text_el = row.query_selector(
-                "span.selectable-text, div.copyable-text span, "
-                "span[dir='ltr'], span[dir='auto']"
-            )
-            if not text_el:
-                continue
-            text = _safe_inner_text(text_el)
-            if not text:
-                continue
-            text = reformat_ad_context_card(text)
-            ext_key = hashlib.sha1(f"row|{data_id}|{text}".encode()).hexdigest()
-            if ext_key in seen_keys:
-                continue
-            seen_keys.add(ext_key)
-            out.append({
-                "raw_sender":   "",
-                "text":         text,
-                "created_at":   None,
-                "external_key": ext_key,
-                "direction":    probe_message(row)["direction"],
-            })
-        except Exception:
-            continue
-
-    # Every message leaves here with direction exactly 'in' or 'out' — the
-    # contract the app's left/right bubble layout depends on.
-    resolve_directions(out)
-    for e in out:
-        raw = e.pop("raw_sender", "")
-        e["sender"] = "You (WhatsApp)" if e["direction"] == "out" else (raw or chat_name)
-    return out
 
 # ─────────────────────────────── sync loop ────────────────────────────────────
 
@@ -1961,86 +2261,114 @@ _chat_fingerprints: dict[str, str] = {}
 _sync_pass = 0
 
 
-def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: int = 12) -> None:
+def select_targets(page: Page, sync_all: bool, only_chat: Optional[str], limit: int) -> list[dict]:
+    """Which chats this pass reads.
+      --chat NAME   just that chat (to check one chat's JSON before a full run)
+      default       the `limit` most recent chats in WhatsApp's order
+                    (WA_SYNC_LAST_N_CHATS, default 15)
+      --all / 0     every chat in the sidebar, filtered by should_sync()"""
+    if only_chat:
+        name = clean_chat_name(only_chat) or only_chat.strip()
+        return [{"name": name, "preview": "", "unread": 0, "pic_src": None, "fingerprint": None}]
+    if limit > 0 and not sync_all:
+        return get_recent_chat_rows(page, limit)
+    return [c for c in get_all_chat_rows(page) if should_sync(c, sync_all)]
+
+
+def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
+              dry_run: bool = False) -> Optional[dict]:
+    """Open one chat, build its snapshot, save it, and (unless dry_run) apply
+    it on the server. Returns the snapshot, or None if the chat was skipped."""
+    if not open_chat_row(page, name):
+        print(f"  ! could not open: {name}")
+        return None
+    # Identity gate, same rule as outbound sends: the conversation WhatsApp
+    # actually has open must be the one we meant, or nothing is written.
+    header = get_open_chat_title(page)
+    if header and header != name:
+        print(f"  ! opened '{header}' while looking for '{name}' — skipping this chat")
+        return None
+
+    snapshot = scan_chat(page, name, max_scroll_rounds=max_scroll_rounds)
+    if snapshot is None:
+        print(f"  ! couldn't read messages for {name}")
+        return None
+    path = save_snapshot(snapshot)
+    st = snapshot["stats"]
+    rej = ", ".join(f"{k} {v}" for k, v in sorted(st["rejected"].items())) or "none"
+    label = "\U0001f4f1 " if is_unsaved_number(name) else "   "
+    if dry_run:
+        print(f"  {label}{name}: {st['messages']} message(s), rejected: {rej}  → {path}")
+        return snapshot
+
+    for m in snapshot["messages"]:
+        if m["direction"] == "in" and m["text"]:
+            _record_inbound_text(m["text"])
+
+    if fetch_pics:
+        b64 = get_profile_photo_b64(page, debug=False)
+        if b64:
+            try:
+                ensure_chat(name, pic_url=save_profile_pic(chat_slug(name), b64))
+            except Exception as e:
+                print(f"    ! pic save failed for {name}: {e}")
+
+    try:
+        report = push_snapshot(snapshot)
+    except requests.HTTPError as e:
+        resp = e.response
+        print(f"  ! server refused {name}'s snapshot "
+              f"({resp.status_code if resp is not None else '?'}: "
+              f"{(resp.text if resp is not None else str(e))[:200]}) — kept at {path}")
+        return None
+    if report is None:
+        report = _push_snapshot_legacy(page, snapshot)
+        print(f"  {label}{name}: +{report['imported']} new (skipped {report['skipped']}), "
+              f"rejected: {rej}  [server has no /sync — deploy server/ to enable cleanup]")
+        return snapshot
+    missing = set(report.get("missing_images") or [])
+    uploaded = upload_snapshot_images(page, snapshot, missing) if missing else 0
+    skipped_note = f"  (prune skipped: {report['prune_skipped']})" if report.get("prune_skipped") else ""
+    print(
+        f"  {label}{name}: {st['messages']} msg — +{report.get('inserted', 0)} new, "
+        f"{report.get('updated', 0)} fixed, {report.get('pruned', 0)} stale removed"
+        f"{f', {uploaded} photo(s)' if uploaded else ''}; rejected: {rej}{skipped_note}"
+    )
+    return snapshot
+
+
+def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: int = 12,
+              only_chat: Optional[str] = None, limit: Optional[int] = None,
+              dry_run: bool = False) -> None:
     global _sync_pass
     _sync_pass += 1
-    full_sweep = (_sync_pass - 1) % WA_FULL_SWEEP_EVERY == 0
-    # Scroll the entire sidebar so ALL contacts are collected, not just the
-    # ~20 rows WhatsApp's virtual scroll keeps visible at any given time.
-    chats   = get_all_chat_rows(page)
-    targets = [c for c in chats if should_sync(c, sync_all)]
-    unsaved = [c for c in targets if is_unsaved_number(c["name"])]
-    saved   = [c for c in targets if not is_unsaved_number(c["name"])]
+    full_sweep = only_chat is not None or (_sync_pass - 1) % WA_FULL_SWEEP_EVERY == 0
+    limit = WA_SYNC_LAST_N_CHATS if limit is None else limit
+    targets = select_targets(page, sync_all, only_chat, limit)
+    scope = (f"chat {only_chat!r}" if only_chat
+             else f"last {limit} chats" if limit > 0 and not sync_all else "all flagged chats")
+    print(f"Syncing {len(targets)} chat(s) ({scope}){'  [full sweep]' if full_sweep else ''}"
+          f"{'  [dry run — JSON only]' if dry_run else ''}")
     skipped = 0
-    print(
-        f"{len(chats)} chats found (full scroll) — syncing {len(targets)} "
-        f"({len(unsaved)} unsaved numbers, {len(saved)} saved contacts)"
-        f"{'  [full sweep]' if full_sweep else ''}"
-    )
-    pics_fetched = 0
     for c in targets:
         # Outbound (messages / invoices) always jumps the queue ahead of
-        # continuing to walk the chat list — check before every chat, not
-        # just once the whole sync pass finishes.
-        if outbox_pending():
+        # continuing to walk the chat list — check before every chat.
+        if outbox_pending() and not dry_run:
             process_outbox(page)
         fp = c.get("fingerprint")
         if not full_sweep and fp and _chat_fingerprints.get(c["name"]) == fp:
             skipped += 1
             continue
         try:
-            cid = ensure_chat(c["name"])
+            snap = sync_chat(page, c["name"], fetch_pics, max_scroll_rounds, dry_run=dry_run)
         except requests.RequestException as e:
-            print(f"  ! Karlon unreachable after retries ({e}) — check {KARLON_URL}, skipping {c['name']!r} this pass")
+            print(f"  ! Karlon unreachable after retries ({e}) — check {KARLON_URL}, "
+                  f"skipping {c['name']!r} this pass")
             continue
-        if not open_chat_row(page, c["name"]):
-            print(f"  ! could not open: {c['name']}")
-            continue
-        pic_url: Optional[str] = None
-        if fetch_pics:
-            b64 = get_profile_photo_b64(page, debug=False)
-            if b64:
-                try:
-                    pic_url = save_profile_pic(chat_slug(c["name"]), b64)
-                    pics_fetched += 1
-                    ensure_chat(c["name"], pic_url=pic_url)
-                except Exception as e:
-                    print(f"    ! pic save failed for {c['name']}: {e}")
-        msgs   = scrape_messages(page, c["name"], max_scroll_rounds=max_scroll_rounds)
-        for m in msgs:
-            if m.get("sender") != "You (WhatsApp)" and m.get("text"):
-                _record_inbound_text(m["text"])
-        result = import_messages(cid, msgs)
-        images_sent = 0
-        for img in scrape_image_messages(page, c["name"]):
-            ext_key = img["external_key"]
-            if ext_key in _imported_image_keys:
-                continue
-            path = save_incoming_image(img["b64"])
-            uploaded = import_image_message(
-                cid, img["sender"], img["caption"], path,
-                external_key=ext_key, direction=img.get("direction", "in"),
-            )
-            try:
-                path.unlink()
-            except OSError:
-                pass
-            if uploaded:
-                _imported_image_keys.add(ext_key)
-                images_sent += 1
-        label   = "\U0001f4f1 " if is_unsaved_number(c["name"]) else "   "
-        pic_tag = " \U0001f5bc" if pic_url else ""
-        img_tag = f" \U0001f4f7+{images_sent}" if images_sent else ""
-        print(
-            f"  {label}{c['name']}: "
-            f"+{result['imported']} new (skipped {result['skipped']}){pic_tag}{img_tag}"
-        )
-        if c.get("fingerprint"):
-            _chat_fingerprints[c["name"]] = c["fingerprint"]
+        if snap is not None and fp:
+            _chat_fingerprints[c["name"]] = fp
     if skipped:
         print(f"  ({skipped} chat(s) unchanged since last pass — not re-read)")
-    if fetch_pics:
-        print(f"  Got {pics_fetched} profile picture(s)")
 
 
 # ─────────────────────────────── entry point ──────────────────────────────────
@@ -2048,7 +2376,13 @@ def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: i
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--once",     action="store_true", help="sync one pass then exit")
-    ap.add_argument("--all",      action="store_true", help="sync every chat")
+    ap.add_argument("--all",      action="store_true",
+                    help="sync every chat in the sidebar instead of only the most recent ones")
+    ap.add_argument("--chat",     metavar="NAME", help="sync just this one chat (e.g. --chat Karl)")
+    ap.add_argument("--limit",    type=int, default=None,
+                    help=f"how many of the most recent chats to sync (default {WA_SYNC_LAST_N_CHATS}; 0 = all flagged)")
+    ap.add_argument("--dry-run",  action="store_true",
+                    help="read chats and write their JSON snapshots, but send nothing to Karlon")
     ap.add_argument("--pics",     action="store_true", help="download profile pictures")
     ap.add_argument("--headless", action="store_true", default=False, help="hide browser")
     ap.add_argument("--discover", action="store_true", help="dump selector info and exit")
@@ -2064,7 +2398,8 @@ def main() -> None:
     print_active_config()
 
     try:
-        get_session().get(KARLON_URL, timeout=(5, 20))
+        if not args.dry_run:
+            get_session().get(KARLON_URL, timeout=(5, 20))
     except requests.RequestException:
         print(f"! Can't reach Karlon at {KARLON_URL}. Start it first:")
         print("    uvicorn app.main:app --host 0.0.0.0 --port 8000")
@@ -2082,7 +2417,8 @@ def main() -> None:
         name="outbox-poller",
         daemon=True,
     )
-    poller.start()
+    if not args.dry_run:
+        poller.start()
 
     # Urgent reply queue — polls GET /api/outbox/urgent every 2 s, FIRST priority.
     # Only receives messages sent via POST /api/reply/{chat_id} (wa_status='urgent').
@@ -2093,7 +2429,8 @@ def main() -> None:
         name="urgent-outbox-poller",
         daemon=True,
     )
-    urgent_poller.start()
+    if not args.dry_run:
+        urgent_poller.start()
 
     try:
         if args.discover:
@@ -2109,12 +2446,16 @@ def main() -> None:
                 sync_all=args.all,
                 fetch_pics=args.pics,
                 max_scroll_rounds=60 if args.deep_history else 12,
+                only_chat=args.chat,
+                limit=args.limit,
+                dry_run=args.dry_run,
             )
 
             # 2. Process outbound queue: send Karlon messages → WhatsApp via DOM
-            process_outbox(page)
+            if not args.dry_run:
+                process_outbox(page)
 
-            if args.once:
+            if args.once or args.chat or args.dry_run:
                 break
             print(f"Idle {POLL_INTERVAL}s (delivering outbound as it arrives)...  "
                   f"(outbox thread polls every {OUTBOX_POLL_SEC}s)\n")
@@ -2122,8 +2463,9 @@ def main() -> None:
 
     finally:
         stop_event.set()
-        poller.join(timeout=3)
-        urgent_poller.join(timeout=3)
+        for t in (poller, urgent_poller):
+            if t.is_alive():
+                t.join(timeout=3)
         ctx.close()
         pw.stop()
 

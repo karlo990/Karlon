@@ -41,6 +41,19 @@ INVOICE_POLL_SEC      = _int_env("INVOICE_POLL_SEC", 5)          # invoice_worke
 # 1 = always full sweep (the old behaviour).
 WA_FULL_SWEEP_EVERY   = _int_env("WA_FULL_SWEEP_EVERY", 10)
 
+# How many chats each pass reads: the N most recent in WhatsApp's own order.
+# 0 = the old behaviour (every chat in the sidebar, filtered by should_sync).
+WA_SYNC_LAST_N_CHATS  = _int_env("WA_SYNC_LAST_N_CHATS", 15, minimum=0)
+
+# Each synced chat's JSON snapshot (what was read, what was rejected) is
+# written here as <chat id>.json — the per-chat audit copy.
+CHAT_SNAPSHOT_DIR = os.environ.get("CHAT_SNAPSHOT_DIR", "./chat_snapshots")
+
+# WhatsApp shows local times; they're converted to UTC with this PC's time
+# zone. Set to force an offset instead, in minutes (Harare = 120).
+WA_UTC_OFFSET_MINUTES = (int(os.environ["WA_UTC_OFFSET_MINUTES"])
+                         if os.environ.get("WA_UTC_OFFSET_MINUTES", "").lstrip("-").isdigit() else None)
+
 # Optional shared secret sent as `Authorization: Bearer <token>` on every request
 # (see karlon_client.py). Unset = no header, exactly as before. The server must
 # enforce it for it to protect anything.
@@ -61,6 +74,8 @@ LIBREOFFICE_PATH = os.environ.get(
 
 def print_active_config() -> None:
     print(
-        "[local_config] KARLON_URL=%s  WA_POLL=%ss  OUTBOX_POLL=%ss  INVOICE_POLL=%ss  LOG_DIR=%s"
-        % (KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, INVOICE_POLL_SEC, LOG_DIR)
+        "[local_config] KARLON_URL=%s  WA_POLL=%ss  OUTBOX_POLL=%ss  INVOICE_POLL=%ss  "
+        "LAST_N_CHATS=%s  LOG_DIR=%s"
+        % (KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, INVOICE_POLL_SEC,
+           WA_SYNC_LAST_N_CHATS, LOG_DIR)
     )
