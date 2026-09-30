@@ -7,6 +7,7 @@ from fastapi import APIRouter
 
 from ..database import get_db
 from ..models import UpsertChatIn
+from ..wa_clean import clean_chat_name
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
@@ -31,11 +32,11 @@ def list_chats():
                (SELECT CASE WHEN kind='image' THEN COALESCE(NULLIF(text,''), '\U0001f4f7 Photo')
                             ELSE text END
                 FROM messages m WHERE m.chat_id = c.id
-                ORDER BY m.created_at DESC LIMIT 1) AS last_text,
+                ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_text,
                (SELECT created_at FROM messages m WHERE m.chat_id = c.id
-                ORDER BY m.created_at DESC LIMIT 1) AS last_at,
+                ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_at,
                (SELECT direction FROM messages m WHERE m.chat_id = c.id
-                ORDER BY m.created_at DESC LIMIT 1) AS last_direction
+                ORDER BY m.created_at DESC, m.rowid DESC LIMIT 1) AS last_direction
         FROM chats c
         ORDER BY (last_at IS NULL), last_at DESC
         """
@@ -54,6 +55,11 @@ def upsert_chat(body: UpsertChatIn):
     wa_name carries the raw WhatsApp display name (before any prefix we add)
     so the outbox sender can open the correct WA chat row via DOM.
     """
+    # Older bridges sent names polluted with WhatsApp's hidden unread label
+    # ("1 unread message\nKarl"); store the real name. (The id is the
+    # caller's; /api/chats/repair-names merges chats created under such names.)
+    body.name = clean_chat_name(body.name) or body.name
+    body.wa_name = clean_chat_name(body.wa_name) or body.wa_name
     conn = get_db()
     existing = conn.execute("SELECT 1 FROM chats WHERE id=?", (body.id,)).fetchone()
     wa_name = (body.wa_name or "").strip() or None

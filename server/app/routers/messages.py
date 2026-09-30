@@ -12,7 +12,9 @@ from fastapi import Query
 from ..config import MEDIA_DIR, MEDIA_KIND_BY_EXT, TERMS_PDF_PATH
 from ..database import get_db
 from ..models import ImportMessagesIn, SendMessageIn, serialize_message
+from ..wa_clean import is_system_notice, is_time_only, to_utc_iso
 from ..ws_manager import manager
+from .chat_sync import LEGACY_NAIVE_OFFSET_MINUTES
 
 router = APIRouter(prefix="/api/chats", tags=["messages"])
 
@@ -217,8 +219,9 @@ async def import_image(
 
     msg_id = str(uuid.uuid4())
     # WhatsApp's own time for the photo (so it sits in the right place in the
-    # thread), else now.
-    now = created_at or datetime.now(timezone.utc).isoformat()
+    # thread), else now — always stored as UTC so it sorts against app messages.
+    now = (to_utc_iso(created_at, LEGACY_NAIVE_OFFSET_MINUTES)
+           or datetime.now(timezone.utc).isoformat(timespec="microseconds"))
     conn.execute(
         "INSERT INTO messages "
         "(id, chat_id, sender, kind, text, poll_id, created_at, external_key, "
@@ -335,10 +338,18 @@ async def import_messages(chat_id: str, body: ImportMessagesIn):
         has_media = bool(m.media_url)
         if not text and not has_media:
             continue
+        # WhatsApp UI notices ("Messages and calls are end-to-end encrypted…",
+        # "1 unread message", bare "20:16") are not messages.
+        if not has_media and (is_system_notice(text) or is_time_only(text)):
+            skipped += 1
+            continue
         ext_key = m.external_key or hashlib.sha1(
             f"{m.sender}|{text}|{m.created_at}|{m.media_url or ''}".encode("utf-8")
         ).hexdigest()
-        created_at = m.created_at or datetime.now(timezone.utc).isoformat()
+        # UTC, one format: naive local times from older bridges sorted two
+        # hours off against app-sent messages.
+        created_at = (to_utc_iso(m.created_at, LEGACY_NAIVE_OFFSET_MINUTES)
+                      or datetime.now(timezone.utc).isoformat(timespec="microseconds"))
         msg_id = str(uuid.uuid4())
         kind = "image" if m.media_type == "image" else "text"
         direction = _resolve_import_direction(m)

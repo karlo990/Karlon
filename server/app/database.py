@@ -59,12 +59,17 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # refresh_jobs: error text + how many listings landed while running
         "ALTER TABLE refresh_jobs ADD COLUMN error_message TEXT",
         "ALTER TABLE refresh_jobs ADD COLUMN started_at    TEXT",
+        # messages: WhatsApp's own message id (the DOM data-id), so a
+        # re-scanned message is matched even if its text/key changed.
+        "ALTER TABLE messages ADD COLUMN wa_msg_id TEXT",
     ]
     for stmt in new_cols:
         try:
             conn.execute(stmt)
         except Exception:
             pass  # column already exists — harmless
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_wa_msg_id ON messages(chat_id, wa_msg_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_created ON messages(chat_id, created_at)")
     conn.commit()
 
 

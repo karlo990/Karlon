@@ -2,7 +2,7 @@
 
 from typing import List, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class UpsertChatIn(BaseModel):
@@ -53,6 +53,39 @@ class ImportMessageItem(BaseModel):
 
 class ImportMessagesIn(BaseModel):
     messages: List[ImportMessageItem]
+
+
+class SnapshotChatIn(BaseModel):
+    id: str
+    name: str
+    wa_name: Optional[str] = None
+    avatar_emoji: str = "?"
+    profile_pic_url: Optional[str] = None
+
+
+class SnapshotMessageIn(BaseModel):
+    external_key: str
+    wa_id: Optional[str] = None          # WhatsApp's DOM data-id
+    direction: str = "in"                # "in" | "out"
+    sender: str = "Unknown"
+    kind: str = "text"                   # "text" | "image"
+    text: Optional[str] = ""
+    created_at: str                      # ISO, UTC; screen order preserved to the ms
+    seq: Optional[int] = None
+    time_source: Optional[str] = None
+
+
+class ChatSnapshotIn(BaseModel):
+    """One chat as wa_bridge read it (routers/chat_sync.py)."""
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+    schema_name: str = Field("karlon.chat_snapshot/1", alias="schema")
+    chat: SnapshotChatIn
+    scanned_at: Optional[str] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+    reached_top: bool = False
+    messages: List[SnapshotMessageIn] = []
+    stats: Optional[dict] = None
 
 
 class LocationIn(BaseModel):

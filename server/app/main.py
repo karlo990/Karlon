@@ -12,6 +12,7 @@ from .routers import houses          # scraper -> server -> app "available house
 from .routers import house_refresh   # on-demand re-price for exact dates (audit §3)
 from .routers import customer_replies  # dedicated urgent-reply line (app → guest WA)
 from .routers import chat_view       # customer-facing chat view
+from .routers import chat_sync       # one chat snapshot per sync (wa_bridge)
 from . import auth                   # KARLON_PASSWORD (HF Space secret)
 
 init_db()
@@ -22,6 +23,7 @@ app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(auth.router)
 
+app.include_router(chat_sync.router)          # before chats/messages: /repair-names, /{id}/sync
 app.include_router(chats.router)
 app.include_router(messages.router)
 app.include_router(polls.router)
