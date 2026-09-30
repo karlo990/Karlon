@@ -81,11 +81,22 @@ def _is_name_boilerplate(s: str) -> bool:
     )
 
 
+# Invisible characters WhatsApp wraps around names and phone numbers
+# (bidi embedding marks, zero-width joiners/spaces, BOM).
+_INVISIBLE_RE = re.compile("[\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]")
+_PHONE_NAME_RE = re.compile(r"^\+\d[\d\s\-().]{6,}$")
+
+
 def clean_chat_name(raw: Optional[str]) -> str:
     """The real chat name inside whatever the sidebar row / header yielded,
-    or "" if it contained nothing but boilerplate."""
+    or "" if it contained nothing but boilerplate.
+
+    Phone numbers come back in one canonical form ("+263780438459"): the same
+    unsaved contact was seen both as "+263 78 043 8459" and "+263780438459",
+    and since a chat's id is a hash of its name, that was two chats."""
     if not raw:
         return ""
+    raw = _INVISIBLE_RE.sub("", raw)
     for line in re.split(r"[\r\n]+", raw):
         s = line
         for _ in range(3):  # "2 unread messages · 1 unread message" etc.
@@ -93,6 +104,8 @@ def clean_chat_name(raw: Optional[str]) -> str:
             s = _UNREAD_SUFFIX_RE.sub("", s)
         s = re.sub(r"\s+", " ", s).strip()
         if s and not _is_name_boilerplate(s):
+            if _PHONE_NAME_RE.match(s):
+                return "+" + re.sub(r"\D", "", s)
             return s
     return ""
 

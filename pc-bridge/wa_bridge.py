@@ -993,6 +993,7 @@ def discover_title_selector(page: Page, row_sel: str) -> Optional[str]:
     return None
 
 def dump_selectors(page: Page) -> None:
+    print(dom_report(page))
     print("\n=== Selector Discovery ===")
     try:
         items = page.evaluate("""() => {
@@ -1443,19 +1444,44 @@ def _find_and_click_row(page: Page, chat_name: str) -> bool:
                 row.click(position={"x": 5, "y": 5})
             except Exception:
                 return False
+            if _wait_chat_open(page, chat_name, timeout_s=8):
+                return True
+            # Second try on the row's centre (the corner can land on padding
+            # or the avatar, depending on WhatsApp's layout).
             try:
-                page.wait_for_selector(
-                    '[data-testid="conversation-panel-messages"],'
-                    ' [data-testid="msg-container"],'
-                    ' #main [role="row"]',
-                    timeout=15_000,
-                )
+                row.click()
             except Exception:
                 return False
-            time.sleep(0.8)
-            return True
+            return _wait_chat_open(page, chat_name, timeout_s=6)
         except Exception:
             continue
+    return False
+
+
+def _wait_chat_open(page: Page, chat_name: str, timeout_s: float) -> bool:
+    """True once the conversation header shows `chat_name`.
+
+    This used to wait for [data-testid="conversation-panel-messages"] (or
+    msg-container / #main [role="row"]). Current WhatsApp Web no longer
+    renders those, so every chat "could not open" even though the click had
+    opened it. The header name is the check that matters anyway — it is the
+    same identity gate outbound sends use. Only if no header name can be read
+    at all does a visible message list count as open."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        if get_open_chat_title(page) == chat_name:
+            time.sleep(0.6)            # let the message list render
+            return True
+        time.sleep(0.4)
+    if get_open_chat_title(page) is None:
+        try:
+            state = page.evaluate(_OPEN_STATE_JS)
+            if state and state.get("msgs"):
+                return True
+        except Exception:
+            pass
+    _report_dom_once(page, f"couldn't confirm '{chat_name}' opened "
+                           f"(header shows {get_open_chat_title(page)!r})")
     return False
 
 
@@ -1641,6 +1667,84 @@ _PROBE_FN = """function probe(el) {
 
 _PROBE_JS = "el => { " + _PROBE_FN + " return probe(el); }"
 
+# The open conversation's scrollable message list. Known markers first; else
+# the nearest scrolling ancestor of a message ([data-id]) inside #main —
+# which keeps working when WhatsApp drops its data-testid / role markers.
+_PANEL_FN = """function findPanel() {
+    const known = document.querySelector('[data-testid="conversation-panel-messages"]')
+               || document.querySelector('#main [role="application"]');
+    if (known) return known;
+    const scope = document.querySelector('#main') || document;
+    const msg = Array.from(scope.querySelectorAll('[data-id]'))
+        .find(m => !m.closest('#pane-side, [aria-label*="Chat list"]'));
+    if (!msg) return null;
+    for (let el = msg.parentElement; el && el !== document.body; el = el.parentElement) {
+        const oy = getComputedStyle(el).overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight) return el;
+    }
+    return msg.closest('#main') || msg.parentElement;
+}"""
+
+_OPEN_STATE_JS = ("() => { " + _PANEL_FN +
+                  " const p = findPanel(); return { msgs: p ? p.querySelectorAll('[data-id]').length : 0 }; }")
+
+# One-call map of the WhatsApp page: which of the markers this bridge relies
+# on exist, the header names, and the attribute skeleton of the first sidebar
+# row and first message (tags + attributes only, values cut to 24 chars).
+_DOM_REPORT_JS = """() => {
+    const sels = ['#main', '#main header', '#main header span[title]', '#main footer',
+        '[data-testid="conversation-panel-messages"]', '#main [role="application"]',
+        '#main [role="row"]', '#main [data-id]', '[data-pre-plain-text]',
+        '#pane-side', '#pane-side [role="listitem"]', '#pane-side [role="row"]',
+        '[role="grid"]', '[data-testid="cell-frame-container"]',
+        '[data-testid="cell-frame-title"]', 'span[title][dir="auto"]'];
+    const counts = {};
+    for (const s of sels) { try { counts[s] = document.querySelectorAll(s).length; } catch (e) { counts[s] = 'err'; } }
+    const ATTR = ['role', 'data-testid', 'data-id', 'data-icon', 'aria-label', 'title',
+                  'data-pre-plain-text', 'tabindex', 'dir', 'id'];
+    function skel(el, d) {
+        if (!el || d > 6) return '';
+        const a = [];
+        for (const n of ATTR) { const v = el.getAttribute && el.getAttribute(n);
+            if (v !== null && v !== undefined) a.push(n + '="' + String(v).slice(0, 24) + '"'); }
+        const kids = Array.from(el.children || []).slice(0, 4).map(c => skel(c, d + 1)).filter(Boolean);
+        return '  '.repeat(d) + '<' + el.tagName.toLowerCase() + (a.length ? ' ' + a.join(' ') : '') + '>'
+             + (kids.length ? '\\n' + kids.join('\\n') : '');
+    }
+    const headerTitles = Array.from(document.querySelectorAll('#main header [title]'))
+        .slice(0, 5).map(e => e.getAttribute('title'));
+    const row = document.querySelector('#pane-side [role="listitem"], #pane-side [role="row"], [data-testid="cell-frame-container"]');
+    const msg = document.querySelector('#main [data-id]');
+    return { counts, headerTitles, row: skel(row, 0), header: skel(document.querySelector('#main header'), 0),
+             msg: skel(msg, 0) };
+}"""
+
+_dom_reported = False
+
+
+def dom_report(page: Page) -> str:
+    try:
+        r = page.evaluate(_DOM_REPORT_JS)
+    except Exception as e:
+        return f"[dom-report] failed: {e}"
+    lines = ["[dom-report] ---- WhatsApp page structure (send this if chats won't sync) ----"]
+    lines += [f"[dom-report] {k:48} {v}" for k, v in r["counts"].items()]
+    lines.append(f"[dom-report] header titles: {r['headerTitles']}")
+    for part in ("row", "header", "msg"):
+        lines.append(f"[dom-report] first {part}:")
+        lines += [f"[dom-report]   {l}" for l in (r[part] or "(none)").split("\n")[:40]]
+    lines.append("[dom-report] ---- end ----")
+    return "\n".join(lines)
+
+
+def _report_dom_once(page: Page, reason: str) -> None:
+    global _dom_reported
+    if _dom_reported:
+        return
+    _dom_reported = True
+    print(f"  ! {reason}")
+    print(dom_report(page))
+
 
 def probe_message(el) -> dict:
     """{'direction': 'in'|'out'|'unknown', 'via': str, 'dataId': str} for one
@@ -1702,9 +1806,8 @@ def resolve_directions(entries: list[dict]) -> None:
 # two hours off against app-sent messages (stored in UTC).
 
 _WALK_JS = """() => {
-    """ + _PROBE_FN + """
-    const panel = document.querySelector('[data-testid="conversation-panel-messages"]')
-               || document.querySelector('#main [role="application"]');
+    """ + _PROBE_FN + _PANEL_FN + """
+    const panel = findPanel();
     if (!panel) return null;
     const TIME = /^\\d{1,2}[:.]\\d{2}(\\s?[AaPp]\\.?\\s?[Mm]\\.?)?$/;
     const QUOTE = '[data-testid="quoted-message"], [aria-label="Quoted message"], [aria-label^="Quoted"]';
@@ -1999,24 +2102,22 @@ def build_chat_snapshot(
 def _load_history(page: Page, max_scroll_rounds: int) -> bool:
     """Scroll the open chat up until the oldest message stops changing (True:
     reached the top of what WhatsApp will load) or the round cap is hit."""
-    panel = page.query_selector(
-        '[data-testid="conversation-panel-messages"], #main [role="application"]'
-    )
+    try:
+        panel = page.evaluate_handle("() => { " + _PANEL_FN + " return findPanel(); }").as_element()
+    except Exception:
+        panel = None
     if not panel:
         return False
-    probe_sel = (
-        '[data-testid="conversation-panel-messages"] [data-id],'
-        ' #main [role="application"] [data-id]'
-    )
     prev_top, stall = None, 0
     for _ in range(max_scroll_rounds):
         try:
-            panel.evaluate("el => el.scrollTop = 0")
+            panel.evaluate("el => { el.scrollTop = 0; }")
         except Exception:
             return False
         time.sleep(0.5)
         try:
-            top_id = page.eval_on_selector(probe_sel, "el => el.getAttribute('data-id')")
+            top_id = panel.evaluate(
+                "el => { const m = el.querySelector('[data-id]'); return m ? m.getAttribute('data-id') : null; }")
         except Exception:
             top_id = None
         if top_id is not None and top_id == prev_top:
@@ -2034,6 +2135,7 @@ def scan_chat(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> Option
     reached_top = _load_history(page, max_scroll_rounds)
     units = walk_chat(page)
     if units is None:
+        _report_dom_once(page, f"no message list found in the open chat '{chat_name}'")
         return None
     return build_chat_snapshot(units, chat_name, reached_top=reached_top)
 
