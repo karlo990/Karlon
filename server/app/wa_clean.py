@@ -294,3 +294,17 @@ def to_utc_iso(ts: Optional[str], naive_offset_minutes: int = 0) -> Optional[str
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone(timedelta(minutes=naive_offset_minutes)))
     return dt.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def to_offset_iso(ts: Optional[str], offset_minutes: int) -> Optional[str]:
+    """A stored timestamp re-expressed at a fixed UTC offset, e.g. Harare
+    (+02:00): '2026-09-30T10:13:00+00:00' -> '2026-09-30T12:13:00.000000+02:00'.
+    Same instant, local wall-clock digits. Storage stays UTC (it's what sorts);
+    this is for display, because a client that shows the ISO digits as-is (the
+    Android app did) otherwise showed every time two hours early. Unparseable
+    input is returned unchanged."""
+    utc = to_utc_iso(ts, offset_minutes)
+    if utc is None:
+        return ts
+    tz = timezone(timedelta(minutes=offset_minutes))
+    return datetime.fromisoformat(utc).astimezone(tz).isoformat(timespec="microseconds")

@@ -54,6 +54,10 @@ CHAT_SNAPSHOT_DIR = os.environ.get("CHAT_SNAPSHOT_DIR", "./chat_snapshots")
 WA_UTC_OFFSET_MINUTES = (int(os.environ["WA_UTC_OFFSET_MINUTES"])
                          if os.environ.get("WA_UTC_OFFSET_MINUTES", "").lstrip("-").isdigit() else None)
 
+# Reload WhatsApp Web every N hours (0 = never). A WhatsApp Web tab left
+# open for a day grows in memory and slows every scroll/read on the PC.
+WA_RELOAD_HOURS = _int_env("WA_RELOAD_HOURS", 6, minimum=0)
+
 # Optional shared secret sent as `Authorization: Bearer <token>` on every request
 # (see karlon_client.py). Unset = no header, exactly as before. The server must
 # enforce it for it to protect anything.

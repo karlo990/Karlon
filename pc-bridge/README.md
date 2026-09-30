@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 24 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 36 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -50,6 +50,28 @@ WhatsApp's own sidebar order). For each chat the bridge:
    stale rows in the snapshot's time window, capped by a safety limit. It
    reports which photos it doesn't have yet, and the bridge uploads only
    those, each with its WhatsApp time.
+
+How a chat is read. Current WhatsApp Web only draws message content near
+the visible part of the list; everything else is an empty placeholder. So the
+bridge scrolls through the chat in overlapping steps and keeps each message's
+drawn version. A message that was never drawn is counted as `not drawn`,
+not as rejected, and nothing before it is pruned on the server.
+
+* **full** read (first time a chat is synced by this run, or `--chat`): loads
+  history, then steps top to bottom.
+* **recent** read (a chat whose sidebar row changed): only the last ~4 screens.
+  This is the live path: a new message shows in Karlon within one pass, a few
+  seconds per chat.
+
+Each line in the log shows the mode and time taken, e.g.
+`Karl [recent, 2.1s]: 29 msg — +1 new, 0 fixed, 0 stale removed`.
+Chats that can't be opened are retried after 1, 2, 4… minutes (max 30)
+instead of on every pass. WhatsApp Web is reloaded every `WA_RELOAD_HOURS`
+(default 6) to keep the browser's memory in check.
+
+The server stores times in UTC and serves them in Harare time
+(`DISPLAY_TZ_OFFSET_MINUTES`, default 120), so the Android app shows the same
+times as WhatsApp.
 
 Try it on one chat first:
 

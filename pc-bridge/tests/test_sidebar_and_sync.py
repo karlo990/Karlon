@@ -76,10 +76,28 @@ def test_failed_chat_is_not_fingerprinted(monkeypatch):
     state = {"ok": False}
     opened = []
     _fake_pass(monkeypatch, chats, opened, ok=lambda: state["ok"], full_every=100)
+    monkeypatch.setattr(w, "_chat_failures", {})
     w.sync_once(None, False, False)                             # sync fails
     state["ok"] = True
-    w.sync_once(None, False, False)                             # must retry, not skip
+    w.sync_once(None, False, False)                             # backing off: not retried yet
+    assert opened == ["Thabo"]
+    w._chat_failures["Thabo"] = (1, 0.0)                        # back-off expired
+    w.sync_once(None, False, False)                             # retried (was never fingerprinted)
     assert opened == ["Thabo", "Thabo"]
+    assert "Thabo" not in w._chat_failures
+
+
+def test_first_read_is_full_then_recent(monkeypatch):
+    chats = [{"name": "Thabo", "preview": "", "unread": 0, "pic_src": None, "fingerprint": "a"}]
+    modes = []
+    _fake_pass(monkeypatch, chats, [], full_every=100)
+    monkeypatch.setattr(w, "_synced_once", set())
+    monkeypatch.setattr(w, "_chat_failures", {})
+    monkeypatch.setattr(w, "sync_chat", lambda page, name, *a, mode="full", **k: modes.append(mode) or {})
+    w.sync_once(None, False, False)
+    chats[0]["fingerprint"] = "b"                                # new message arrives
+    w.sync_once(None, False, False)
+    assert modes == ["full", "recent"]
 
 
 def test_urgent_reply_is_delivered_between_chats_even_if_normal_queue_is_empty(monkeypatch):

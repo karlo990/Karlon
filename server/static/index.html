@@ -920,6 +920,18 @@
         box.appendChild(renderMessage(payload.data));
         if(atBottom) box.scrollTop = box.scrollHeight;
         loadChats(); // refresh preview text in list
+      } else if(payload.type === 'refresh' && chatId === activeChatId){
+        // A WhatsApp sync corrected, re-ordered or removed messages in this
+        // chat: re-fetch it (this event used to be ignored, so an open chat
+        // showed nothing new until you clicked away and back).
+        const box = $('#messages');
+        const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
+        fetch(`/api/chats/${chatId}/messages`).then(r => r.json()).then(msgs => {
+          if(chatId !== activeChatId) return;
+          renderMessages(msgs);
+          if(atBottom) box.scrollTop = box.scrollHeight;
+        });
+        loadChats();
       } else if(payload.type === 'poll_update'){
         const bubble = document.querySelector(`.poll-bubble[data-poll-id="${payload.data.poll_id}"]`);
         if(bubble) fillPollOptions(bubble, payload.data.options);

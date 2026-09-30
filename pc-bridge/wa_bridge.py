@@ -80,7 +80,7 @@ from playwright.sync_api import Page, sync_playwright
 from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_session
 from local_config import (
     KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, WA_FULL_SWEEP_EVERY,
-    WA_SYNC_LAST_N_CHATS, CHAT_SNAPSHOT_DIR, WA_UTC_OFFSET_MINUTES,
+    WA_SYNC_LAST_N_CHATS, CHAT_SNAPSHOT_DIR, WA_UTC_OFFSET_MINUTES, WA_RELOAD_HOURS,
     print_active_config,
 )
 from wa_clean import (
@@ -925,10 +925,9 @@ def _process_items(
         # Identity gate: re-read who the open conversation actually is from
         # WA's own header, independent of the sidebar click that got us
         # here, and refuse to send on a mismatch instead of trusting it.
-        open_title = get_open_chat_title(page)
-        if open_title and open_title.strip() != wa_name.strip():
+        if header_shows(page, wa_name) is False:
             _requeue_or_fail(
-                f"open chat is '{open_title}', expected '{wa_name}' — refusing to send"
+                f"open chat is '{_short(get_open_chat_title(page))}', expected '{wa_name}' — refusing to send"
             )
             continue
 
@@ -1116,6 +1115,20 @@ def get_profile_photo_b64(page: Page, debug: bool = False) -> Optional[str]:
         except Exception:
             pass
     return b64
+
+def reload_whatsapp(page: Page) -> None:
+    """Fresh WhatsApp Web page (see WA_RELOAD_HOURS). The session is kept on
+    disk, so no QR scan is needed; if the chat list doesn't come back within a
+    minute the loop just carries on and the next pass retries."""
+    print("[wa_bridge] reloading WhatsApp Web to free memory...")
+    try:
+        page.reload(wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_selector(_CHATLIST_CONTAINER, timeout=60_000)
+        time.sleep(3)
+        print("[wa_bridge] reloaded.")
+    except Exception as e:
+        print(f"[wa_bridge] reload incomplete ({e}) — continuing")
+
 
 def launch_page(headless: bool = False):
     pw = sync_playwright().start()
@@ -1380,34 +1393,57 @@ def get_chat_rows(page: Page, skip_names: Optional[set] = None,
             continue
     return out
 
-def get_open_chat_title(page: Page) -> Optional[str]:
-    """
-    Read back the title WhatsApp is *actually* showing in the open
-    conversation header. Used as an identity gate right after
-    open_chat_row() so the tool never sends on the strength of "a click
-    landed somewhere" — it re-derives who the open chat really is from
-    the DOM and compares that against the intended recipient before any
-    send is allowed to proceed. Full DOM access, hard restriction to intent.
+_HEADER_NAMES_JS = """() => {
+    const h = document.querySelector('#main header');
+    if (!h) return [];
+    const out = [];
+    // The chat's own name: current WhatsApp puts it in a span with NO title
+    // attribute (data-testid="conversation-info-header"); the only span WITH
+    // a title is a group's member list ("Anele, Class, …, You").
+    for (const e of h.querySelectorAll('[data-testid="conversation-info-header"] span[dir="auto"], span[data-testid="conversation-info-header"], span[dir="auto"]'))
+        out.push((e.innerText || e.textContent || '').trim());
+    for (const e of h.querySelectorAll('[title]')) out.push(e.getAttribute('title') || '');
+    return out;
+}"""
 
-    The header's outer clickable wrapper carries a generic instructional
-    title ("Click here for contact info" / "...for group info") and is a
-    span too, so it matches before the real name span nested inside it —
-    every candidate is checked against a denylist of that boilerplate
-    rather than trusting the first title-bearing span found.
-    """
+
+def get_open_chat_names(page: Page) -> list[str]:
+    """Every name-like string in the open conversation's header, cleaned —
+    the chat's name plus whatever else WhatsApp shows there (a group's member
+    list, "Profile details"). Identity checks ask whether the expected name is
+    among them, rather than trusting whichever string comes first."""
     try:
-        for el in page.query_selector_all('#main header span[title]'):
-            title = clean_chat_name(_safe_get_attr(el, "title"))
-            if title and title.lower() not in _HEADER_TITLE_DENYLIST:
-                return title
-        # Fallback: any header span with real text, same filters.
-        for el in page.query_selector_all('#main header span[dir="auto"]'):
-            text = clean_chat_name(_safe_inner_text(el))
-            if text and text.lower() not in _HEADER_TITLE_DENYLIST:
-                return text
+        raw = page.evaluate(_HEADER_NAMES_JS) or []
     except Exception:
-        pass
-    return None
+        return []
+    names: list[str] = []
+    for r in raw:
+        n = clean_chat_name(r)
+        if n and n.lower() not in _HEADER_TITLE_DENYLIST and n.lower() != "profile details" and n not in names:
+            names.append(n)
+    return names
+
+
+def get_open_chat_title(page: Page) -> Optional[str]:
+    """The open chat's name as WhatsApp's header shows it (first candidate),
+    or None if the header can't be read. Prefer header_shows() for identity
+    checks — a group header also contains its member list."""
+    names = get_open_chat_names(page)
+    return names[0] if names else None
+
+
+def header_shows(page: Page, name: str) -> Optional[bool]:
+    """True/False: does the open conversation's header show `name`?
+    None: no header name readable at all."""
+    names = get_open_chat_names(page)
+    if not names:
+        return None
+    return clean_chat_name(name) in names or name in names
+
+
+def _short(s: Optional[str], n: int = 60) -> str:
+    s = s or ""
+    return s if len(s) <= n else s[:n] + "…"
 
 
 def should_sync(chat: dict, sync_all: bool) -> bool:
@@ -1469,11 +1505,11 @@ def _wait_chat_open(page: Page, chat_name: str, timeout_s: float) -> bool:
     at all does a visible message list count as open."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        if get_open_chat_title(page) == chat_name:
+        if header_shows(page, chat_name):
             time.sleep(0.6)            # let the message list render
             return True
         time.sleep(0.4)
-    if get_open_chat_title(page) is None:
+    if header_shows(page, chat_name) is None:
         try:
             state = page.evaluate(_OPEN_STATE_JS)
             if state and state.get("msgs"):
@@ -1481,7 +1517,7 @@ def _wait_chat_open(page: Page, chat_name: str, timeout_s: float) -> bool:
         except Exception:
             pass
     _report_dom_once(page, f"couldn't confirm '{chat_name}' opened "
-                           f"(header shows {get_open_chat_title(page)!r})")
+                           f"(header shows {_short(get_open_chat_title(page))!r})")
     return False
 
 
@@ -1620,7 +1656,7 @@ def open_chat_row(page: Page, chat_name: str) -> bool:
 # Direction signals for one message element, tried in order of how well each
 # has survived WhatsApp's DOM changes; the first that answers wins and `via`
 # records which one. Shared by probe_message() and the whole-chat walk below.
-_PROBE_FN = """function probe(el) {
+_PROBE_FN = """function probe(el, geoEl) {
     const msgRow = el.closest('[data-id]') || el;
     const dataId = (msgRow.getAttribute && msgRow.getAttribute('data-id')) || '';
     const done = (direction, via) => ({ direction, via, dataId });
@@ -1641,21 +1677,30 @@ _PROBE_FN = """function probe(el) {
         if (t.includes('tail-in'))  return done('in', 'tail');
     }
 
-    // 3. legacy class names
-    const cls = msgRow.className || '';
-    if (/\\bmessage-out\\b/.test(cls)) return done('out', 'class');
-    if (/\\bmessage-in\\b/.test(cls))  return done('in', 'class');
+    // 3. message-out / message-in class on the row, inside it or around it
+    if (msgRow.closest('.message-out') || msgRow.querySelector('.message-out')) return done('out', 'class');
+    if (msgRow.closest('.message-in')  || msgRow.querySelector('.message-in'))  return done('in', 'class');
 
     // 4. WhatsApp's own message key: "true_<jid>_<id>" = sent by this account
+    //    (older builds; current ones use a bare id)
     if (dataId.startsWith('true_'))  return done('out', 'data-id');
     if (dataId.startsWith('false_')) return done('in', 'data-id');
 
-    // 5. geometry — outgoing bubbles sit in the right half of the pane,
-    // incoming in the left. A dead-centre bubble (within 5% of the pane
-    // midpoint) is refused rather than guessed.
+    // 5. delivery ticks / pending clock — WhatsApp draws these only on
+    //    messages YOU sent, photos included
+    const tick = Array.from(msgRow.querySelectorAll('[data-icon], [data-testid]')).find(i => {
+        const k = (i.getAttribute('data-icon') || '') + ' ' + (i.getAttribute('data-testid') || '');
+        return /(dblcheck|msg-check|status-check|msg-time|status-time)/.test(k);
+    });
+    if (tick) return done('out', 'ticks');
+
+    // 6. geometry of the bubble CONTENT (text block or photo) — outgoing sits
+    //    right of the pane's centre, incoming left. The row element itself can
+    //    span the full width, so it is not measured. Dead centre is refused.
     const pane = el.closest('[data-testid="conversation-panel-messages"], [role="application"], #main');
+    const target = geoEl || el;
     if (pane) {
-        const p = pane.getBoundingClientRect(), r = el.getBoundingClientRect();
+        const p = pane.getBoundingClientRect(), r = target.getBoundingClientRect();
         if (p.width > 0 && r.width > 0) {
             const offset = ((r.left + r.width / 2) - (p.left + p.width / 2)) / p.width;
             if (offset >  0.05) return done('out', 'geometry');
@@ -1810,11 +1855,22 @@ _WALK_JS = """() => {
     const panel = findPanel();
     if (!panel) return null;
     const TIME = /^\\d{1,2}[:.]\\d{2}(\\s?[AaPp]\\.?\\s?[Mm]\\.?)?$/;
-    const QUOTE = '[data-testid="quoted-message"], [aria-label="Quoted message"], [aria-label^="Quoted"]';
+    const QUOTE = '[data-testid="quoted-message"], [aria-label="Quoted message"], [aria-label^="Quoted"], [class*="quoted"]';
     const inQuote = n => !!(n.closest && n.closest(QUOTE));
     const txt = n => ((n && n.innerText) || '').trim();
-    const y = n => n.getBoundingClientRect().top + panel.scrollTop;
+    const pTop = panel.getBoundingClientRect().top;
+    const y = n => n.getBoundingClientRect().top - pTop + panel.scrollTop;
     const MEDIA = ['audio-play', 'ptt', 'audio-download', 'document', 'video-pip', 'media-play', 'sticker'];
+    // A reply's text starts with the message it quotes ("You\\nKARLCON…pdf •
+    // 4 pages\\nWe are rather an agent…"). Strip a leading block whose text is
+    // exactly the start of the message and shorter than it.
+    function stripQuote(el, text) {
+        for (const q of el.querySelectorAll(QUOTE + ', div[role="button"], span[role="button"]')) {
+            const qt = txt(q);
+            if (qt && qt.length < text.length && text.startsWith(qt)) return text.slice(qt.length).trim();
+        }
+        return text;
+    }
 
     const outermost = Array.from(panel.querySelectorAll('[data-id]'))
         .filter(e => !(e.parentElement && e.parentElement.closest('[data-id]')));
@@ -1849,25 +1905,30 @@ _WALK_JS = """() => {
                 .find(n => !inQuote(n) && !n.hasAttribute('aria-label') && !TIME.test(txt(n)));
             text = txt(s);
         }
+        if (text) text = stripQuote(el, text);
         let time = '';
         const meta = el.querySelector('[data-testid="msg-meta"], [data-testid="msg-time"]');
         const cands = meta ? [meta, ...meta.querySelectorAll('span')]
                            : Array.from(el.querySelectorAll('span, div')).filter(n => !inQuote(n));
         for (const n of cands) { const t = txt(n); if (TIME.test(t)) time = t; }
-        let hasImage = false;
+        let img = null;
         for (const c of el.querySelectorAll('img[src]')) {
             const s = c.getAttribute('src') || '';
             if (s.startsWith('data:image/svg') || inQuote(c)) continue;
             const r = c.getBoundingClientRect();
-            if (r.width * r.height > 2000) { hasImage = true; break; }
+            if (r.width * r.height > 2000) { img = c; break; }
         }
         let media = '';
         for (const i of el.querySelectorAll('[data-icon], [data-testid]')) {
             const k = (i.getAttribute('data-icon') || i.getAttribute('data-testid') || '');
             if (MEDIA.some(m => k.includes(m))) { media = k; break; }
         }
-        const p = probe(el);
-        out.push({ type: 'msg', dataId: p.dataId, pre, text, time, hasImage, media,
+        // WhatsApp keeps a placeholder for messages far from the visible area:
+        // the row and its id exist, the content doesn't. Such a row is NOT an
+        // empty message — collect_units() scrolls to it to read it.
+        const shell = !img && !txt(el);
+        const p = probe(el, preEl || img || null);
+        out.push({ type: 'msg', dataId: p.dataId, pre, text, time, hasImage: !!img, media, shell,
                    direction: p.direction, via: p.via, y: y(el) });
     }
     out.sort((a, b) => a.y - b.y);   // Array.prototype.sort is stable
@@ -1956,8 +2017,10 @@ def build_chat_snapshot(
     rejected: list[dict] = []
     entries: list[dict] = []
     seen_ids: set[str] = set()
-    stats = {"rows": len(units), "unread_dividers": 0, "date_dividers": 0, "duplicates": 0}
+    stats = {"rows": len(units), "unread_dividers": 0, "date_dividers": 0, "duplicates": 0,
+             "not_rendered": 0}
     current_date = None
+    last_gap = -1          # len(entries) when the last never-rendered row was seen
 
     def reject(reason: str, text: str) -> None:
         rejected.append({"reason": reason, "text": (text or "")[:120]})
@@ -1978,6 +2041,15 @@ def build_chat_snapshot(
         wa_id = u.get("dataId") or ""
         if wa_id and wa_id in seen_ids:
             stats["duplicates"] += 1
+            continue
+        if u.get("shell"):
+            # WhatsApp never drew this message's content while we scrolled
+            # past it. Its content is unknown, so nothing before it may be
+            # pruned on the server (see window_start below).
+            stats["not_rendered"] += 1
+            last_gap = len(entries)
+            if wa_id:
+                seen_ids.add(wa_id)
             continue
         pre = u.get("pre") or ""
         ts_raw, raw_sender = parse_pre_plain(pre)
@@ -2081,6 +2153,12 @@ def build_chat_snapshot(
     stats.update(messages=len(messages), rejected=by_reason, time_sources=by_source, clamped=clamped)
 
     scanned_at = _to_utc_iso(now_local, tz)
+    # The server prunes imported rows inside [window_start, window_end] that the
+    # snapshot doesn't contain. Only a stretch read completely may count: the
+    # window starts after the last message whose content was never drawn, and
+    # is absent (no pruning) if that was the newest message.
+    first_complete = last_gap if last_gap >= 0 else 0
+    window_start = messages[first_complete]["created_at"] if first_complete < len(messages) else None
     return {
         "schema": SNAPSHOT_SCHEMA,
         "chat": {
@@ -2090,9 +2168,10 @@ def build_chat_snapshot(
             "avatar_emoji": avatar_tag(chat_name),
         },
         "scanned_at": scanned_at,
-        "window_start": messages[0]["created_at"] if messages else None,
+        "window_start": window_start,
         "window_end": scanned_at,
         "reached_top": reached_top,
+        "complete": stats["not_rendered"] == 0,
         "messages": messages,
         "rejected": rejected,
         "stats": stats,
@@ -2130,14 +2209,127 @@ def _load_history(page: Page, max_scroll_rounds: int) -> bool:
     return False
 
 
-def scan_chat(page: Page, chat_name: str, max_scroll_rounds: int = 12) -> Optional[dict]:
-    """Load the open chat's history and return its snapshot (None on failure)."""
-    reached_top = _load_history(page, max_scroll_rounds)
-    units = walk_chat(page)
+# How the chat is read. WhatsApp only draws message content near the visible
+# part of the list; everything else is an empty placeholder with the right id.
+# Reading the whole list from one scroll position (as earlier builds did, from
+# the TOP, after loading history) saw the newest messages as blanks: "rejected:
+# empty 67", the newest replies missing for hours, and the server pruning then
+# re-adding real messages every pass. So the list is read in overlapping
+# steps, each step's drawn messages are merged by id, and a message counts
+# only once some step has actually drawn it.
+STEP_WAIT_SEC = 0.35       # time for WhatsApp to draw a step
+STEP_FRACTION = 0.7        # each step moves 70% of a screen (30% overlap)
+RECENT_SCREENS = 3         # "recent" mode reads the last ~4 screens
+MAX_SCAN_STEPS = 400
+
+
+def _panel_handle(page: Page):
+    try:
+        return page.evaluate_handle("() => { " + _PANEL_FN + " return findPanel(); }").as_element()
+    except Exception:
+        return None
+
+
+def _panel_state(panel) -> dict:
+    return panel.evaluate("el => ({ top: el.scrollTop, h: el.clientHeight, H: el.scrollHeight })")
+
+
+def _unit_key(u: dict, prev_msg_key: Optional[str]) -> Optional[str]:
+    if u.get("type") == "msg":
+        if u.get("dataId"):
+            return "m:" + u["dataId"]
+        return "n:" + (u.get("pre") or "") + "|" + (u.get("text") or "")
+    t = (u.get("text") or "").strip()
+    return ("d:" + t + "|" + str(prev_msg_key)) if t else None
+
+
+def _unit_score(u: dict) -> float:
+    if u.get("type") != "msg":
+        return 1.0
+    return ((0 if u.get("shell") else 4) + (2 if u.get("hasImage") else 0)
+            + (1 if u.get("pre") else 0) + min(len(u.get("text") or ""), 5000) / 5000)
+
+
+def merge_walks(walks: list[list[dict]]) -> list[dict]:
+    """Merge the rows seen at successive scroll positions into one ordered
+    list: rows are identified by WhatsApp message id (dividers by text and
+    position), ordered as the walks saw them, and each keeps its best-drawn
+    version (a real bubble beats a placeholder)."""
+    order: list[str] = []
+    best: dict[str, dict] = {}
+    for units in walks:
+        anchor, prev_msg = None, None
+        for u in units:
+            key = _unit_key(u, prev_msg)
+            if u.get("type") == "msg":
+                prev_msg = key
+            if key is None:
+                continue
+            if key in best:
+                if _unit_score(u) > _unit_score(best[key]):
+                    best[key] = u
+                anchor = key
+                continue
+            best[key] = u
+            if anchor is None:
+                if order:
+                    order.append(key)   # scanning downwards: unanchored = below
+                else:
+                    order.append(key)
+            else:
+                order.insert(order.index(anchor) + 1, key)
+            anchor = key
+    return [best[k] for k in order]
+
+
+def collect_units(page: Page, mode: str = "full", max_scroll_rounds: int = 12):
+    """(units, reached_top) for the open chat, read in overlapping steps.
+      mode "full":   load history to the top, then step down to the bottom.
+      mode "recent": only the last ~RECENT_SCREENS+1 screens — the fast path
+                     for a chat that just got new messages."""
+    panel = _panel_handle(page)
+    if not panel:
+        return None, False
+    reached_top = False
+    try:
+        if mode == "full":
+            reached_top = _load_history(page, max_scroll_rounds)
+            start = 0
+        else:
+            panel.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+            time.sleep(STEP_WAIT_SEC)
+            st = _panel_state(panel)
+            start = max(0, st["H"] - (RECENT_SCREENS + 1) * st["h"])
+        walks, pos = [], start
+        for _ in range(MAX_SCAN_STEPS):
+            panel.evaluate(f"el => {{ el.scrollTop = {int(pos)}; }}")
+            time.sleep(STEP_WAIT_SEC)
+            w = walk_chat(page)
+            if w is None:
+                break
+            walks.append(w)
+            st = _panel_state(panel)
+            if st["top"] + st["h"] >= st["H"] - 4:
+                break
+            pos = st["top"] + max(50, int(st["h"] * STEP_FRACTION))
+    except Exception as e:
+        print(f"    ! scroll-read failed: {e}")
+        return None, reached_top
+    if not walks:
+        return None, reached_top
+    return merge_walks(walks), reached_top
+
+
+def scan_chat(page: Page, chat_name: str, max_scroll_rounds: int = 12,
+              mode: str = "full") -> Optional[dict]:
+    """Read the open chat (see collect_units) and return its snapshot."""
+    units, reached_top = collect_units(page, mode, max_scroll_rounds)
     if units is None:
         _report_dom_once(page, f"no message list found in the open chat '{chat_name}'")
         return None
-    return build_chat_snapshot(units, chat_name, reached_top=reached_top)
+    snap = build_chat_snapshot(units, chat_name, reached_top=reached_top)
+    snap["stats"]["mode"] = mode
+    return snap
 
 
 def save_snapshot(snapshot: dict) -> Path:
@@ -2168,28 +2360,66 @@ def push_snapshot(snapshot: dict) -> Optional[dict]:
     return r.json()
 
 
+_FIND_MSG_JS = """(id) => Array.from(document.querySelectorAll('[data-id]'))
+    .find(e => e.getAttribute('data-id') === id) || null"""
+
+
 def _image_b64_for(page: Page, wa_id: str) -> Optional[str]:
-    """Bytes of the photo in message `wa_id` of the open chat, as base64."""
-    try:
-        row = page.query_selector(f'[data-id="{wa_id}"]') if '"' not in wa_id else None
-    except Exception:
-        row = None
-    if not row:
-        return None
-    for img in row.query_selector_all("img[src]"):
-        src = _safe_get_attr(img, "src")
-        if not src or src.startswith("data:image/svg"):
-            continue
-        box = img.bounding_box()
-        if not box or box["width"] * box["height"] <= 2_000:
-            continue
-        b64 = fetch_blob_b64(page, src)
-        if b64:
-            return b64
+    """Bytes of the photo in message `wa_id` of the open chat, as base64.
+    The message is scrolled into view first and given time to draw: a photo
+    far from the visible area is only a placeholder ("couldn't read photo")."""
+    def find():
         try:
-            return base64.b64encode(img.screenshot()).decode("ascii")
+            return page.evaluate_handle(_FIND_MSG_JS, wa_id).as_element()
         except Exception:
             return None
+
+    row = find()
+    if row is None:                    # not in the DOM at all: search upwards
+        panel = _panel_handle(page)
+        if panel:
+            try:
+                panel.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+                for _ in range(MAX_SCAN_STEPS):
+                    time.sleep(STEP_WAIT_SEC)
+                    row = find()
+                    st = _panel_state(panel)
+                    if row is not None or st["top"] <= 0:
+                        break
+                    panel.evaluate(f"el => {{ el.scrollTop = {max(0, int(st['top'] - st['h'] * STEP_FRACTION))}; }}")
+            except Exception:
+                row = None
+    if row is None:
+        return None
+    try:
+        row.scroll_into_view_if_needed(timeout=3_000)
+    except Exception:
+        pass
+    deadline = time.time() + 4
+    while time.time() < deadline:
+        best, best_blob = None, None
+        for img in row.query_selector_all("img[src]"):
+            src = _safe_get_attr(img, "src")
+            if not src or src.startswith("data:image/svg"):
+                continue
+            box = img.bounding_box()
+            if not box or box["width"] * box["height"] <= 2_000:
+                continue
+            if src.startswith("blob:"):
+                best_blob = (img, src)
+                break
+            best = best or (img, src)
+        pick = best_blob or (best if time.time() > deadline - 1.5 else None)
+        if pick:
+            img, src = pick
+            b64 = fetch_blob_b64(page, src)
+            if b64:
+                return b64
+            try:
+                return base64.b64encode(img.screenshot()).decode("ascii")
+            except Exception:
+                return None
+        time.sleep(0.3)
     return None
 
 
@@ -2361,6 +2591,14 @@ def _looks_like_profile_pic(media_url: str) -> bool:
 # anti-entropy sweep as the backstop.
 _chat_fingerprints: dict[str, str] = {}
 _sync_pass = 0
+# Chats read in full at least once by this process; after that, a change only
+# needs the recent screens re-read (seconds, not minutes, per chat).
+_synced_once: set[str] = set()
+# Chats that failed to open/read: name -> (failures, retry-after time). A chat
+# that can't be opened used to cost ~30 s on EVERY pass, delaying all others.
+_chat_failures: dict[str, tuple[int, float]] = {}
+FAIL_BACKOFF_SEC = 60
+FAIL_BACKOFF_MAX_SEC = 1800
 
 
 def select_targets(page: Page, sync_all: bool, only_chat: Optional[str], limit: int) -> list[dict]:
@@ -2378,7 +2616,7 @@ def select_targets(page: Page, sync_all: bool, only_chat: Optional[str], limit: 
 
 
 def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
-              dry_run: bool = False) -> Optional[dict]:
+              dry_run: bool = False, mode: str = "full") -> Optional[dict]:
     """Open one chat, build its snapshot, save it, and (unless dry_run) apply
     it on the server. Returns the snapshot, or None if the chat was skipped."""
     if not open_chat_row(page, name):
@@ -2386,18 +2624,20 @@ def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
         return None
     # Identity gate, same rule as outbound sends: the conversation WhatsApp
     # actually has open must be the one we meant, or nothing is written.
-    header = get_open_chat_title(page)
-    if header and header != name:
-        print(f"  ! opened '{header}' while looking for '{name}' — skipping this chat")
+    if header_shows(page, name) is False:
+        print(f"  ! opened '{_short(get_open_chat_title(page))}' while looking for '{name}' — skipping this chat")
         return None
 
-    snapshot = scan_chat(page, name, max_scroll_rounds=max_scroll_rounds)
+    t0 = time.time()
+    snapshot = scan_chat(page, name, max_scroll_rounds=max_scroll_rounds, mode=mode)
     if snapshot is None:
         print(f"  ! couldn't read messages for {name}")
         return None
     path = save_snapshot(snapshot)
     st = snapshot["stats"]
     rej = ", ".join(f"{k} {v}" for k, v in sorted(st["rejected"].items())) or "none"
+    if st.get("not_rendered"):
+        rej += f"; {st['not_rendered']} not drawn (no pruning before them)"
     label = "\U0001f4f1 " if is_unsaved_number(name) else "   "
     if dry_run:
         print(f"  {label}{name}: {st['messages']} message(s), rejected: {rej}  → {path}")
@@ -2432,7 +2672,7 @@ def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
     uploaded = upload_snapshot_images(page, snapshot, missing) if missing else 0
     skipped_note = f"  (prune skipped: {report['prune_skipped']})" if report.get("prune_skipped") else ""
     print(
-        f"  {label}{name}: {st['messages']} msg — +{report.get('inserted', 0)} new, "
+        f"  {label}{name} [{mode}, {time.time() - t0:.1f}s]: {st['messages']} msg — +{report.get('inserted', 0)} new, "
         f"{report.get('updated', 0)} fixed, {report.get('pruned', 0)} stale removed"
         f"{f', {uploaded} photo(s)' if uploaded else ''}; rejected: {rej}{skipped_note}"
     )
@@ -2451,26 +2691,42 @@ def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: i
              else f"last {limit} chats" if limit > 0 and not sync_all else "all flagged chats")
     print(f"Syncing {len(targets)} chat(s) ({scope}){'  [full sweep]' if full_sweep else ''}"
           f"{'  [dry run — JSON only]' if dry_run else ''}")
-    skipped = 0
+    skipped = backing_off = 0
     for c in targets:
         # Outbound (messages / invoices) always jumps the queue ahead of
         # continuing to walk the chat list — check before every chat.
         if outbox_pending() and not dry_run:
             process_outbox(page)
+        name = c["name"]
         fp = c.get("fingerprint")
-        if not full_sweep and fp and _chat_fingerprints.get(c["name"]) == fp:
+        if not full_sweep and fp and _chat_fingerprints.get(name) == fp:
             skipped += 1
             continue
+        fail = _chat_failures.get(name)
+        if fail and time.time() < fail[1] and not only_chat:
+            backing_off += 1
+            continue
+        mode = "full" if (only_chat or name not in _synced_once) else "recent"
         try:
-            snap = sync_chat(page, c["name"], fetch_pics, max_scroll_rounds, dry_run=dry_run)
+            snap = sync_chat(page, name, fetch_pics, max_scroll_rounds, dry_run=dry_run, mode=mode)
         except requests.RequestException as e:
             print(f"  ! Karlon unreachable after retries ({e}) — check {KARLON_URL}, "
-                  f"skipping {c['name']!r} this pass")
+                  f"skipping {name!r} this pass")
             continue
-        if snap is not None and fp:
-            _chat_fingerprints[c["name"]] = fp
+        if snap is None:
+            n = (fail[0] + 1) if fail else 1
+            wait = min(FAIL_BACKOFF_MAX_SEC, FAIL_BACKOFF_SEC * 2 ** (n - 1))
+            _chat_failures[name] = (n, time.time() + wait)
+            print(f"    (will retry {name!r} in {wait // 60 or 1} min)")
+            continue
+        _chat_failures.pop(name, None)
+        _synced_once.add(name)
+        if fp:
+            _chat_fingerprints[name] = fp
     if skipped:
         print(f"  ({skipped} chat(s) unchanged since last pass — not re-read)")
+    if backing_off:
+        print(f"  ({backing_off} chat(s) waiting to retry after failing to open)")
 
 
 # ─────────────────────────────── entry point ──────────────────────────────────
@@ -2541,7 +2797,11 @@ def main() -> None:
             discover_row_selector(page)
             return
 
+        last_reload = time.time()
         while True:
+            if WA_RELOAD_HOURS and time.time() - last_reload > WA_RELOAD_HOURS * 3600:
+                reload_whatsapp(page)
+                last_reload = time.time()
             # 1. Import new messages from WhatsApp → Karlon
             sync_once(
                 page,

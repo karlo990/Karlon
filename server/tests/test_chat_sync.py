@@ -109,9 +109,12 @@ def test_sync_cleans_the_whole_chat_and_orders_it(client, db):
     ]
     ts = [m["created_at"] for m in msgs]
     assert ts == sorted(ts)
-    assert all(t.endswith("+00:00") for t in ts)         # one UTC format throughout
+    assert all(t.endswith("+02:00") for t in ts)         # served in Harare time ...
+    stored = [r[0] for r in db.execute(
+        f"SELECT created_at FROM messages WHERE chat_id='{KARL}' ORDER BY created_at, rowid")]
+    assert all(t.endswith("+00:00") for t in stored)     # ... stored in UTC
     img = msgs[0]
-    assert img["id"] == "img-1" and img["created_at"] == "2026-09-29T18:16:00.000000+00:00"
+    assert img["id"] == "img-1" and img["created_at"] == "2026-09-29T20:16:00.000000+02:00"
     pending = next(m for m in msgs if m["id"] == "app-pending")
     assert pending["wa_status"] == "pending" and pending["sender"] == "Front Desk"
     assert db.execute("SELECT chat_id FROM invoices WHERE id='inv1'").fetchone()[0] == KARL
@@ -200,8 +203,8 @@ def test_bridge_snapshot_round_trip(client):
     assert rep["inserted"] == 2
     msgs = client.get(f"/api/chats/{KARL}/messages").json()
     assert [(m["text"], m["direction"], m["created_at"]) for m in msgs] == [
-        ("hello", "in", "2026-09-29T18:29:00.000000+00:00"),
-        ("hi Karl", "out", "2026-09-29T18:30:00.000000+00:00"),
+        ("hello", "in", "2026-09-29T20:29:00.000000+02:00"),     # WhatsApp showed 20:29
+        ("hi Karl", "out", "2026-09-29T20:30:00.000000+02:00"),
     ]
 
 
@@ -213,7 +216,8 @@ def test_legacy_import_normalises_time_and_drops_notices(client, db):
         {"sender": "Karl", "text": "hello", "created_at": "2026-09-29T20:29:00", "external_key": "b"},
     ]}).json()
     assert rep["imported"] == 1
-    assert client.get(f"/api/chats/{KARL}/messages").json()[0]["created_at"] == "2026-09-29T18:29:00.000000+00:00"
+    assert client.get(f"/api/chats/{KARL}/messages").json()[0]["created_at"] == "2026-09-29T20:29:00.000000+02:00"
+    assert db.execute("SELECT created_at FROM messages").fetchone()[0] == "2026-09-29T18:29:00.000000+00:00"
 
 
 def test_upsert_chat_stores_the_clean_name(client):
@@ -225,3 +229,12 @@ def test_upsert_chat_stores_the_clean_name(client):
 def test_wa_clean_copies_are_identical():
     root = Path(__file__).resolve().parents[2]
     assert (root / "server/app/wa_clean.py").read_bytes() == (root / "pc-bridge/wa_clean.py").read_bytes()
+
+
+def test_chat_list_serves_local_time_and_web_page_handles_refresh(client, db):
+    _insert_chat(db, KARL, "Karl")
+    _insert_msg(db, "m1", KARL, "hi", "2026-09-30T10:13:00.000000+00:00", key="k1")
+    db.commit()
+    assert client.get("/api/chats").json()[0]["last_at"] == "2026-09-30T12:13:00.000000+02:00"
+    page = (Path(__file__).resolve().parents[1] / "static/index.html").read_text(encoding="utf-8")
+    assert "payload.type === 'refresh'" in page

@@ -53,6 +53,12 @@ REFRESH_JOB_STALE_MINUTES = 30
 
 DB_PATH = BASE_DIR / "karlon.db"
 
+# Timestamps are STORED in UTC (so they sort) and SERVED at this offset, in
+# minutes east of UTC (Harare = +120). The Android app displays the ISO digits
+# it receives, so serving UTC showed every message two hours early.
+import os as _os
+DISPLAY_TZ_OFFSET_MINUTES = int(_os.environ.get("DISPLAY_TZ_OFFSET_MINUTES", "120"))
+
 # ── invoice property catalogue ──────────────────────────────────────────────
 # Keyed by location (shown as the first dropdown in the app's Invoice tab).
 # Each entry is a list of {name, rate} for the second dropdown. PLACEHOLDER

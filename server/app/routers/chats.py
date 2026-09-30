@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter
 
+from ..config import DISPLAY_TZ_OFFSET_MINUTES
 from ..database import get_db
 from ..models import UpsertChatIn
-from ..wa_clean import clean_chat_name
+from ..wa_clean import clean_chat_name, to_offset_iso
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 
@@ -45,6 +46,8 @@ def list_chats():
     result = [dict(r) for r in rows]
     for r in result:
         r["is_unsaved"] = _is_unsaved(r.get("wa_name"), r.get("name", ""))
+        if r.get("last_at"):
+            r["last_at"] = to_offset_iso(r["last_at"], DISPLAY_TZ_OFFSET_MINUTES)
     return result
 
 

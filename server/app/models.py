@@ -199,8 +199,13 @@ def poll_options_with_counts(conn, poll_id: str) -> list[dict]:
 
 
 def serialize_message(conn, row) -> dict:
-    """Turn a `messages` row into the JSON shape clients expect."""
+    """Turn a `messages` row into the JSON shape clients expect (times at the
+    display offset — see config.DISPLAY_TZ_OFFSET_MINUTES)."""
+    from .config import DISPLAY_TZ_OFFSET_MINUTES
+    from .wa_clean import to_offset_iso
     msg = dict(row)
+    if msg.get("created_at"):
+        msg["created_at"] = to_offset_iso(msg["created_at"], DISPLAY_TZ_OFFSET_MINUTES)
     if msg.get("kind") == "poll" and msg.get("poll_id"):
         msg["options"] = poll_options_with_counts(conn, msg["poll_id"])
     return msg

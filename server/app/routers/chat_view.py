@@ -22,6 +22,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse
 
 from ..database import get_db
+from ..config import DISPLAY_TZ_OFFSET_MINUTES
+from ..wa_clean import to_offset_iso
 
 router = APIRouter(prefix="/chat", tags=["chat-view"])
 
@@ -35,7 +37,7 @@ def _bubble(m: dict) -> str:
     direction = m.get("direction") or "in"
     sender    = _e(m.get("sender") or "")
     text      = _e(m.get("text") or "").replace("\n", "<br>")
-    ts        = _e((m.get("created_at") or "")[:16].replace("T", " "))
+    ts        = _e((to_offset_iso(m.get("created_at"), DISPLAY_TZ_OFFSET_MINUTES) or "")[:16].replace("T", " "))
     kind      = m.get("kind") or "text"
     mid       = _e(m.get("id") or "")
     media_url = _e(m.get("media_url") or "")
