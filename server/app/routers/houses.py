@@ -87,6 +87,15 @@ def _existing_local_images(paths: list[str]) -> list[str]:
     return out
 
 
+REF_NO_START = 101
+REF_PREFIX = "KCER"
+
+
+def ref_code(listing: dict) -> str:
+    n = listing.get("ref_no")
+    return f"{REF_PREFIX} {n}" if n else REF_PREFIX
+
+
 def _row_to_listing(row, offer=None) -> dict:
     """Wire shape for the app (HouseListingDto). `images` is what the app
     should display/send: server-hosted copies when they exist, else the
@@ -98,6 +107,7 @@ def _row_to_listing(row, offer=None) -> dict:
     d["images"] = local if local else remote
     d["images_local"] = local
     d["listing_key"] = listing_key(d["url"])
+    d["ref_code"] = ref_code(d)
     if offer is not None:
         o = dict(offer)
         d["offer_id"] = o["id"]
@@ -235,6 +245,15 @@ def ingest_listings(body: HouseIngestIn, background: BackgroundTasks):
                 json.dumps(item.images), item.lat, item.lng, now, now,
                 item.neighbourhood, item.capacity, item.rating, item.reviews_count,
             ),
+        )
+
+        # Our reference number, given once per property and never changed, so
+        # a guest can answer "KCER 103" and it always means the same house.
+        conn.execute(
+            "UPDATE house_listings SET ref_no = "
+            "(SELECT COALESCE(MAX(ref_no), ?) + 1 FROM house_listings) "
+            "WHERE id=? AND ref_no IS NULL",
+            (REF_NO_START - 1, item.url),
         )
 
         if item.check_in and item.check_out:
@@ -383,14 +402,15 @@ def build_listing_message(listing: dict, option: int = 1, of: int = 1) -> str:
 
     Per night is the stay total divided by the nights (the scraper now stores
     that correctly — it used to store the whole-stay total as the nightly
-    rate). No "Managed by …" footer, no Airbnb link."""
+    rate). The property is named by our reference ("KCER 101"), never by its
+    Airbnb title; no "Managed by …" footer, no Airbnb link."""
     lines = []
     if option == 1:
         lines.append("This is what I have found for you:")
         lines.append("")
     if of > 1:
         lines.append(f"*Option {option} of {of}*")
-    lines.append(f"🏠 {listing.get('title') or 'Available property'}")
+    lines.append(f"🏠 {ref_code(listing)}")
 
     place = str(listing.get("location") or "").strip().title()
     hood = str(listing.get("neighbourhood") or "").strip()
@@ -421,6 +441,8 @@ def build_listing_message(listing: dict, option: int = 1, of: int = 1) -> str:
         lines.append(f"💵 {listing['price_raw']}")
     else:
         lines.append("💵 Price on request")
+    lines.append("")
+    lines.append("(T's and C's Apply)")
     return "\n".join(lines)
 
 

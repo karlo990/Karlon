@@ -260,6 +260,8 @@ def test_house_send_is_details_text_then_plain_photos(client, db):
     assert [m["kind"] for m in msgs] == ["text", "image", "image"]
     text = msgs[0]["text"]
     assert text.startswith("This is what I have found for you:")
+    assert "🏠 KCER 101" in text and "Metcalf" not in text            # our code, never the Airbnb title
+    assert text.rstrip().endswith("(T's and C's Apply)")
     for part in ("📍 Greendale, Harare", "👥 6 guests · 3 bedrooms · 3 beds · 2.5 baths", "⭐ 4.67 (3 reviews)",
                  "📅 Free 03 Oct 2026 → 25 Oct 2026 (22 nights)", "💵 USD 144.18 per night · USD 3,171.96 total"):
         assert part in text, (part, text)
@@ -268,3 +270,13 @@ def test_house_send_is_details_text_then_plain_photos(client, db):
     order = [r[0] for r in db.execute(
         "SELECT kind FROM messages WHERE chat_id=? AND wa_status='pending' ORDER BY created_at, rowid", (KARL,))]
     assert order == ["text", "image", "image"]                          # outbox delivers in this order
+
+
+def test_reference_numbers_start_at_101_and_never_change(client):
+    def ingest(url, title):
+        client.post("/api/houses/ingest", json={"listings": [{"url": url, "title": title, "location": "Harare"}]})
+    ingest("https://www.airbnb.com/rooms/1", "A")
+    ingest("https://www.airbnb.com/rooms/2", "B")
+    ingest("https://www.airbnb.com/rooms/1", "A renamed")          # re-scrape keeps its number
+    got = {l["url"][-1]: l["ref_code"] for l in client.get("/api/houses/available", params={"location": "harare"}).json()}
+    assert got == {"1": "KCER 101", "2": "KCER 102"}

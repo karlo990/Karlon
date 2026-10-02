@@ -69,6 +69,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE house_listings ADD COLUMN capacity       TEXT",
         "ALTER TABLE house_listings ADD COLUMN rating         TEXT",
         "ALTER TABLE house_listings ADD COLUMN reviews_count  TEXT",
+        # house_listings: our own reference number, shown to guests as
+        # "KCER <ref_no>" instead of the Airbnb title. Assigned once, from 101.
+        "ALTER TABLE house_listings ADD COLUMN ref_no         INTEGER",
     ]
     for stmt in new_cols:
         try:
