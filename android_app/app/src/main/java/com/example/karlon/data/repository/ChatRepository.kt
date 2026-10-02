@@ -10,6 +10,8 @@ import com.example.karlon.data.model.InvoiceCreateRequest
 import com.example.karlon.data.model.InvoiceDto
 import com.example.karlon.data.model.LocationOption
 import com.example.karlon.data.model.MessageDto
+import com.example.karlon.data.model.ReservationDto
+import com.example.karlon.data.model.ReservationRequest
 import com.example.karlon.data.model.SendMessageRequest
 import com.example.karlon.data.remote.ApiService
 import com.example.karlon.data.remote.ChatWebSocketClient
@@ -179,6 +181,16 @@ class ChatRepository(
      * WhatsApp — same outbox/wa_bridge delivery path as sendTerms(). */
     suspend fun sendHouses(chatId: String, listingIds: List<String>, sender: String): HouseSendResponse =
         withContext(Dispatchers.IO) { api.sendHouses(HouseSendRequest(chatId, listingIds, sender)) }
+
+    /** Reserve button: queues the booking for the PC's Airbnb session. */
+    suspend fun createReservation(body: ReservationRequest): ReservationDto =
+        withContext(Dispatchers.IO) { api.createReservation(body) }
+
+    suspend fun getReservation(id: Long): ReservationDto =
+        withContext(Dispatchers.IO) { api.getReservation(id) }
+
+    suspend fun cancelReservation(id: Long): ReservationDto =
+        withContext(Dispatchers.IO) { api.cancelReservation(id) }
 
     fun mediaUrl(path: String): String =
         if (path.startsWith("http")) path else baseUrl.trimEnd('/') + path

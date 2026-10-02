@@ -10,6 +10,8 @@ import com.example.karlon.data.model.InvoiceDto
 import com.example.karlon.data.model.LocationOption
 import com.example.karlon.data.model.LocationRequest
 import com.example.karlon.data.model.MessageDto
+import com.example.karlon.data.model.ReservationDto
+import com.example.karlon.data.model.ReservationRequest
 import com.example.karlon.data.model.SendMessageRequest
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
@@ -92,4 +94,15 @@ interface ApiService {
      * invoices and Terms & Conditions. See routers/houses.py: send_listings(). */
     @POST("api/houses/send")
     suspend fun sendHouses(@Body body: HouseSendRequest): HouseSendResponse
+
+    /** Queues a booking; airbnb_parallel_system.py on the PC picks it up
+     * (server/app/routers/reservations.py). 409 = already queued/booked. */
+    @POST("api/reservations")
+    suspend fun createReservation(@Body body: ReservationRequest): ReservationDto
+
+    @GET("api/reservations/{id}")
+    suspend fun getReservation(@Path("id") id: Long): ReservationDto
+
+    @POST("api/reservations/{id}/cancel")
+    suspend fun cancelReservation(@Path("id") id: Long): ReservationDto
 }

@@ -144,9 +144,57 @@ data class HouseListingDto(
     val lat: Double?,
     val lng: Double?,
     @SerializedName("updated_at") val updatedAt: String,
+    /** "KCER 101" … — the name guests see instead of the Airbnb title. */
+    @SerializedName("ref_code") val refCode: String? = null,
+    /** The scraped price for exactly checkIn→checkOut; sent with a
+     * reservation so the PC can check Airbnb's total against it. */
+    @SerializedName("offer_id") val offerId: String? = null,
+    val nights: Int? = null,
 ) {
     val displayPrice: String
         get() = priceUsdPerNight?.let { "$${it.toInt()}/night" } ?: (priceRaw ?: "Price on request")
+
+    val displayName: String
+        get() = refCode ?: title ?: location
+
+    /** Quoted stay total, when the price was scraped for these dates. */
+    val quotedTotalUsd: Double?
+        get() = if (priceUsdPerNight != null && nights != null && nights > 0) priceUsdPerNight * nights else null
+}
+
+/** Body of POST /api/reservations (server/app/routers/reservations.py). */
+data class ReservationRequest(
+    @SerializedName("listing_id") val listingId: String,
+    @SerializedName("chat_id") val chatId: String?,
+    @SerializedName("offer_id") val offerId: String?,
+    @SerializedName("check_in") val checkIn: String,
+    @SerializedName("check_out") val checkOut: String,
+    val guests: Int,
+    val message: String? = null,
+    @SerializedName("created_by") val createdBy: String? = null,
+)
+
+data class ReservationDto(
+    val id: Long,
+    @SerializedName("chat_id") val chatId: String?,
+    @SerializedName("ref_code") val refCode: String?,
+    @SerializedName("check_in") val checkIn: String,
+    @SerializedName("check_out") val checkOut: String,
+    val nights: Int,
+    val guests: Int,
+    @SerializedName("expected_total_usd") val expectedTotalUsd: Double?,
+    @SerializedName("total_usd") val totalUsd: Double?,
+    /** pending → in_progress (the PC is on Airbnb) → requested (sent to the
+     * host; the guest got a WhatsApp) | dry_run (test mode, nothing booked) |
+     * failed (nothing booked, can retry) | unknown (check Airbnb Trips) |
+     * cancelled */
+    val status: String,
+    @SerializedName("trip_url") val tripUrl: String?,
+    @SerializedName("error_message") val errorMessage: String?,
+    @SerializedName("created_at") val createdAt: String,
+) {
+    val isFinished: Boolean
+        get() = status !in setOf("pending", "in_progress")
 }
 
 data class HouseSendRequest(

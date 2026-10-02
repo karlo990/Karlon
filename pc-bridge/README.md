@@ -6,14 +6,15 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 36 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 58 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
 |---|---|
 | `wa_bridge.py` | WhatsApp Web ⇄ Karlon (import messages, deliver outbox) |
 | `invoice_worker.py` | pending invoice → .docx → PDF → upload |
-| `airbnb_parallel_system.py` | listing scraper → `/api/houses/ingest` |
+| `airbnb_parallel_system.py` | listing scraper → `/api/houses/ingest`; books queued reservations |
+| `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
 | `karlon_supervisor.py` | starts the three above, restarts them with backoff |
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
@@ -105,6 +106,68 @@ If a sync reports `prune skipped`, the snapshot would have removed more than
 half the chat's imported rows in that window. Check its JSON, then re-run
 the POST with `?force=true` if it's right.
 
+## Reserve button: booking a house on Airbnb from the app
+
+In a chat, the 🏠 popup shows the houses (KCER 101…). Select **one** and tap
+**Reserve**. Confirm the guests (and optionally a note to the host), and:
+
+1. the app POSTs `/api/reservations` (`server/app/routers/reservations.py`).
+   The server stores the listing's Airbnb room id, dates and guests, plus the
+   quoted total (per-night price × nights, only when it was scraped for exactly
+   those dates). It refuses a second booking of the same house and dates
+   while one is queued, running, requested or unknown (HTTP 409);
+2. `airbnb_parallel_system.py` (already logged in to Airbnb) asks
+   `/api/reservations/pending` every `AIRBNB_RESERVE_POLL_SEC` (15 s). It gets
+   **one** job at a time, and `airbnb_reserve.py` books it in the same browser:
+   opens the listing with the dates and guests → scrolls to and clicks
+   **Reserve** (or opens the booking page directly) → checks a saved card is
+   there, the dates are still available and the total → writes the message to
+   the host → clicks **Request to book** / **Confirm and pay** → waits for the
+   trip page;
+3. it reports the outcome. On `requested`, the server queues this WhatsApp to
+   the chat, which `wa_bridge.py` delivers like any other message:
+
+   > ✅ Your reservation has been made
+   > 🏠 KCER 101 · 05 Oct 2026 → 08 Oct 2026 (3 nights)
+   > Now waiting for the host to share the live location.
+
+The app shows the status as it goes:
+
+| status | meaning | WhatsApp sent? |
+|---|---|---|
+| `pending` | queued, waiting for the PC (can still be cancelled in the app) | no |
+| `in_progress` | the PC is on Airbnb now | no |
+| `requested` | "Request to book" went through; the host has 24 h to accept | **yes** |
+| `dry_run` | test mode: every step ran except the final click | no |
+| `failed` | stopped **before** paying (no card, price changed, dates gone, button not found). Nothing booked; Reserve again when fixed | no |
+| `unknown` | something went wrong **after** the final click, or the PC crashed mid-booking. **Check Airbnb → Trips.** Never retried automatically | no |
+| `cancelled` | cancelled in the app before the PC started | no |
+
+**It starts in test mode.** Until you set `AIRBNB_RESERVE_LIVE=1` the PC
+does everything except click "Request to book", and the app shows "🧪 Test run
+OK". Do one test run on a real listing first, check the screenshot in
+`airbnb_data/reservations/reservation_<id>_<step>.png`, then go live:
+
+```
+set AIRBNB_RESERVE_LIVE=1                 # PowerShell: $env:AIRBNB_RESERVE_LIVE="1"
+set AIRBNB_RESERVE_MAX_TOTAL_USD=1500     # optional: never pay more than this
+python karlon_supervisor.py
+```
+
+Money safety, in order:
+- the price guard stops if Airbnb's total is more than 10% (and at least $25)
+  above the quote, or above `AIRBNB_RESERVE_MAX_TOTAL_USD`;
+- popups are closed only by an exact button name. A substring match on "OK"
+  would also hit "Request to bOOK"; a test covers this;
+- after the final click, anything short of a clear confirmation is `unknown`
+  and the server never hands it out again, so nothing is booked twice;
+- if Airbnb asks to verify the payment (3-D Secure, "confirm it's you"), the
+  booking stops as `unknown`. Finish it in the scraper's browser window.
+
+Airbnb's terms don't allow automated booking, and Airbnb can lock an account it
+thinks is a bot. Keep the volume human (one at a time, as here), and watch the
+first live bookings.
+
 ## Chat layout: the contract the app must honour
 
 Karlon draws a bubble on the **right if `direction == "out"`, on the left
@@ -120,8 +183,8 @@ WhatsApp's `true_`/`false_` message key, and bubble geometry), then falls back
 to a per-sender vote inside the same chat, then to `in`. `unknown` is never
 sent.
 
-Still to do **on the server and in the Android app, whose source is not in this
-repository** (the APK is compiled; there is nothing here to edit):
+The same contract on the server (`server/`) and in the Android app
+(`android_app/`, added to this repository later):
 
 1. **Server, on import:** coerce anything other than `out` to `in` before
    inserting, so no other client can reintroduce `unknown`.
@@ -131,8 +194,7 @@ repository** (the APK is compiled; there is nothing here to edit):
    corrected direction replace guesses. (Your existing `external_key` values are
    unchanged on purpose, so history is not duplicated.)
 3. **App:** align by `direction` only, and order by `(created_at, insertion id)`.
-   Sketch for Jetpack Compose (the APK bundles AndroidX/Compose libraries;
-   **untested, written without the app's source**):
+   Shape of the rule in Jetpack Compose:
 
    ```kotlin
    @Composable
@@ -146,9 +208,6 @@ repository** (the APK is compiled; there is nothing here to edit):
        }
    }
    ```
-
-If you can share the app or server source (the FastAPI `routers/`, and the
-Android chat screen), the same treatment can be applied there.
 
 ## What changed vs the originals (commit history has the verbatim baseline)
 

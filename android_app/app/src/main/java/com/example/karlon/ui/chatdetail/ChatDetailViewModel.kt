@@ -5,11 +5,17 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.karlon.data.model.HouseListingDto
 import com.example.karlon.data.model.MessageDto
+import com.example.karlon.data.model.ReservationDto
+import com.example.karlon.data.model.ReservationRequest
 import com.example.karlon.data.repository.ChatRepository
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import org.json.JSONObject
+import retrofit2.HttpException
 
 data class ChatDetailUiState(
     val messages: List<MessageDto> = emptyList(),
@@ -36,7 +42,29 @@ data class AvailableHousesUiState(
     val isSending: Boolean = false,
     val errorMessage: String? = null,
     val sendSuccess: Boolean = false,
+    /** Reserve flow: confirm dialog → queued → PC books on Airbnb → result. */
+    val reserveConfirmVisible: Boolean = false,
+    val reserveGuests: Int = 2,
+    val reserveMessage: String = "",
+    val isReserving: Boolean = false,
+    val reservation: ReservationDto? = null,
+    val reserveError: String? = null,
 ) {
+    /** Reserve needs exactly one house and its dates: from the search box,
+     * else the dates the listing was priced for. */
+    val reserveListing: HouseListingDto?
+        get() = selectedIds.singleOrNull()?.let { id -> listings.firstOrNull { it.id == id } }
+
+    val reserveCheckIn: String
+        get() = checkIn.ifBlank { reserveListing?.checkIn.orEmpty() }
+
+    val reserveCheckOut: String
+        get() = checkOut.ifBlank { reserveListing?.checkOut.orEmpty() }
+
+    val canReserve: Boolean
+        get() = reserveListing != null && reserveCheckIn.isNotBlank() && reserveCheckOut.isNotBlank() &&
+            !isReserving && reservation?.isFinished != false
+
     /** A location is required; dates are either both filled or both blank
      * — a half-filled date pair is ambiguous, so search stays disabled
      * until the person finishes or clears it (see the inline hint in
@@ -153,6 +181,9 @@ class ChatDetailViewModel(
     }
 
     fun dismissHousesPopup() {
+        // A booking that's already queued keeps going on the PC; the guest
+        // still gets the WhatsApp. Only the on-screen status stops.
+        reservePollJob?.cancel()
         _housesUiState.value = AvailableHousesUiState()
     }
 
@@ -236,6 +267,101 @@ class ChatDetailViewModel(
                 }
             }
         }
+    }
+
+    // ── Reserve (one selected house → Airbnb "Request to book" on the PC) ──
+
+    private var reservePollJob: Job? = null
+
+    fun openReserveConfirm() {
+        if (!_housesUiState.value.canReserve) return
+        _housesUiState.update { it.copy(reserveConfirmVisible = true, reserveError = null) }
+    }
+
+    fun dismissReserveConfirm() {
+        _housesUiState.update { it.copy(reserveConfirmVisible = false) }
+    }
+
+    fun onReserveGuestsChange(guests: Int) {
+        _housesUiState.update { it.copy(reserveGuests = guests.coerceIn(1, 16)) }
+    }
+
+    fun onReserveMessageChange(message: String) {
+        _housesUiState.update { it.copy(reserveMessage = message) }
+    }
+
+    /** Queues the reservation; the PC (airbnb_parallel_system.py) opens the
+     * listing, clicks Reserve, writes to the host and requests to book. When
+     * it's done the server WhatsApps this chat "Your reservation has been
+     * made… waiting for the host to share the live location". */
+    fun confirmReservation() {
+        val state = _housesUiState.value
+        val listing = state.reserveListing ?: return
+        if (!state.canReserve) return
+        viewModelScope.launch {
+            _housesUiState.update {
+                it.copy(reserveConfirmVisible = false, isReserving = true, reserveError = null, reservation = null)
+            }
+            try {
+                val created = repository.createReservation(
+                    ReservationRequest(
+                        listingId = listing.id,
+                        chatId = chatId,
+                        // The offer's price only applies to its own dates.
+                        offerId = listing.offerId.takeIf {
+                            listing.checkIn == state.reserveCheckIn && listing.checkOut == state.reserveCheckOut
+                        },
+                        checkIn = state.reserveCheckIn,
+                        checkOut = state.reserveCheckOut,
+                        guests = state.reserveGuests,
+                        message = state.reserveMessage.trim().ifBlank { null },
+                        createdBy = displayName,
+                    )
+                )
+                _housesUiState.update { it.copy(isReserving = false, reservation = created) }
+                pollReservation(created.id)
+            } catch (e: Exception) {
+                _housesUiState.update { it.copy(isReserving = false, reserveError = serverMessage(e)) }
+            }
+        }
+    }
+
+    /** Cancels a reservation the PC hasn't started yet. */
+    fun cancelReservation() {
+        val r = _housesUiState.value.reservation ?: return
+        if (r.status != "pending") return
+        viewModelScope.launch {
+            try {
+                val updated = repository.cancelReservation(r.id)
+                reservePollJob?.cancel()
+                _housesUiState.update { it.copy(reservation = updated) }
+            } catch (e: Exception) {
+                _housesUiState.update { it.copy(reserveError = serverMessage(e)) }
+            }
+        }
+    }
+
+    private fun pollReservation(id: Long) {
+        reservePollJob?.cancel()
+        reservePollJob = viewModelScope.launch {
+            // Airbnb takes a minute or two; stop watching after ~15 min.
+            repeat(180) {
+                delay(5_000)
+                val r = try { repository.getReservation(id) } catch (e: Exception) { null } ?: return@repeat
+                _housesUiState.update { it.copy(reservation = r) }
+                if (r.isFinished) return@launch
+            }
+        }
+    }
+
+    private fun serverMessage(e: Exception): String {
+        if (e is HttpException) {
+            val detail = try {
+                e.response()?.errorBody()?.string()?.let { JSONObject(it).optString("detail") }
+            } catch (ignored: Exception) { null }
+            if (!detail.isNullOrBlank()) return detail
+        }
+        return e.message ?: "Couldn't queue the reservation"
     }
 
     override fun onCleared() {

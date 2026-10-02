@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.House
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Search
@@ -52,6 +53,7 @@ import coil.compose.AsyncImage
 import com.example.karlon.R
 import com.example.karlon.data.model.ChatDto
 import com.example.karlon.data.model.HouseListingDto
+import com.example.karlon.data.model.ReservationDto
 import com.example.karlon.ui.components.AvatarImage
 import com.example.karlon.ui.components.MessageBubble
 import com.example.karlon.ui.components.ShimmerLine
@@ -240,8 +242,19 @@ fun ChatDetailScreen(
             onSearch = viewModel::searchHouses,
             onToggleSelect = viewModel::toggleHouseSelection,
             onSend = viewModel::sendSelectedHouses,
+            onReserve = viewModel::openReserveConfirm,
+            onCancelReservation = viewModel::cancelReservation,
             onDismiss = viewModel::dismissHousesPopup,
         )
+        if (housesUiState.reserveConfirmVisible) {
+            ReserveConfirmDialog(
+                state = housesUiState,
+                onGuestsChange = viewModel::onReserveGuestsChange,
+                onMessageChange = viewModel::onReserveMessageChange,
+                onConfirm = viewModel::confirmReservation,
+                onDismiss = viewModel::dismissReserveConfirm,
+            )
+        }
     }
 }
 
@@ -260,6 +273,8 @@ private fun AvailableHousesDialog(
     onSearch: () -> Unit,
     onToggleSelect: (String) -> Unit,
     onSend: () -> Unit,
+    onReserve: () -> Unit,
+    onCancelReservation: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -381,26 +396,157 @@ private fun AvailableHousesDialog(
                     )
                 }
 
+                ReservationStatus(state, onCancelReservation)
+
                 Spacer(Modifier.height(14.dp))
 
-                Button(
-                    onClick = onSend,
-                    enabled = state.selectedIds.isNotEmpty() && !state.isSending,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    if (state.isSending) {
-                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
-                        Text(
-                            if (state.selectedIds.isEmpty()) stringResource(R.string.available_houses_send)
-                            else stringResource(R.string.available_houses_send_count, state.selectedIds.size),
-                        )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = onReserve,
+                        enabled = state.canReserve,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        if (state.isReserving) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.EventAvailable, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(stringResource(R.string.reserve))
+                        }
                     }
+                    Button(
+                        onClick = onSend,
+                        enabled = state.selectedIds.isNotEmpty() && !state.isSending,
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        if (state.isSending) {
+                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                if (state.selectedIds.isEmpty()) stringResource(R.string.available_houses_send)
+                                else stringResource(R.string.available_houses_send_count, state.selectedIds.size),
+                            )
+                        }
+                    }
+                }
+                if (state.selectedIds.size > 1) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        stringResource(R.string.reserve_pick_one),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
+    }
+}
+
+/** Where the queued booking is: waiting for the PC, on Airbnb, done. */
+@Composable
+private fun ReservationStatus(state: AvailableHousesUiState, onCancel: () -> Unit) {
+    state.reserveError?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+    }
+    val r: ReservationDto = state.reservation ?: return
+    val ref = r.refCode ?: ""
+    val (text, isError) = when (r.status) {
+        "pending" -> stringResource(R.string.reserve_status_pending, ref) to false
+        "in_progress" -> stringResource(R.string.reserve_status_in_progress, ref) to false
+        "requested" -> stringResource(R.string.reserve_status_requested, ref) to false
+        "dry_run" -> stringResource(R.string.reserve_status_dry_run, ref, r.errorMessage.orEmpty()) to false
+        "failed" -> stringResource(R.string.reserve_status_failed, r.errorMessage.orEmpty()) to true
+        "unknown" -> stringResource(R.string.reserve_status_unknown, r.errorMessage.orEmpty()) to true
+        "cancelled" -> stringResource(R.string.reserve_status_cancelled) to false
+        else -> r.status to false
+    }
+    Spacer(Modifier.height(8.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (!r.isFinished) {
+            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            text,
+            color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.weight(1f),
+        )
+        if (r.status == "pending") {
+            TextButton(onClick = onCancel) { Text(stringResource(R.string.reserve_cancel)) }
+        }
+    }
+}
+
+/** Confirm before anything is queued: house, dates, guests, quoted total,
+ * optional note to the host. */
+@Composable
+private fun ReserveConfirmDialog(
+    state: AvailableHousesUiState,
+    onGuestsChange: (Int) -> Unit,
+    onMessageChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val listing = state.reserveListing ?: return
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.EventAvailable, contentDescription = null) },
+        title = { Text(stringResource(R.string.reserve_confirm_title, listing.displayName)) },
+        text = {
+            Column {
+                Text(stringResource(R.string.reserve_confirm_dates, state.reserveCheckIn, state.reserveCheckOut))
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.reserve_guests), modifier = Modifier.weight(1f))
+                    OutlinedIconButtonText("−", enabled = state.reserveGuests > 1) { onGuestsChange(state.reserveGuests - 1) }
+                    Text(
+                        state.reserveGuests.toString(),
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                    )
+                    OutlinedIconButtonText("+", enabled = state.reserveGuests < 16) { onGuestsChange(state.reserveGuests + 1) }
+                }
+                val quoted = listing.quotedTotalUsd.takeIf {
+                    listing.checkIn == state.reserveCheckIn && listing.checkOut == state.reserveCheckOut
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (quoted != null) stringResource(R.string.reserve_confirm_total, "%,.2f".format(quoted))
+                    else stringResource(R.string.reserve_confirm_no_total),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = state.reserveMessage,
+                    onValueChange = onMessageChange,
+                    label = { Text(stringResource(R.string.reserve_message_hint)) },
+                    minLines = 2,
+                    maxLines = 4,
+                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.reserve_confirm_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { Button(onClick = onConfirm) { Text(stringResource(R.string.reserve_confirm_button)) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.reserve_confirm_cancel)) } },
+    )
+}
+
+@Composable
+private fun OutlinedIconButtonText(label: String, enabled: Boolean, onClick: () -> Unit) {
+    OutlinedIconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(36.dp)) {
+        Text(label, style = MaterialTheme.typography.titleMedium)
     }
 }
 
@@ -441,11 +587,21 @@ private fun HouseListingCard(
             }
             Column(modifier = Modifier.padding(8.dp)) {
                 Text(
-                    listing.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.available_houses_untitled),
+                    listing.refCode ?: listing.title?.takeIf { it.isNotBlank() }
+                        ?: stringResource(R.string.available_houses_untitled),
                     style = MaterialTheme.typography.labelLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                 )
+                if (listing.refCode != null && !listing.title.isNullOrBlank()) {
+                    // Staff-only: the Airbnb title is never sent to guests.
+                    Text(
+                        listing.title,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
                 Text(
                     listing.displayPrice,
                     style = MaterialTheme.typography.bodySmall,
