@@ -88,6 +88,27 @@ class ChatSnapshotIn(BaseModel):
     stats: Optional[dict] = None
 
 
+class ReservationCreateIn(BaseModel):
+    """Body the app POSTs to /api/reservations (Reserve in the house popup)."""
+    listing_id: str                            # house_listings.id (the listing URL)
+    chat_id: Optional[str] = None              # who gets the "reservation made" WhatsApp
+    offer_id: Optional[str] = None             # the dated offer the app was showing
+    check_in: Optional[str] = None             # YYYY-MM-DD; else taken from the offer
+    check_out: Optional[str] = None
+    guests: int = Field(1, ge=1, le=16)
+    message: Optional[str] = None              # note to the host (a default is used if blank)
+    created_by: str = "Front Desk"
+
+
+class ReservationCompleteIn(BaseModel):
+    """Body the PC scraper POSTs to /api/reservations/{id}/complete."""
+    status: str = Field(..., pattern="^(requested|failed|unknown|dry_run)$")
+    total_usd: Optional[float] = None
+    trip_url: Optional[str] = None
+    error_message: Optional[str] = None
+    cancellation_policy: Optional[str] = None
+
+
 class LocationIn(BaseModel):
     member_id: str
     member_name: str

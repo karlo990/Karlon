@@ -13,6 +13,7 @@ from .routers import house_refresh   # on-demand re-price for exact dates (audit
 from .routers import customer_replies  # dedicated urgent-reply line (app → guest WA)
 from .routers import chat_view       # customer-facing chat view
 from .routers import chat_sync       # one chat snapshot per sync (wa_bridge)
+from .routers import reservations    # Reserve in the app -> PC books on Airbnb
 from . import auth                   # KARLON_PASSWORD (HF Space secret)
 
 init_db()
@@ -33,6 +34,7 @@ app.include_router(outbox.router)
 app.include_router(team_location.router)
 app.include_router(invoices.router)
 app.include_router(houses.router)
+app.include_router(reservations.router)
 app.include_router(house_refresh.router)
 app.include_router(customer_replies.router)   # POST /api/reply/{chat_id}
 app.include_router(chat_view.router)

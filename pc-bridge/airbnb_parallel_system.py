@@ -2560,6 +2560,75 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
         await asyncio.sleep(ONDEMAND_POLL_INTERVAL_SECONDS)
 
 
+async def _report_reservation(session, rid, body: dict) -> None:
+    """POST the outcome; retried because a lost 'requested' report means the
+    guest never gets the WhatsApp (the server would only mark it 'unknown'
+    after 30 min). A 409 means an earlier attempt already landed."""
+    import aiohttp
+    url = f"{KARLON_SERVER_URL}/api/reservations/{rid}/complete"
+    for attempt in range(6):
+        try:
+            async with session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status in (200, 409):
+                    return
+                print(f"[reserve] ⚠️ reporting #{rid} returned {resp.status}: {(await resp.text())[:200]}")
+        except Exception as e:
+            print(f"[reserve] ⚠️ couldn't report #{rid}: {e}")
+        await asyncio.sleep(min(60, 5 * 2 ** attempt))
+    print(f"[reserve] ❌ gave up reporting #{rid} ({body.get('status')}) — check the app / Airbnb Trips")
+
+
+async def reservation_poll_loop(context: BrowserContext) -> None:
+    """Books reservations queued from the app's Reserve button, one at a time,
+    in this process's logged-in Airbnb session (see airbnb_reserve.py)."""
+    import aiohttp
+    from airbnb_reserve import make_reservation
+    from local_config import AIRBNB_RESERVE_LIVE, AIRBNB_RESERVE_MAX_TOTAL_USD, AIRBNB_RESERVE_POLL_SEC
+    mode = "LIVE — will click 'Request to book'" if AIRBNB_RESERVE_LIVE else \
+           "TEST MODE — stops before 'Request to book' (set AIRBNB_RESERVE_LIVE=1 to book for real)"
+    print(f"[reserve] watching {KARLON_SERVER_URL}/api/reservations/pending every "
+          f"{AIRBNB_RESERVE_POLL_SEC}s · {mode}")
+    shots = Path(OUTPUT_DIR) / "reservations"
+    pending_url = f"{KARLON_SERVER_URL}/api/reservations/pending"
+    warned_missing = False
+    while True:
+        jobs = []
+        try:
+            session = await _karlon_http()
+            async with session.get(pending_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status == 200:
+                    jobs = await resp.json()
+                    warned_missing = False
+                elif resp.status == 404:
+                    if not warned_missing:
+                        print(f"[reserve] ℹ️ {pending_url} not found — deploy the server's "
+                              f"routers/reservations.py to enable the Reserve button")
+                        warned_missing = True
+                else:
+                    print(f"[reserve] ⚠️ {pending_url} returned {resp.status}")
+        except Exception as e:
+            print(f"[reserve] ⚠️ couldn't poll {pending_url}: {e}")
+
+        for job in jobs or []:
+            rid = job.get("id")
+            print(f"[reserve] 🏠 #{rid} {job.get('ref_code')} {job.get('check_in')}→{job.get('check_out')} "
+                  f"· {job.get('guests')} guest(s) · quoted ${job.get('expected_total_usd') or '?'}")
+            try:
+                body = await make_reservation(
+                    context, job, live=AIRBNB_RESERVE_LIVE,
+                    max_total_usd=float(AIRBNB_RESERVE_MAX_TOTAL_USD) or None, shots_dir=shots)
+            except Exception as e:          # make_reservation catches its own; belt and braces
+                body = {"status": "unknown" if AIRBNB_RESERVE_LIVE else "failed",
+                        "error_message": f"reserve crashed: {str(e)[:200]}"}
+            icon = {"requested": "✅", "dry_run": "🧪", "failed": "❌"}.get(body["status"], "❓")
+            print(f"[reserve] {icon} #{rid} {body['status']}"
+                  + (f" · total ${body['total_usd']:,.2f}" if body.get("total_usd") else "")
+                  + (f" · {body['error_message']}" if body.get("error_message") else ""))
+            await _report_reservation(await _karlon_http(), rid, body)
+
+        await asyncio.sleep(AIRBNB_RESERVE_POLL_SEC)
+
+
 # ---------- MAIN ----------
 async def main():
     global CURRENT_ZAR_TO_USD_RATE, SEARCH_QUERIES
@@ -2595,6 +2664,7 @@ async def main():
             return
 
         ondemand_task = asyncio.create_task(ondemand_poll_loop(context, checkpoint))
+        reserve_task = asyncio.create_task(reservation_poll_loop(context))
 
         cycle_num = 0
         try:
@@ -2706,11 +2776,12 @@ async def main():
         except (KeyboardInterrupt, asyncio.CancelledError):
             print("\n🛑 Stopped by user. Progress up to the last completed listing is already saved.")
         finally:
-            ondemand_task.cancel()
-            try:
-                await ondemand_task
-            except asyncio.CancelledError:
-                pass
+            for task in (ondemand_task, reserve_task):
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
             if _karlon_session is not None and not _karlon_session.closed:
                 await _karlon_session.close()
             await browser.close()

@@ -201,6 +201,32 @@ def init_db() -> None:
             completed_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS reservations (
+            -- Airbnb bookings made by the PC scraper on the app's request
+            -- (routers/reservations.py). status: pending | in_progress |
+            -- requested | failed | unknown | dry_run | cancelled
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id             TEXT,
+            listing_url         TEXT NOT NULL,
+            airbnb_id           TEXT NOT NULL,
+            ref_code            TEXT,
+            check_in            TEXT NOT NULL,
+            check_out           TEXT NOT NULL,
+            nights              INTEGER NOT NULL,
+            guests              INTEGER NOT NULL,
+            expected_total_usd  REAL,
+            total_usd           REAL,
+            message_to_host     TEXT,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            trip_url            TEXT,
+            cancellation_policy TEXT,
+            error_message       TEXT,
+            created_by          TEXT,
+            created_at          TEXT NOT NULL,
+            started_at          TEXT,
+            completed_at        TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS invoices (
             id           TEXT PRIMARY KEY,
             chat_id      TEXT,

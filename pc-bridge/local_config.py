@@ -66,6 +66,18 @@ KARLON_API_TOKEN = os.environ.get("KARLON_API_TOKEN", "")
 # ── Scraper ────────────────────────────────────────────────────────────────
 AIRBNB_LOGIN_TIMEOUT_SECONDS = _int_env("AIRBNB_LOGIN_TIMEOUT_SECONDS", 360)
 
+# ── Reservations (Reserve button in the app → airbnb_reserve.py) ──────────
+# TEST MODE unless AIRBNB_RESERVE_LIVE=1: every step runs (listing, Reserve,
+# card/total checks, message to host) except the final "Request to book"
+# click, and the app shows "Test run OK". Set to 1 only once a test run on a
+# real listing looks right.
+AIRBNB_RESERVE_LIVE = os.environ.get("AIRBNB_RESERVE_LIVE", "0").strip().lower() in ("1", "true", "yes", "on")
+# Never pay more than this per reservation (USD). 0 = no fixed cap; the 10%
+# price-change guard against the quoted total still applies.
+AIRBNB_RESERVE_MAX_TOTAL_USD = _int_env("AIRBNB_RESERVE_MAX_TOTAL_USD", 0, minimum=0)
+# How often the scraper asks the server for a queued reservation.
+AIRBNB_RESERVE_POLL_SEC = _int_env("AIRBNB_RESERVE_POLL_SEC", 15, minimum=5)
+
 # ── Paths ──────────────────────────────────────────────────────────────────
 LOG_DIR = os.environ.get("LOG_DIR", "./logs")
 # LibreOffice's soffice executable (invoice_worker.py converts docx→pdf with it).
