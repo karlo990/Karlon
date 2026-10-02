@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(unzip -l *)",
+      "Bash(pip list)",
+      "Bash(pip list *)",
+      "Bash(python3 -m pyflakes *)"
+    ]
+  }
+}
