@@ -36,6 +36,11 @@ TERMS_PDF_PATH = DOCUMENTS_DIR / "terms_and_conditions.pdf"
 # (see routers/houses.py: _cache_listing_images). Served at /static/houses/...
 HOUSES_MEDIA_DIR = STATIC_DIR / "houses"
 HOUSES_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+# WhatsApp profile pictures uploaded by wa_bridge.py, one file per chat
+# (routers/chats.py: upload_profile_pic). Served at /static/profile_pics/...
+PROFILE_PICS_DIR = STATIC_DIR / "profile_pics"
+PROFILE_PICS_DIR.mkdir(parents=True, exist_ok=True)
+PROFILE_PIC_MAX_BYTES = 2 * 1024 * 1024
 # How many of a listing's photos get mirrored locally + sent over WhatsApp.
 HOUSE_IMAGES_TO_CACHE = 6
 HOUSE_IMAGE_FETCH_TIMEOUT_SEC = 20

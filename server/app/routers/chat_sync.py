@@ -45,6 +45,7 @@ from ..wa_clean import (
     chat_slug, clean_chat_name, is_system_notice, is_time_only, normalize_text, to_utc_iso,
 )
 from ..ws_manager import manager
+from .chats import incoming_pic, pic_version
 
 router = APIRouter(prefix="/api/chats", tags=["chat-sync"])
 
@@ -104,12 +105,12 @@ def _upsert_chat(conn, chat_id: str, name: str, avatar: str, pic: Optional[str])
         conn.execute(
             "UPDATE chats SET name=?, wa_name=?, avatar_emoji=?, "
             "profile_pic_url=COALESCE(?, profile_pic_url) WHERE id=?",
-            (name, name, avatar or "?", pic, chat_id))
+            (name, name, avatar or "?", incoming_pic(pic), chat_id))
     else:
         conn.execute(
             "INSERT INTO chats (id, name, avatar_emoji, profile_pic_url, wa_name, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (chat_id, name, avatar or "?", pic, name, datetime.now(timezone.utc).isoformat()))
+            (chat_id, name, avatar or "?", incoming_pic(pic), name, datetime.now(timezone.utc).isoformat()))
 
 
 @router.post("/{chat_id}/sync")
@@ -224,6 +225,10 @@ async def sync_chat(chat_id: str, body: ChatSnapshotIn,
                 conn.execute("UPDATE messages SET created_at=? WHERE id=?", (fixed, r["id"]))
                 report["timestamps_normalized"] += 1
         conn.commit()
+        # Which profile picture the server has (content hash), so the bridge
+        # re-uploads after a Space restart wiped it, and only then.
+        pic = conn.execute("SELECT profile_pic_url FROM chats WHERE id=?", (chat_id,)).fetchone()
+        report["profile_pic_version"] = pic_version(pic["profile_pic_url"] if pic else None)
     except Exception:
         conn.rollback()
         conn.close()

@@ -55,9 +55,13 @@ private object Routes {
     const val CHAT_DETAIL = "chat_detail/{chatId}/{chatName}/{avatarTag}/{profilePic}"
     const val INVOICE_FROM_CHAT = "invoice_from_chat/{chatId}/{chatName}"
 
+    /** Stands in for "no profile picture": an empty path segment doesn't
+     * match the route, so a chat without a picture couldn't be opened. */
+    const val NO_PIC = "-"
+
     fun chatDetail(chat: ChatDto) =
         "chat_detail/${Uri.encode(chat.id)}/${Uri.encode(chat.name)}/" +
-            "${Uri.encode(chat.avatarEmoji ?: "?")}/${Uri.encode(chat.profilePicUrl ?: "")}"
+            "${Uri.encode(chat.avatarEmoji ?: "?")}/${Uri.encode(chat.profilePicUrl?.ifBlank { null } ?: NO_PIC)}"
 
     fun invoiceFromChat(chat: ChatDto) =
         "invoice_from_chat/${Uri.encode(chat.id)}/${Uri.encode(chat.name)}"
@@ -165,7 +169,7 @@ fun KarlonNavHost(
                     id = chatId,
                     name = chatName,
                     avatarEmoji = avatarTag,
-                    profilePicUrl = profilePic.ifBlank { null },
+                    profilePicUrl = profilePic.takeUnless { it.isBlank() || it == Routes.NO_PIC },
                     lastText = null,
                     lastAt = null,
                 )

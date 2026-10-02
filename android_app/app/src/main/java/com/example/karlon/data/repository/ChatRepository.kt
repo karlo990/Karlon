@@ -62,7 +62,14 @@ class ChatRepository(
         }
     }
 
-    suspend fun getChats(): List<ChatDto> = withContext(Dispatchers.IO) { api.getChats() }
+    /** Profile pictures come back as server paths (/static/profile_pics/…,
+     * uploaded by wa_bridge.py); they're made absolute here so every
+     * AvatarImage can load them. No picture → null → the initials show. */
+    suspend fun getChats(): List<ChatDto> = withContext(Dispatchers.IO) {
+        api.getChats().map { chat ->
+            chat.copy(profilePicUrl = chat.profilePicUrl?.takeIf { it.isNotBlank() }?.let(::mediaUrl))
+        }
+    }
 
     suspend fun getMessages(chatId: String): List<MessageDto> =
         withContext(Dispatchers.IO) { api.getMessages(chatId) }

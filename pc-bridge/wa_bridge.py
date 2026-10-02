@@ -38,7 +38,7 @@ RUN:
     python wa_bridge.py --once --all           # one-time full clone
     python wa_bridge.py --once --all --deep-history  # one-time full clone, scroll every chat back much further (use once, not on the routine loop)
     python wa_bridge.py                # continuous sync
-    python wa_bridge.py --pics         # include profile pictures
+    python wa_bridge.py --no-pics      # don't sync profile pictures (they're on by default)
     python wa_bridge.py --headless     # hide browser
     python wa_bridge.py --discover     # debug selector discovery
 """
@@ -101,7 +101,6 @@ for _stream in (sys.stdout, sys.stderr):
 SESSION_DIR         = "./wa_session"
 POLL_INTERVAL       = WA_POLL_INTERVAL     # seconds between WA→Karlon import cycles
 OUTBOX_POLL_SEC     = WA_OUTBOX_POLL_SEC   # seconds between outbox REST polls
-PROFILE_PICS_DIR    = Path("./static/profile_pics")
 
 FLAG_KEYWORDS      = ["new order", "pending payment", "invoice", "deposit", "paid"]
 FLAG_NAME_PREFIXES = ["+27", "+263"]
@@ -1168,84 +1167,157 @@ def fetch_blob_b64(page: Page, src: str) -> Optional[str]:
     except Exception:
         return None
 
-def save_profile_pic(chat_id: str, b64_data: str) -> str:
-    PROFILE_PICS_DIR.mkdir(parents=True, exist_ok=True)
-    (PROFILE_PICS_DIR / f"{chat_id}.jpg").write_bytes(base64.b64decode(b64_data))
-    return f"/static/profile_pics/{chat_id}.jpg"
+# ── Profile pictures ─────────────────────────────────────────────────────────
+# Read from the open chat's header (the small round photo next to the name):
+# no clicking into "Contact info", works for groups and business accounts.
+# The picture's bytes are uploaded to the server (POST /api/chats/{id}/profile-pic),
+# which serves them to the app. Uploaded only when the picture changed or the
+# server doesn't have it (its disk is wiped on every Space restart).
 
-def get_profile_photo_b64(page: Page, debug: bool = False) -> Optional[str]:
-    header_el = page.query_selector("#main header")
-    if not header_el:
+_PIC_MAX_PX = 320
+_PIC_UNKNOWN = object()          # server didn't say which picture it has
+_pic_cache: dict[str, dict] = {}  # chat id -> {"src", "jpeg", "version", "uploaded"}
+_pic_endpoint_missing = False
+
+_HEADER_AVATAR_JS = """() => {
+    const h = document.querySelector('#main header');
+    if (!h) return null;
+    for (const m of h.querySelectorAll('img[data-karlon-avatar]')) m.removeAttribute('data-karlon-avatar');
+    let best = null;
+    for (const img of h.querySelectorAll('img[src]')) {
+        const src = img.currentSrc || img.getAttribute('src') || '';
+        if (!src || src.startsWith('data:image/svg') || /emoji/i.test(src) || img.classList.contains('emoji')) continue;
+        const r = img.getBoundingClientRect();
+        // the avatar is a square of 24px or more; emoji in a name are smaller
+        if (r.width < 24 || r.height < 24 || Math.abs(r.width - r.height) > 6) continue;
+        if (!best || r.left < best.r.left) best = { img, src, r };
+    }
+    if (!best) return null;
+    best.img.setAttribute('data-karlon-avatar', '1');
+    return best.src;
+}"""
+
+
+def get_header_avatar_src(page: Page) -> Optional[str]:
+    """The open chat's profile picture URL, or None when it has none (or the
+    contact hides it): the app then keeps showing the initials."""
+    try:
+        return page.evaluate(_HEADER_AVATAR_JS)
+    except Exception:
         return None
-    try:
-        header_el.hover()
-        page.wait_for_timeout(400)
-    except Exception:
-        pass
-    click_target = (
-        page.query_selector('#main header >> text=contact info')
-        or page.query_selector('#main header span[data-testid="default-user"]')
-        or page.query_selector('#main header [role="button"]')
-        or header_el
-    )
-    try:
-        click_target.click(force=True)
-    except Exception:
-        return None
-    try:
-        page.wait_for_selector("text=Contact info, text=Group info", timeout=8_000)
-    except Exception:
-        pass
-    page.wait_for_timeout(800)
-    if page.query_selector('text=Business information') or page.query_selector('text=Business name'):
+
+
+def _fetch_avatar_bytes(page: Page, src: str) -> Optional[bytes]:
+    """Full-size bytes of the avatar: via the browser context (the photo CDN
+    doesn't allow in-page fetch), then in-page fetch (blob:/data:), then a
+    screenshot of the small header image as a last resort."""
+    if src.startswith("http"):
         try:
-            page.keyboard.press("Escape")
+            r = page.context.request.get(src, timeout=15_000)
+            if r.ok:
+                body = r.body()
+                if body:
+                    return body
         except Exception:
             pass
-        return None
-    b64: Optional[str] = None
-    try:
-        viewport = page.viewport_size or {"width": 1400, "height": 900}
-        right_edge_threshold = viewport["width"] * 0.65
-        imgs = page.query_selector_all("img[src]")
-        best_img = None
-        best_area = 0.0
-        for img in imgs:
-            try:
-                src_attr = _safe_get_attr(img, "src")
-                if not src_attr or src_attr.startswith("data:image/svg"):
-                    continue
-                box = img.bounding_box()
-                if not box or box["x"] < right_edge_threshold:
-                    continue
-                area = box["width"] * box["height"]
-                if area > best_area:
-                    best_area = area
-                    best_img = img
-            except Exception:
-                continue
-        if best_img and best_area > 3_000:
-            src = _safe_get_attr(best_img, "src") or None
-            if src:
-                b64 = fetch_blob_b64(page, src)
-            if not b64:
-                try:
-                    png_bytes = best_img.screenshot()
-                    b64 = base64.b64encode(png_bytes).decode("ascii")
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    finally:
+    b64 = fetch_blob_b64(page, src)
+    if b64:
         try:
-            close_btn = page.query_selector('button[aria-label="Close"], [data-testid="x-viewer"]')
-            if close_btn:
-                close_btn.click()
-            else:
-                page.keyboard.press("Escape")
+            return base64.b64decode(b64)
         except Exception:
             pass
-    return b64
+    try:
+        el = page.query_selector("#main header img[data-karlon-avatar]")
+        return el.screenshot(type="png") if el else None
+    except Exception:
+        return None
+
+
+def avatar_jpeg(data: bytes, page: Optional[Page] = None) -> Optional[bytes]:
+    """JPEG of at most 320 px: small enough to upload whenever it changes.
+    Pillow if installed, else the browser's canvas, else the bytes as they
+    are (if they're JPEG/PNG/WebP)."""
+    fmt = _image_format(data)
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(data)).convert("RGB")
+        img.thumbnail((_PIC_MAX_PX, _PIC_MAX_PX))
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=88)
+        return buf.getvalue()
+    except Exception:
+        pass
+    if page is not None and fmt in ("jpeg", "png", "webp", "gif"):
+        try:
+            b64 = page.evaluate(
+                """async ([src, max]) => {
+                    const img = new Image(); img.src = src; await img.decode();
+                    const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+                    const c = document.createElement('canvas');
+                    c.width = Math.max(1, Math.round(img.naturalWidth * k));
+                    c.height = Math.max(1, Math.round(img.naturalHeight * k));
+                    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+                    g.drawImage(img, 0, 0, c.width, c.height);
+                    return c.toDataURL('image/jpeg', 0.88).split(',')[1];
+                }""",
+                [f"data:image/{fmt};base64," + base64.b64encode(data).decode("ascii"), _PIC_MAX_PX],
+            )
+            if b64:
+                return base64.b64decode(b64)
+        except Exception:
+            pass
+    return data if fmt in ("jpeg", "png", "webp") else None
+
+
+def upload_profile_pic(chat_id: str, jpeg: bytes) -> Optional[str]:
+    """POST the picture; returns its version on the server, None on failure."""
+    global _pic_endpoint_missing
+    try:
+        r = get_session().post(f"{KARLON_URL}/api/chats/{chat_id}/profile-pic",
+                               files={"file": (f"{chat_id}.jpg", jpeg, "image/jpeg")},
+                               timeout=UPLOAD_TIMEOUT)
+    except requests.RequestException as e:
+        print(f"    ! profile picture upload failed: {e}")
+        return None
+    if r.status_code in (404, 405) and "chat not found" not in r.text:
+        _pic_endpoint_missing = True
+        print("    ! the server has no /profile-pic endpoint yet — deploy server/ to show profile pictures")
+        return None
+    if not r.ok:
+        print(f"    ! profile picture refused ({r.status_code}: {r.text[:120]})")
+        return None
+    return r.json().get("version")
+
+
+def sync_profile_pic(page: Page, chat_id: str, server_version=_PIC_UNKNOWN) -> bool:
+    """Uploads the open chat's profile picture if the server doesn't have this
+    exact picture. `server_version` is the content hash the server reported
+    in the sync response (None = it has no picture). True if uploaded."""
+    if _pic_endpoint_missing:
+        return False
+    src = get_header_avatar_src(page)
+    if not src:
+        return False
+    cached = _pic_cache.get(chat_id)
+    if cached is None or cached["src"] != src:
+        data = _fetch_avatar_bytes(page, src)
+        jpeg = avatar_jpeg(data, page) if data else None
+        if not jpeg:
+            return False
+        version = hashlib.sha1(jpeg).hexdigest()[:12]
+        uploaded = cached["uploaded"] if cached and cached["version"] == version else None
+        cached = {"src": src, "jpeg": jpeg, "version": version, "uploaded": uploaded}
+        _pic_cache[chat_id] = cached
+    on_server = cached["uploaded"] if server_version is _PIC_UNKNOWN else server_version
+    if on_server == cached["version"]:
+        cached["uploaded"] = on_server
+        return False
+    got = upload_profile_pic(chat_id, cached["jpeg"])
+    if got:
+        cached["uploaded"] = got
+    return bool(got)
+
 
 def reload_whatsapp(page: Page) -> None:
     """Fresh WhatsApp Web page (see WA_RELOAD_HOURS). The session is kept on
@@ -2708,9 +2780,9 @@ def _record_outbound_send(text: str, wa_name: str) -> None:
 def _looks_like_profile_pic(media_url: str) -> bool:
     """
     A legitimate outbound attachment is an invoice PDF or a listing photo —
-    never a contact's own avatar. sync_once() saves those to
-    /static/profile_pics/<chat>.jpg and posts that path to the server as
-    profile_pic_url; if an outbox item's media_url ever points at that same
+    never a contact's own avatar. The server keeps avatars under
+    /static/profile_pics/ (uploaded by sync_profile_pic); if an outbox
+    item's media_url ever points at that same
     path, something upstream conflated "this chat's photo" with "a file to
     send" — refuse it rather than mailing someone their own picture back.
     """
@@ -2787,14 +2859,6 @@ def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
         if m["direction"] == "in" and m["text"]:
             _record_inbound_text(m["text"])
 
-    if fetch_pics:
-        b64 = get_profile_photo_b64(page, debug=False)
-        if b64:
-            try:
-                ensure_chat(name, pic_url=save_profile_pic(chat_slug(name), b64))
-            except Exception as e:
-                print(f"    ! pic save failed for {name}: {e}")
-
     try:
         report = push_snapshot(snapshot)
     except requests.HTTPError as e:
@@ -2807,14 +2871,19 @@ def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
         report = _push_snapshot_legacy(page, snapshot)
         print(f"  {label}{name}: +{report['imported']} new (skipped {report['skipped']}), "
               f"rejected: {rej}  [server has no /sync — deploy server/ to enable cleanup]")
+        if fetch_pics:
+            sync_profile_pic(page, snapshot["chat"]["id"])
         return snapshot
     missing = set(report.get("missing_images") or [])
     uploaded = upload_snapshot_images(page, snapshot, missing) if missing else 0
+    pic = fetch_pics and sync_profile_pic(page, snapshot["chat"]["id"],
+                                          report.get("profile_pic_version", _PIC_UNKNOWN))
     skipped_note = f"  (prune skipped: {report['prune_skipped']})" if report.get("prune_skipped") else ""
     print(
         f"  {label}{name} [{mode}, {time.time() - t0:.1f}s]: {st['messages']} msg — +{report.get('inserted', 0)} new, "
         f"{report.get('updated', 0)} fixed, {report.get('pruned', 0)} stale removed"
-        f"{f', {uploaded} photo(s)' if uploaded else ''}; rejected: {rej}{skipped_note}"
+        f"{f', {uploaded} photo(s)' if uploaded else ''}{', profile picture' if pic else ''}"
+        f"; rejected: {rej}{skipped_note}"
     )
     return snapshot
 
@@ -2881,7 +2950,8 @@ def main() -> None:
                     help=f"how many of the most recent chats to sync (default {WA_SYNC_LAST_N_CHATS}; 0 = all flagged)")
     ap.add_argument("--dry-run",  action="store_true",
                     help="read chats and write their JSON snapshots, but send nothing to Karlon")
-    ap.add_argument("--pics",     action="store_true", help="download profile pictures")
+    ap.add_argument("--no-pics",  action="store_true", help="don't sync profile pictures")
+    ap.add_argument("--pics",     action="store_true", help=argparse.SUPPRESS)   # old flag; pics are on by default
     ap.add_argument("--headless", action="store_true", default=False, help="hide browser")
     ap.add_argument("--discover", action="store_true", help="dump selector info and exit")
     ap.add_argument(
@@ -2946,7 +3016,7 @@ def main() -> None:
             sync_once(
                 page,
                 sync_all=args.all,
-                fetch_pics=args.pics,
+                fetch_pics=not args.no_pics,
                 max_scroll_rounds=60 if args.deep_history else 12,
                 only_chat=args.chat,
                 limit=args.limit,

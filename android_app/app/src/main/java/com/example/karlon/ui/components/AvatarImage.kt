@@ -37,6 +37,8 @@ import com.example.karlon.ui.theme.KarlonRingTrack
  *
  * The photo always fills the full circle edge-to-edge (ContentScale.Crop,
  * no inset) — no more visible background peeking around a small image.
+ * The initials are drawn beneath it, so they show until it loads, and
+ * instead of it if it fails.
  *
  * When [unreadCount] > 0, a slim glowing ring is drawn just outside the
  * avatar — same visual language as the Apple Watch Activity ring in the
@@ -119,6 +121,21 @@ fun AvatarImage(
             }
         }
 
+        // Initials underneath, the WhatsApp profile picture on top: they show
+        // while the picture loads and stay if it can't be loaded.
+        Box(
+            modifier = Modifier
+                .size(size)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = fallbackText.take(2).uppercase(),
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
         if (!photoUrl.isNullOrBlank()) {
             AsyncImage(
                 model = photoUrl,
@@ -126,20 +143,6 @@ fun AvatarImage(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.size(size).clip(CircleShape),
             )
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(size)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    text = fallbackText.take(2).uppercase(),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-            }
         }
     }
 }

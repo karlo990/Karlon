@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 58 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 63 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -69,6 +69,21 @@ Each line in the log shows the mode and time taken, e.g.
 Chats that can't be opened are retried after 1, 2, 4… minutes (max 30)
 instead of on every pass. WhatsApp Web is reloaded every `WA_RELOAD_HOURS`
 (default 6) to keep the browser's memory in check.
+
+**Profile pictures.** After each chat is synced, the bridge reads the photo
+next to the name in the chat's header and uploads it to
+`POST /api/chats/{id}/profile-pic`. It doesn't open "Contact info", so groups
+and business accounts work too. The upload is a JPEG of at most 320 px,
+resized with Pillow if installed, otherwise in the browser. The server serves
+it as `/static/profile_pics/<chat id>.jpg?v=<hash>`, and the app shows it
+instead of the initials ("EN", "DA"…).
+- A picture is only uploaded when it changed or the server doesn't have it.
+  The sync response says which one the server has, and the Space's disk is
+  wiped on every restart.
+- Chats with no photo, or whose photo is hidden by privacy settings, keep
+  their initials.
+- Pictures are on by default; `--no-pics` turns them off. The log line ends
+  in `, profile picture` when one was uploaded.
 
 The server stores times in UTC and serves them in Harare time
 (`DISPLAY_TZ_OFFSET_MINUTES`, default 120), so the Android app shows the same

@@ -15,6 +15,8 @@ def client(tmp_path, monkeypatch):
     import app.database as database
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "karlon.db")
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "karlon.db")
+    (tmp_path / "profile_pics").mkdir()
+    monkeypatch.setattr(config, "PROFILE_PICS_DIR", tmp_path / "profile_pics")
     for mod in [m for m in list(sys.modules) if m == "app.main" or m.startswith("app.routers")]:
         del sys.modules[mod]
     main = importlib.import_module("app.main")   # runs init_db() against the temp DB
