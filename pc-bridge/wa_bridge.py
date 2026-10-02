@@ -247,6 +247,7 @@ _IMAGE_INPUT_SELECTORS = [
 # Send button inside the media/document preview modal (distinct DOM from
 # the plain-text compose send button above, though WA sometimes reuses it).
 _MEDIA_SEND_SELECTORS = [
+    '[data-icon="wds-ic-send-filled"]',
     'div[role="button"][aria-label="Send"]',
     'span[data-icon="send"]',
     'button[aria-label="Send"]',
@@ -508,7 +509,7 @@ def dom_send_file(page: Page, file_path: str, caption: str = "", kind: str = "do
             print("  [dom_send_file] attach button not found")
             return False
 
-        attach_btn.click()
+        attach_btn.click(timeout=5_000)
         page.wait_for_timeout(400)
 
         input_candidates = _DOCUMENT_INPUT_SELECTORS if kind == "document" else _IMAGE_INPUT_SELECTORS
@@ -534,20 +535,6 @@ def dom_send_file(page: Page, file_path: str, caption: str = "", kind: str = "do
         file_input.set_input_files(file_path)
         page.wait_for_timeout(1_200)  # preview modal render + upload thumbnail
 
-        # Never leave focus wherever the attach flow happens to drop it.
-        # Click the previewed media itself first — a neutral element that
-        # can't accidentally toggle anything — so a caption click or a
-        # fallback keypress never lands on a toolbar icon by accident.
-        try:
-            preview_img = page.query_selector(
-                '[data-testid="media-viewer-image"], div[role="dialog"] img, '
-                '#app div[data-animate-modal-body="true"] img'
-            )
-            if preview_img:
-                preview_img.click()
-        except Exception:
-            pass
-
         # Defensive: if the sticker toggle is sitting in an active/pressed
         # state (from a stray earlier focus/keypress), click it back off
         # before we do anything else. We only ever act on it to disarm it.
@@ -556,61 +543,132 @@ def dom_send_file(page: Page, file_path: str, caption: str = "", kind: str = "do
                 toggle = page.query_selector(sel)
                 if toggle and (_safe_get_attr(toggle, "aria-pressed") == "true"
                                or "selected" in (_safe_get_attr(toggle, "class") or "")):
-                    toggle.click()
+                    toggle.click(timeout=3_000)
                     page.wait_for_timeout(150)
                 break
         except Exception:
             pass
 
+        # Caption: only into a text box that is ON TOP of the screen, i.e. the
+        # editor's own caption field. The first compose-box selector used to
+        # match the chat's message box BEHIND the photo editor: the caption
+        # went there, which made that hidden send button appear, and every
+        # click on it was then blocked by the editor ("... intercepts pointer
+        # events") for 30 s per attempt.
         if caption.strip():
-            caption_box = None
-            for sel in _COMPOSE_SELECTORS + ['div[aria-label="Add a caption"][contenteditable="true"]']:
-                try:
-                    el = page.query_selector(sel)
-                    if el:
-                        caption_box = el
-                        break
-                except Exception:
-                    continue
+            caption_box = _topmost(page, _CAPTION_SELECTORS)
             if caption_box:
                 try:
-                    caption_box.click()
+                    _click_center(page, caption_box)
                     page.keyboard.type(caption.strip(), delay=15)
                     page.wait_for_timeout(200)
                 except Exception:
                     pass  # send without caption rather than failing the whole attach
 
         send_btn = None
-        for sel in _MEDIA_SEND_SELECTORS:
-            try:
-                # Give WA a moment to render the button rather than judging
-                # off a single instantaneous snapshot.
-                btn = page.wait_for_selector(sel, timeout=2_000)
-                if btn:
-                    send_btn = btn
-                    break
-            except Exception:
-                continue
+        deadline = time.time() + 4
+        while send_btn is None and time.time() < deadline:
+            send_btn = _topmost(page, _MEDIA_SEND_SELECTORS)
+            if send_btn is None:
+                page.wait_for_timeout(250)
 
         if not send_btn:
             # No blind Enter fallback: we don't know what currently has
             # focus, and pressing Enter near the sticker toggle is exactly
             # how a photo turns into a sticker send. Fail closed instead —
             # process_outbox() will requeue/retry through MAX_RETRIES.
-            print("  [dom_send_file] send button not found — not guessing, aborting this attempt")
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
+            print("  [dom_send_file] no send button on top of the editor — not guessing, aborting this attempt")
+            _dismiss_media_editor(page)
             return False
 
-        send_btn.click()
-        page.wait_for_timeout(1_500)  # let the upload complete before moving on
-        return True
+        _click_center(page, send_btn)
+        # Sent = the editor (and its send button) went away.
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                if not send_btn.evaluate("e => e.isConnected && e.getBoundingClientRect().width > 0"):
+                    page.wait_for_timeout(800)   # let the upload get going before moving on
+                    return True
+            except Exception:
+                return True                     # handle detached: editor closed
+            page.wait_for_timeout(300)
+        print("  [dom_send_file] editor still open after clicking send — treating as not sent")
+        _dismiss_media_editor(page)
+        return False
 
     except Exception as e:
-        print(f"  [dom_send_file] error: {e}")
+        print(f"  [dom_send_file] error: {str(e).splitlines()[0][:200]}")
+        _dismiss_media_editor(page)
         return False
+
+
+# The photo/document editor's caption field, best match first. Every match is
+# also required to be the top-most element at its own centre (see _topmost).
+_CAPTION_SELECTORS = [
+    'div[aria-label="Add a caption"][contenteditable="true"]',
+    'div[aria-label*="caption" i][contenteditable="true"]',
+    'div[contenteditable="true"][role="textbox"]',
+    'div[contenteditable="true"]',
+]
+
+_TOPMOST_JS = """(sels) => {
+    const vis = e => { const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0
+            && r.top < innerHeight && r.left < innerWidth; };
+    for (const sel of sels) {
+        let els;
+        try { els = Array.from(document.querySelectorAll(sel)).filter(vis).reverse(); }
+        catch (e) { continue; }
+        for (const e of els) {
+            const r = e.getBoundingClientRect();
+            const t = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            if (!t) continue;
+            if (t === e || e.contains(t)) return e;
+            if (t.contains(e)) {                  // a small wrapper, e.g. the button around an icon
+                const tr = t.getBoundingClientRect();
+                if (tr.width <= 3 * r.width + 40 && tr.height <= 3 * r.height + 40) return e;
+            }
+        }
+    }
+    return null;
+}"""
+
+
+def _topmost(page: Page, selectors: list[str]):
+    """First visible element matching `selectors` that is actually on top at
+    its own centre — i.e. what a person would hit by clicking there. Elements
+    hidden behind a dialog (the chat's own send button behind the photo
+    editor) are skipped instead of being clicked until timeout."""
+    try:
+        return page.evaluate_handle(_TOPMOST_JS, selectors).as_element()
+    except Exception:
+        return None
+
+
+def _click_center(page: Page, el) -> None:
+    box = el.bounding_box()
+    if not box:
+        raise RuntimeError("element has no box")
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+
+
+def _dismiss_media_editor(page: Page) -> None:
+    """Close a photo/document editor left open by a failed send, so the next
+    attempt (or the next chat) doesn't start inside it. Escape, then confirm
+    WhatsApp's "discard?" prompt if it asks."""
+    for _ in range(2):
+        if _topmost(page, _MEDIA_SEND_SELECTORS) is None:
+            return
+        try:
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(400)
+            for btn in page.query_selector_all('div[role="dialog"] button, [role="dialog"] div[role="button"]'):
+                if re.search(r"discard", _safe_inner_text(btn), re.IGNORECASE):
+                    btn.click(timeout=3_000)
+                    page.wait_for_timeout(300)
+                    break
+        except Exception:
+            return
 
 
 _SAFE_SUFFIX_RE = re.compile(r"^\.[A-Za-z0-9]{1,5}$")
@@ -1432,13 +1490,22 @@ def get_open_chat_title(page: Page) -> Optional[str]:
     return names[0] if names else None
 
 
+def _name_key(name: str) -> str:
+    """Letters and digits only, case-folded. The sidebar's title attribute
+    keeps emoji ("ROYAL CREST ACADEMY ADVOCATES 🎓") but the header's text
+    drops them (WhatsApp draws emoji as images), so an exact comparison
+    refused chats that were open and correct."""
+    return "".join(ch for ch in (name or "").casefold() if ch.isalnum())
+
+
 def header_shows(page: Page, name: str) -> Optional[bool]:
     """True/False: does the open conversation's header show `name`?
     None: no header name readable at all."""
     names = get_open_chat_names(page)
     if not names:
         return None
-    return clean_chat_name(name) in names or name in names
+    want = _name_key(clean_chat_name(name) or name)
+    return bool(want) and any(_name_key(n) == want for n in names)
 
 
 def _short(s: Optional[str], n: int = 60) -> str:
