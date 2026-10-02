@@ -1,0 +1,10 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base XML theme; Compose supplies the real Material3 theme in
+         ui/theme/Theme.kt, this just sets the window/status bar before
+         Compose takes over and covers any non-Compose system surfaces. -->
+    <style name="Theme.Karlon" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@color/karlon_cream</item>
+        <item name="android:windowBackground">@color/karlon_cream</item>
+        <item name="android:navigationBarColor">@color/karlon_cream</item>
+    </style>
+</resources>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android's <domain> element only matches literal hostnames — it does NOT
+  support CIDR ranges (an earlier draft of this file tried
+  "192.168.0.0/16" etc., which Android's XML parser rejects at build/run
+  time). LAN IPs are only known at runtime (whatever the user types into
+  the server-setup screen), so there's no fixed hostname list to enumerate
+  here. Instead we use a base-config that permits cleartext everywhere,
+  which mirrors android:usesCleartextTraffic="true" already set in the
+  manifest — fine for talking to your own PC on a trusted LAN/dev network.
+  If you later put Karlon behind HTTPS (recommended for anything beyond
+  your own LAN), delete this file and the manifest attribute entirely.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>   <!-- Android emulator -> host machine -->
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

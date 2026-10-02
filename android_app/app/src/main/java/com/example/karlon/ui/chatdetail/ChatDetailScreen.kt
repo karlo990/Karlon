@@ -1,0 +1,543 @@
+package com.example.karlon.ui.chatdetail
+
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.House
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+
+import androidx.compose.ui.window.Dialog
+import coil.compose.AsyncImage
+import com.example.karlon.R
+import com.example.karlon.data.model.ChatDto
+import com.example.karlon.data.model.HouseListingDto
+import com.example.karlon.ui.components.AvatarImage
+import com.example.karlon.ui.components.MessageBubble
+import com.example.karlon.ui.components.ShimmerLine
+import com.example.karlon.ui.components.glassSurface
+import kotlinx.coroutines.launch
+
+/**
+ * The chat thread itself: history + live messages, a text composer, and
+ * an image-attach button — this screen is where the text<->image sync
+ * is actually visible to the user.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ChatDetailScreen(
+    chat: ChatDto,
+    displayName: String,
+    viewModel: ChatDetailViewModel,
+    onBack: () -> Unit,
+    onGenerateInvoice: () -> Unit = {},
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val housesUiState by viewModel.housesUiState.collectAsState()
+    var draft by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        uri?.let { viewModel.sendImage(it) }
+    }
+
+    LaunchedEffect(uiState.messages.size) {
+        if (uiState.messages.isNotEmpty()) {
+            scope.launch { listState.animateScrollToItem(uiState.messages.size - 1) }
+        }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        AvatarImage(
+                            photoUrl = chat.profilePicUrl,
+                            fallbackText = chat.avatarEmoji ?: chat.name,
+                            size = 36.dp,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(chat.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background,
+                ),
+            )
+        },
+        bottomBar = {
+            Composer(
+                draft = draft,
+                onDraftChange = { draft = it },
+                onSend = {
+                    viewModel.sendText(draft)
+                    draft = ""
+                },
+                onShowHouses = { viewModel.openHousesPopup() },
+                isSending = uiState.isSending,
+            )
+        },
+        // Docked in Scaffold's own FAB slot (not floating loose over the
+        // content) — Scaffold automatically lifts this clear of bottomBar,
+        // so it can never sit on top of or crowd the message input row.
+        floatingActionButton = {
+            var fabVisible by remember { mutableStateOf(false) }
+            val fabScale by animateFloatAsState(
+                targetValue = if (fabVisible) 1f else 0f,
+                animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy),
+                label = "sendTermsFabScale",
+            )
+            LaunchedEffect(Unit) { fabVisible = true }
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                // Invoice icon — same SmallFloatingActionButton size as the
+                // Terms & Conditions button below it. Sits above it in the
+                // stack. Jumps straight into the invoice form with this
+                // guest's name and WhatsApp chat already filled in (see
+                // InvoiceViewModel's prefillFromChat). The house-browsing
+                // entry point now lives in the composer row instead.
+                SmallFloatingActionButton(
+                    onClick = onGenerateInvoice,
+                    modifier = Modifier.graphicsLayer { scaleX = fabScale; scaleY = fabScale },
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                ) {
+                    Icon(
+                        Icons.Default.AttachMoney,
+                        contentDescription = stringResource(R.string.generate_invoice),
+                    )
+                }
+                SmallFloatingActionButton(
+                    onClick = { viewModel.sendTerms() },
+                    modifier = Modifier.graphicsLayer { scaleX = fabScale; scaleY = fabScale },
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ) {
+                    Icon(
+                        Icons.Default.Description,
+                        contentDescription = stringResource(R.string.send_terms),
+                    )
+                }
+            }
+        },
+        floatingActionButtonPosition = FabPosition.End,
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+            AnimatedContent(
+                targetState = uiState.isLoading,
+                transitionSpec = { fadeIn(tween(260)) togetherWith fadeOut(tween(180)) },
+                label = "chatDetailLoadingState",
+            ) { isLoading ->
+                if (isLoading) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        ShimmerLine(width = 220.dp, height = 40.dp)
+                        ShimmerLine(width = 160.dp, height = 40.dp)
+                        ShimmerLine(width = 240.dp, height = 40.dp)
+                        ShimmerLine(width = 140.dp, height = 40.dp)
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        items(uiState.messages, key = { it.id }) { message ->
+                            MessageBubble(
+                                message = message,
+                                // Was `message.sender == displayName`, which only
+                                // matches messages the app itself composed (sender
+                                // is literally set to displayName at send time).
+                                // Everything wa_bridge imports from WhatsApp comes
+                                // through with sender = "You (WhatsApp)" for your
+                                // own outgoing messages (see wa_bridge.detect_direction
+                                // -> scrape_messages) or the contact's name for
+                                // theirs — neither of which is ever equal to
+                                // displayName, so every WA-imported message (i.e.
+                                // almost all of them) was rendering as incoming
+                                // regardless of who actually sent it. `isOutbound`
+                                // (direction == "out") is the field both paths
+                                // agree on, so it's the one that actually means
+                                // "mine" here.
+                                isOwnMessage = message.isOutbound,
+                                resolvedMediaUrl = viewModel.resolvedMediaUrl(message.mediaUrl),
+                            )
+                        }
+                    }
+                }
+            }
+
+            uiState.errorMessage?.let { error ->
+                Snackbar(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(12.dp),
+                    containerColor = MaterialTheme.colorScheme.error,
+                ) { Text(error) }
+            }
+        }
+    }
+
+    if (housesUiState.isVisible) {
+        AvailableHousesDialog(
+            state = housesUiState,
+            onLocationChange = viewModel::onHousesLocationChange,
+            onCheckInChange = viewModel::onHousesCheckInChange,
+            onCheckOutChange = viewModel::onHousesCheckOutChange,
+            onSearch = viewModel::searchHouses,
+            onToggleSelect = viewModel::toggleHouseSelection,
+            onSend = viewModel::sendSelectedHouses,
+            onDismiss = viewModel::dismissHousesPopup,
+        )
+    }
+}
+
+/**
+ * Popup opened by the house-icon FAB: a location search box, a grid that
+ * auto-populates with up to 6 of the freshest scraped listings for that
+ * area the moment a search runs, and a Send button that WhatsApps every
+ * checked listing's photos + price/title/link to this chat.
+ */
+@Composable
+private fun AvailableHousesDialog(
+    state: AvailableHousesUiState,
+    onLocationChange: (String) -> Unit,
+    onCheckInChange: (String) -> Unit,
+    onCheckOutChange: (String) -> Unit,
+    onSearch: () -> Unit,
+    onToggleSelect: (String) -> Unit,
+    onSend: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = MaterialTheme.shapes.extraLarge,
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp),
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.House, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        stringResource(R.string.available_houses_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.back))
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = state.location,
+                        onValueChange = onLocationChange,
+                        placeholder = { Text(stringResource(R.string.available_houses_location_hint)) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                        shape = MaterialTheme.shapes.large,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Exact dates are optional — leave both blank to just see the
+                // freshest scrape for the city. Fill both in (YYYY-MM-DD) to
+                // narrow the grid to listings actually priced for that
+                // check-in/check-out window (see server routers/houses.py).
+                Row(Modifier.fillMaxWidth()) {
+                    com.example.karlon.ui.components.DateField(
+                        value = state.checkIn,
+                        onValueChange = onCheckInChange,
+                        label = stringResource(R.string.available_houses_checkin_label),
+                        fieldColors = OutlinedTextFieldDefaults.colors(),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    com.example.karlon.ui.components.DateField(
+                        value = state.checkOut,
+                        onValueChange = onCheckOutChange,
+                        label = stringResource(R.string.available_houses_checkout_label),
+                        fieldColors = OutlinedTextFieldDefaults.colors(),
+                        modifier = Modifier.weight(1f),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilledIconButton(onClick = onSearch, enabled = state.canSearch) {
+                        Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search))
+                    }
+                }
+
+                if (state.location.isNotBlank() && state.checkIn.isBlank() != state.checkOut.isBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        stringResource(R.string.available_houses_dates_incomplete),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                Box(modifier = Modifier.weight(1f, fill = false)) {
+                    when {
+                        state.isLoading -> Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                        ) { CircularProgressIndicator() }
+
+                        state.listings.isEmpty() -> Text(
+                            stringResource(R.string.available_houses_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = 24.dp),
+                        )
+
+                        else -> LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.heightIn(max = 420.dp),
+                        ) {
+                            items(state.listings, key = { it.id }) { listing ->
+                                HouseListingCard(
+                                    listing = listing,
+                                    isSelected = listing.id in state.selectedIds,
+                                    onToggle = { onToggleSelect(listing.id) },
+                                )
+                            }
+                        }
+                    }
+                }
+
+                state.errorMessage?.let {
+                    Spacer(Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                if (state.sendSuccess) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        stringResource(R.string.available_houses_sent),
+                        color = MaterialTheme.colorScheme.primary,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                Spacer(Modifier.height(14.dp))
+
+                Button(
+                    onClick = onSend,
+                    enabled = state.selectedIds.isNotEmpty() && !state.isSending,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    if (state.isSending) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (state.selectedIds.isEmpty()) stringResource(R.string.available_houses_send)
+                            else stringResource(R.string.available_houses_send_count, state.selectedIds.size),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HouseListingCard(
+    listing: HouseListingDto,
+    isSelected: Boolean,
+    onToggle: () -> Unit,
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onToggle),
+    ) {
+        Column {
+            Box {
+                AsyncImage(
+                    model = listing.images.firstOrNull(),
+                    contentDescription = listing.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp)),
+                )
+                if (isSelected) {
+                    Surface(
+                        shape = androidx.compose.foundation.shape.CircleShape,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(6.dp).size(22.dp).align(Alignment.TopEnd),
+                    ) {
+                        Icon(
+                            Icons.Default.Check,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.padding(3.dp),
+                        )
+                    }
+                }
+            }
+            Column(modifier = Modifier.padding(8.dp)) {
+                Text(
+                    listing.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.available_houses_untitled),
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                )
+                Text(
+                    listing.displayPrice,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun Composer(
+    draft: String,
+    onDraftChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onShowHouses: () -> Unit,
+    isSending: Boolean,
+) {
+    // Frosted-glass bottom bar: an opaque base (so message bubbles scrolling
+    // underneath don't show through — there's no real backdrop blur in this
+    // renderer) with the same glass highlight/border layered on top, so it
+    // reads as "glass docked over the thread" rather than a flat fill.
+    //
+    // enableEdgeToEdge() (MainActivity) draws this screen behind the system
+    // bars, and a plain custom Box in Scaffold's bottomBar slot doesn't get
+    // any inset padding for free the way BottomAppBar/NavigationBar do — so
+    // without this, the composer sat right under the phone's own gesture
+    // bar (the row was there, just partly hidden behind system UI) and
+    // would sit under the keyboard too once it opened. navigationBarsPadding
+    // lifts it clear of the gesture/3-button bar; imePadding then lifts it
+    // further, above the keyboard, whenever it's shown.
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .glassSurface(shape = RectangleShape, tintAlpha = 0.05f, borderAlpha = 0.10f)
+            .navigationBarsPadding()
+            .imePadding(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // House icon replaces the old money-emoji button here — tapping
+            // it opens the same "available listings" popup as the FAB used
+            // to (see AvailableHousesDialog), auto-populated for this
+            // chat's area. The invoice shortcut now lives in the FAB stack.
+            IconButton(onClick = onShowHouses) {
+                Icon(
+                    Icons.Default.House,
+                    contentDescription = stringResource(R.string.show_available_houses),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+            }
+            val sendEnabled = draft.isNotBlank() && !isSending
+            OutlinedTextField(
+                value = draft,
+                onValueChange = onDraftChange,
+                placeholder = { Text(stringResource(R.string.message_hint)) },
+                modifier = Modifier.weight(1f),
+                shape = MaterialTheme.shapes.extraLarge,
+                // Sentence case is what every chat keyboard defaults to, and
+                // the IME's own Send action now actually sends — previously
+                // Send was declared here but nothing was wired to it, so the
+                // keyboard's action button did nothing and the on-screen
+                // send icon was the only way to send a message.
+                keyboardOptions = KeyboardOptions(
+                    imeAction = ImeAction.Send,
+                    capitalization = KeyboardCapitalization.Sentences,
+                ),
+                keyboardActions = KeyboardActions(onSend = { if (sendEnabled) onSend() }),
+                maxLines = 4,
+            )
+            Spacer(Modifier.width(6.dp))
+            val sendTint by animateColorAsState(
+                targetValue = if (sendEnabled) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                animationSpec = tween(180),
+                label = "sendButtonTint",
+            )
+            IconButton(
+                onClick = onSend,
+                enabled = sendEnabled,
+            ) {
+                Icon(
+                    Icons.Default.Send,
+                    contentDescription = stringResource(R.string.send),
+                    tint = sendTint,
+                )
+            }
+        }
+    }
+}
