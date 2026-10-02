@@ -142,6 +142,10 @@ class HouseListingIn(BaseModel):
     fx_rate_zar_per_usd: Optional[float] = None
     nights: Optional[int] = None
     refresh_job_id: Optional[int] = None       # set by run_ondemand_job()
+    neighbourhood: Optional[str] = None        # e.g. "Greendale"
+    capacity: Optional[str] = None             # "6 guests · 3 bedrooms · 3 beds · 2.5 baths"
+    rating: Optional[str] = None               # "4.67"
+    reviews_count: Optional[str] = None        # "3"
 
 
 class HouseIngestIn(BaseModel):

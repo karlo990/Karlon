@@ -34,7 +34,12 @@ window.BROKEN = false;
 const editor = document.getElementById('editor');
 document.getElementById('attach').onclick = () => {
   if (document.getElementById('file')) return;
-  const i = document.createElement('input'); i.type = 'file'; i.id = 'file'; i.accept = 'image/*,video/mp4';
+  // WhatsApp's menu has a STICKER input too, and it comes first in the DOM.
+  const st = document.createElement('input'); st.type = 'file'; st.id = 'sticker'; st.accept = 'image/*';
+  st.style.display = 'none';
+  st.onchange = () => window.SENT.push('WRONG: sent as sticker');
+  document.body.appendChild(st);
+  const i = document.createElement('input'); i.type = 'file'; i.id = 'file'; i.accept = 'image/*,video/mp4,video/3gpp,video/quicktime';
   i.style.display = 'none';
   i.onchange = () => { editor.style.display = 'block'; };
   document.body.appendChild(i);
@@ -80,3 +85,29 @@ def test_header_match_ignores_emoji_and_case(page):
     assert w.header_shows(page, "ROYAL CREST ACADEMY ADVOCATES 🎓") is True
     assert w.header_shows(page, "Royal Crest Academy Advocates") is True
     assert w.header_shows(page, "ROYAL CREST") is False
+
+
+def _webp(page, tmp_path):
+    b64 = page.evaluate("""() => { const c = document.createElement('canvas'); c.width = 40; c.height = 30;
+        const g = c.getContext('2d'); g.fillStyle = '#c33'; g.fillRect(0, 0, 40, 30);
+        return c.toDataURL('image/webp').split(',')[1]; }""")
+    import base64
+    f = tmp_path / "listing.jpg"          # CDN names it .jpg, bytes are WebP
+    f.write_bytes(base64.b64decode(b64))
+    assert w._image_format(f.read_bytes()) == "webp"
+    return f
+
+
+def test_webp_photo_is_converted_to_real_jpeg(page, tmp_path):
+    page.set_content("<p>x</p>")
+    out = w.ensure_jpeg(page, str(_webp(page, tmp_path)))
+    data = open(out, "rb").read()
+    assert out.endswith(".jpg") and w._image_format(data) == "jpeg"
+
+
+def test_webp_conversion_works_without_pillow(page, tmp_path, monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "PIL", None)          # import PIL -> ImportError
+    page.set_content("<p>x</p>")
+    out = w.ensure_jpeg(page, str(_webp(page, tmp_path)))
+    assert w._image_format(open(out, "rb").read()) == "jpeg"

@@ -62,6 +62,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
         # messages: WhatsApp's own message id (the DOM data-id), so a
         # re-scanned message is matched even if its text/key changed.
         "ALTER TABLE messages ADD COLUMN wa_msg_id TEXT",
+        # house_listings: what a guest wants to know before the photos —
+        # suburb (from the description or the map pin), "6 guests · 3
+        # bedrooms · 3 beds · 2.5 baths", and the Airbnb rating.
+        "ALTER TABLE house_listings ADD COLUMN neighbourhood  TEXT",
+        "ALTER TABLE house_listings ADD COLUMN capacity       TEXT",
+        "ALTER TABLE house_listings ADD COLUMN rating         TEXT",
+        "ALTER TABLE house_listings ADD COLUMN reviews_count  TEXT",
     ]
     for stmt in new_cols:
         try:

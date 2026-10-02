@@ -239,9 +239,14 @@ _DOCUMENT_INPUT_SELECTORS = [
     'input[type="file"]:not([accept*="image"])',
     'input[type="file"]',
 ]
+# "Photos & videos" first. WhatsApp's attach menu also has a STICKER input
+# that accepts image/* — picking it sent house photos as stickers. Only the
+# photos input also accepts video, so that is what identifies it.
 _IMAGE_INPUT_SELECTORS = [
+    'input[type="file"][accept*="video"][accept*="image"]',
+    'input[type="file"][accept*="video"]',
+    'input[type="file"][accept*="image"]:not([accept="image/webp"])',
     'input[type="file"][accept*="image"]',
-    'input[type="file"]',
 ]
 
 # Send button inside the media/document preview modal (distinct DOM from
@@ -720,6 +725,72 @@ def download_to_temp(url: str, suffix: str = "") -> Optional[str]:
         return None
 
 
+def _image_format(data: bytes) -> str:
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    return "other"
+
+
+def ensure_jpeg(page: Page, path: str) -> str:
+    """Photos are sent as real JPEG photos. WhatsApp treats a WebP file (what
+    image CDNs often serve, whatever the URL says) as a sticker, so anything
+    that isn't JPEG/PNG is re-encoded to a .jpg, judged by the file's bytes,
+    not its name. Pillow if installed, else the browser's own decoder.
+    Returns the path to send (the original if no conversion was needed or
+    possible)."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return path
+    fmt = _image_format(data)
+    if fmt in ("jpeg", "png"):
+        if fmt == "jpeg" and not path.lower().endswith((".jpg", ".jpeg")):
+            new = str(Path(path).with_suffix(".jpg"))
+            os.replace(path, new)
+            return new
+        return path
+    jpg: Optional[bytes] = None
+    try:
+        from io import BytesIO
+        from PIL import Image
+        img = Image.open(BytesIO(data)).convert("RGB")
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=90)
+        jpg = buf.getvalue()
+    except Exception:
+        try:
+            b64 = page.evaluate(
+                """async (src) => {
+                    const img = new Image(); img.src = src; await img.decode();
+                    const c = document.createElement('canvas');
+                    c.width = img.naturalWidth; c.height = img.naturalHeight;
+                    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+                    g.drawImage(img, 0, 0);
+                    return c.toDataURL('image/jpeg', 0.9).split(',')[1];
+                }""",
+                f"data:image/{fmt if fmt != 'other' else 'webp'};base64," + base64.b64encode(data).decode("ascii"),
+            )
+            jpg = base64.b64decode(b64) if b64 else None
+        except Exception as e:
+            print(f"  [ensure_jpeg] could not convert {fmt} image: {str(e).splitlines()[0][:120]}")
+    if not jpg:
+        return path
+    new = str(Path(path).with_suffix(".jpg"))
+    Path(new).write_bytes(jpg)
+    if new != path:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    return new
+
+
 # ─────────────────────────────── outbox poller thread ─────────────────────────
 
 def _outbox_poller(stop_event: threading.Event) -> None:
@@ -994,6 +1065,8 @@ def _process_items(
             # through the attach flow — fetch the server-hosted file to a
             # local temp path first since Playwright needs a real path.
             local_path = download_to_temp(media_url)
+            if local_path and kind == "image":
+                local_path = ensure_jpeg(page, local_path)
             if not local_path:
                 _requeue_or_fail(f"could not download media for msg {msg_id}")
                 continue

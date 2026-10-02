@@ -203,8 +203,9 @@ def ingest_listings(body: HouseIngestIn, background: BackgroundTasks):
             INSERT INTO house_listings
                 (id, url, listing_id, title, location, check_in, check_out, price_raw,
                  price_currency, price_zar_per_night, price_usd_per_night, fx_rate_zar_per_usd,
-                 nights, images, lat, lng, updated_at, first_seen_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 nights, images, lat, lng, updated_at, first_seen_at,
+                 neighbourhood, capacity, rating, reviews_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 listing_id=COALESCE(excluded.listing_id, house_listings.listing_id),
                 title=CASE WHEN excluded.title != '' THEN excluded.title ELSE house_listings.title END,
@@ -221,13 +222,18 @@ def ingest_listings(body: HouseIngestIn, background: BackgroundTasks):
                 lat=COALESCE(excluded.lat, house_listings.lat),
                 lng=COALESCE(excluded.lng, house_listings.lng),
                 updated_at=excluded.updated_at,
-                first_seen_at=COALESCE(house_listings.first_seen_at, excluded.first_seen_at)
+                first_seen_at=COALESCE(house_listings.first_seen_at, excluded.first_seen_at),
+                neighbourhood=COALESCE(NULLIF(excluded.neighbourhood, ''), house_listings.neighbourhood),
+                capacity=COALESCE(NULLIF(excluded.capacity, ''), house_listings.capacity),
+                rating=COALESCE(NULLIF(excluded.rating, ''), house_listings.rating),
+                reviews_count=COALESCE(NULLIF(excluded.reviews_count, ''), house_listings.reviews_count)
             """,
             (
                 item.url, item.url, item.listing_id, item.title or "", loc,
                 item.check_in, item.check_out, item.price_raw,
                 item.price_currency, zar, usd, fx, nights,
                 json.dumps(item.images), item.lat, item.lng, now, now,
+                item.neighbourhood, item.capacity, item.rating, item.reviews_count,
             ),
         )
 
@@ -371,36 +377,63 @@ def _fmt_date(s: Optional[str]) -> str:
         return s or ""
 
 
-def build_listing_caption(listing: dict) -> str:
-    usd = listing.get("price_usd_per_night")
-    zar = listing.get("price_zar_per_night")
-    if usd:
-        price_line = f"USD {usd:,.0f} per night"
-        if zar:
-            price_line += f"  (R{zar:,.0f})"
-    else:
-        price_line = listing.get("price_raw") or "Price on request"
+def build_listing_message(listing: dict, option: int = 1, of: int = 1) -> str:
+    """The text sent BEFORE a listing's photos: what was found, where, how big,
+    which dates it is free for, and the price per night and in total.
 
-    lines = [f"🏠 {listing.get('title') or 'Available property'}"]
-    if listing.get("location"):
-        lines.append(f"📍 {str(listing['location']).title()}")
-    lines.append(f"💵 {price_line}")
+    Per night is the stay total divided by the nights (the scraper now stores
+    that correctly — it used to store the whole-stay total as the nightly
+    rate). No "Managed by …" footer, no Airbnb link."""
+    lines = []
+    if option == 1:
+        lines.append("This is what I have found for you:")
+        lines.append("")
+    if of > 1:
+        lines.append(f"*Option {option} of {of}*")
+    lines.append(f"🏠 {listing.get('title') or 'Available property'}")
+
+    place = str(listing.get("location") or "").strip().title()
+    hood = str(listing.get("neighbourhood") or "").strip()
+    if hood and hood.lower() not in place.lower():
+        place = f"{hood}, {place}" if place else hood
+    if place:
+        lines.append(f"📍 {place}")
+    if listing.get("capacity"):
+        lines.append(f"👥 {listing['capacity']}")
+    if listing.get("rating"):
+        rc = listing.get("reviews_count")
+        lines.append(f"⭐ {listing['rating']}" + (f" ({rc} review{'s' if str(rc) != '1' else ''})" if rc else ""))
+
+    nights = listing.get("nights")
     if listing.get("check_in") and listing.get("check_out"):
-        nights = listing.get("nights")
-        stay = f"📅 {_fmt_date(listing['check_in'])} → {_fmt_date(listing['check_out'])}"
+        stay = f"📅 Free {_fmt_date(listing['check_in'])} → {_fmt_date(listing['check_out'])}"
         if nights:
             stay += f" ({nights} night{'s' if nights != 1 else ''})"
         lines.append(stay)
-    lines.append("Managed by KARLCON Elite Retreats — reply to book.")
+
+    usd = listing.get("price_usd_per_night")
+    if usd:
+        price = f"💵 USD {usd:,.2f} per night"
+        if nights:
+            price += f" · USD {usd * nights:,.2f} total"
+        lines.append(price)
+    elif listing.get("price_raw"):
+        lines.append(f"💵 {listing['price_raw']}")
+    else:
+        lines.append("💵 Price on request")
     return "\n".join(lines)
+
+
+# Kept for callers/tests that used the old name: same text, no footer.
+build_listing_caption = build_listing_message
 
 
 @router.post("/send")
 async def send_listings(body: HouseSendIn):
-    """Queue the chosen listings' photos + a title/price/dates caption as
-    outbound WhatsApp messages for one chat. Photos are the server-hosted
-    copies when cached (fall back to the scraped URLs); the Airbnb link is
-    intentionally not sent."""
+    """Queue, per chosen listing, a details message (see build_listing_message)
+    followed by its photos, as outbound WhatsApp messages for one chat.
+    Photos are the server-hosted copies when cached (fall back to the scraped
+    URLs) and go without captions; the Airbnb link is intentionally not sent."""
     conn = get_db()
     if not conn.execute("SELECT 1 FROM chats WHERE id=?", (body.chat_id,)).fetchone():
         conn.close()
@@ -421,33 +454,30 @@ async def send_listings(body: HouseSendIn):
         if body.offer_ids and n < len(body.offer_ids) and body.offer_ids[n]:
             offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (body.offer_ids[n],)).fetchone()
         listing = _row_to_listing(row, offer)
-        caption = build_listing_caption(listing)
+        details = build_listing_message(listing, option=n + 1, of=len(body.listing_ids))
 
-        images = listing["images"][:max_imgs]
-        # Caption rides on the first photo (WhatsApp shows it under the image);
-        # the remaining photos go bare. created_at is nudged by a few ms per
-        # photo so the outbox (ORDER BY created_at) keeps them in sequence.
-        for i, img_url in enumerate(images):
+        # Details text first, then the photos (no captions). created_at is
+        # nudged a few ms per message so the outbox (ORDER BY created_at)
+        # delivers them in exactly this order.
+        msg_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO messages "
+            "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
+            "direction, wa_status) "
+            "VALUES (?, ?, ?, 'text', ?, NULL, ?, NULL, NULL, 'out', 'pending')",
+            (msg_id, body.chat_id, body.sender, details, now.isoformat()),
+        )
+        queued_ids.append(msg_id)
+
+        for i, img_url in enumerate(listing["images"][:max_imgs]):
             msg_id = str(uuid.uuid4())
-            ts = (now + timedelta(milliseconds=i)).isoformat()
+            ts = (now + timedelta(milliseconds=i + 1)).isoformat()
             conn.execute(
                 "INSERT INTO messages "
                 "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
                 "direction, wa_status) "
-                "VALUES (?, ?, ?, 'image', ?, NULL, ?, ?, 'image', 'out', 'pending')",
-                (msg_id, body.chat_id, body.sender, caption if i == 0 else None, ts, img_url),
-            )
-            queued_ids.append(msg_id)
-
-        if not images:
-            # No photos at all — still send the details as text.
-            msg_id = str(uuid.uuid4())
-            conn.execute(
-                "INSERT INTO messages "
-                "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
-                "direction, wa_status) "
-                "VALUES (?, ?, ?, 'text', ?, NULL, ?, NULL, NULL, 'out', 'pending')",
-                (msg_id, body.chat_id, body.sender, caption, now.isoformat()),
+                "VALUES (?, ?, ?, 'image', NULL, NULL, ?, ?, 'image', 'out', 'pending')",
+                (msg_id, body.chat_id, body.sender, ts, img_url),
             )
             queued_ids.append(msg_id)
         now = now + timedelta(seconds=1)

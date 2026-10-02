@@ -352,6 +352,10 @@ async def push_listing_to_karlon(
             "price_usd_per_night": price_detail.get("usd_per_night"),
             "fx_rate_zar_per_usd": price_detail.get("fxRateUsed"),
             "images": (data.get("images") or [])[:KARLON_MAX_IMAGES_PER_LISTING],
+            "neighbourhood": data.get("neighbourhood") or None,
+            "capacity": data.get("capacity") or None,
+            "rating": str(data.get("rating") or "") or None,
+            "reviews_count": str(data.get("reviewsCount") or "") or None,
             "lat": data.get("lat"),
             "lng": data.get("lng"),
             # Set on on-demand jobs so the server can count live progress and
@@ -380,13 +384,27 @@ USD_AMOUNT_RE = re.compile(r"\$([\d,]+(?:\.\d+)?)")
 NIGHTS_RE = re.compile(r"for\s+(\d+)\s+nights?", re.IGNORECASE)
 
 
-def parse_price_text(raw: str) -> Dict:
-    """Turn a raw price-widget string into structured numbers: total amount in
-    whatever currency it was quoted in, the number of nights it covers (if
-    stated), the per-night amount, and USD equivalents using the live
-    CURRENT_ZAR_TO_USD_RATE fetched at startup (or passed straight through if the
-    listing was already priced in $). Handles a plain range like
-    'R1,200 - R1,500' by averaging the two ends."""
+PER_NIGHT_RE = re.compile(r"(/\s*night|per\s+night|\bnight\b(?!s))", re.IGNORECASE)
+RANGE_RE = re.compile(r"\d\s*[-–]\s*(?:R|\$)?\s?\d")
+
+
+def parse_price_text(raw: str, expected_nights: Optional[int] = None) -> Dict:
+    """Turn a raw price-widget string into structured numbers: the stay total
+    in the quoted currency, the nights it covers, the per-night amount, and USD
+    equivalents (via the live CURRENT_ZAR_TO_USD_RATE, or straight through if
+    the listing was already priced in $).
+
+    Per night = total / nights. With dates in the URL, Airbnb's headline price
+    is the WHOLE-STAY total ("$3,172" with "for 22 nights" beside it). Earlier
+    builds often captured only "$3,172", found no night count, and stored the
+    stay total as the nightly rate. Now, in order:
+      * "… for N nights"      -> total / N
+      * "$144 night" / "/night" -> already per night
+      * bare amount            -> total for `expected_nights` (the stay length
+                                  this scrape asked Airbnb to price)
+    A struck-through original next to a discounted price ("$3,500 $3,172")
+    takes the LAST (actual) amount; a genuine range ("R1,200 - R1,500") is
+    averaged as before."""
     empty = {
         "raw": raw, "currency": None, "amount": None, "nights": None,
         "per_night": None, "usd_total": None, "usd_per_night": None,
@@ -400,35 +418,37 @@ def parse_price_text(raw: str) -> Dict:
 
     all_zar = [to_float(x) for x in ZAR_AMOUNT_RE.findall(raw)]
     all_usd = [to_float(x) for x in USD_AMOUNT_RE.findall(raw)]
-    nights_m = NIGHTS_RE.search(raw)
-    nights = int(nights_m.group(1)) if nights_m else None
-
     if all_zar:
-        currency = "ZAR"
-        amount = sum(all_zar) / len(all_zar)  # midpoint if it was a range
+        currency, amounts = "ZAR", all_zar
     elif all_usd:
-        currency = "USD"
-        amount = sum(all_usd) / len(all_usd)
+        currency, amounts = "USD", all_usd
     else:
         return empty
+    amount = (sum(amounts) / len(amounts)) if (len(amounts) > 1 and RANGE_RE.search(raw)) else amounts[-1]
 
-    per_night = (amount / nights) if (nights and nights > 0) else amount
-
-    if currency == "ZAR":
-        usd_total = amount / CURRENT_ZAR_TO_USD_RATE
-        usd_per_night = per_night / CURRENT_ZAR_TO_USD_RATE
+    nights_m = NIGHTS_RE.search(raw)
+    if nights_m and int(nights_m.group(1)) > 0:
+        nights = int(nights_m.group(1))
+        per_night, total = amount / nights, amount
+    elif PER_NIGHT_RE.search(raw):
+        nights = expected_nights
+        per_night = amount
+        total = amount * nights if nights else amount
+    elif expected_nights and expected_nights > 0:
+        nights = expected_nights
+        per_night, total = amount / nights, amount
     else:
-        usd_total = amount
-        usd_per_night = per_night
+        nights, per_night, total = None, amount, amount
 
+    rate = CURRENT_ZAR_TO_USD_RATE if currency == "ZAR" else 1.0
     return {
         "raw": raw,
         "currency": currency,
-        "amount": round(amount, 2),
+        "amount": round(total, 2),
         "nights": nights,
         "per_night": round(per_night, 2),
-        "usd_total": round(usd_total, 2),
-        "usd_per_night": round(usd_per_night, 2),
+        "usd_total": round(total / rate, 2),
+        "usd_per_night": round(per_night / rate, 2),
         "fxRateUsed": CURRENT_ZAR_TO_USD_RATE if currency == "ZAR" else None,
     }
 
@@ -892,9 +912,25 @@ async def safe_inner_text(locator, timeout=5000, default=""):
         return default
 
 async def get_raw_price_text(page: Page) -> str:
-    """Scan regex-matched elements in DOM order, keep the first SHORT one (a real
-    price line, not an oversized wrapping container). Returns the raw text
-    untouched — parsing/currency math happens in parse_price_text()."""
+    """The booking widget's price line, raw. Preferred: the smallest element
+    around the "for N nights" text that also holds the amount ("$3,172 for 22
+    nights") — the amount and the night count are separate elements, and
+    taking the amount alone lost the night count. Fallback: the first SHORT
+    element matching a price. Parsing happens in parse_price_text()."""
+    try:
+        nights_el = page.locator("text=/for \\d+ nights?/i").first
+        if await nights_el.count() > 0:
+            node = nights_el
+            for _ in range(3):
+                try:
+                    txt = re.sub(r"\s+", " ", await node.inner_text(timeout=1200)).strip()
+                except Exception:
+                    break
+                if re.search(r"(\$|R\s?)\d", txt) and NIGHTS_RE.search(txt) and len(txt) <= 150:
+                    return txt
+                node = node.locator("xpath=..")
+    except Exception:
+        pass
     try:
         candidates = page.locator("text=/\\$[0-9]+|R\\s?[0-9,]+|for \\d+ night/i")
         count = await candidates.count()
@@ -909,6 +945,94 @@ async def get_raw_price_text(page: Page) -> str:
     except Exception:
         pass
     return ""
+
+
+# Harare suburbs, for naming where a listing is. Airbnb shows the exact
+# address only after booking and offsets the map pin by a few hundred metres,
+# so a suburb is the most precise honest answer: taken from the host's own
+# words when the description names one ("a charming Greendale apartment"),
+# else from OpenStreetMap for the (approximate) pin.
+HARARE_SUBURBS = [
+    "Alexandra Park", "Arcadia", "Ashdown Park", "Athlone", "Avondale", "Avonlea", "Ballantyne Park",
+    "Belgravia", "Belvedere", "Bluff Hill", "Borrowdale", "Borrowdale Brooke", "Borrowdale West",
+    "Braeside", "Carrick Creagh", "Chisipite", "Colne Valley", "Cranborne", "Eastlea", "Emerald Hill",
+    "Glen Lorne", "Gletwyn", "Greendale", "Greystone Park", "Groombridge", "Gun Hill", "Hatfield",
+    "Helensvale", "Highfield", "Highlands", "Hillside", "Hogerty Hill", "Kensington", "Lewisam",
+    "Logan Park", "Mabelreign", "Mandara", "Manresa", "Marlborough", "Milton Park", "Monavale",
+    "Mount Pleasant", "Mount Pleasant Heights", "Msasa", "Newlands", "Northwood", "Pomona",
+    "Prospect", "Quinnington", "Rhodesville", "Ridgeview", "Rolf Valley", "Ruwa", "Sentosa",
+    "Southerton", "Strathaven", "Tynwald", "Vainona", "Waterfalls", "Westgate", "Workington",
+    "Chitungwiza", "Epworth", "Mabvuku", "Tafara", "Kuwadzana", "Warren Park", "Budiriro", "Glen View",
+]
+_SUBURB_RES = [(name, re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE))
+               for name in sorted(HARARE_SUBURBS, key=len, reverse=True)]
+
+
+def find_suburb(*texts: str) -> str:
+    """The first known suburb named in the given texts (longest names win,
+    so "Borrowdale Brooke" beats "Borrowdale"), or ""."""
+    blob = "\n".join(t for t in texts if t)
+    for name, rx in _SUBURB_RES:
+        if rx.search(blob):
+            return name
+    return ""
+
+
+def extract_capacity(text: str) -> str:
+    """'6 guests · 3 bedrooms · 3 beds · 2.5 baths' from the listing page."""
+    m = re.search(r"\b(\d+\+?\s+guests?)\s*[·•]\s*([^\n]{0,80})", text or "", re.IGNORECASE)
+    if not m:
+        return ""
+    return (m.group(1) + " · " + m.group(2)).strip(" ·")
+
+
+def listing_overview(text: str) -> str:
+    """The top of the listing page: from the capacity line down to "What this
+    place offers" / "Where you'll be" — title, highlights and the visible
+    description, but not the map, reviews or "similar listings" further down
+    (which name other suburbs)."""
+    text = text or ""
+    m = re.search(r"\d+\+?\s+guests?", text, re.IGNORECASE)
+    start = m.start() if m else 0
+    stops = [i for i in (text.find("What this place offers", start), text.find("Where you\u2019ll be", start),
+                         text.find("Where you'll be", start)) if i > 0]
+    return text[start:min(stops)] if stops else text[start:start + 3000]
+
+
+_geocode_cache: Dict[tuple, str] = {}
+_geocode_lock = asyncio.Lock()
+_geocode_last = 0.0
+
+
+async def reverse_geocode_suburb(lat: float, lng: float) -> str:
+    """Suburb for a map pin from OpenStreetMap Nominatim (free; its policy is
+    max 1 request/second with an identifying User-Agent, both respected).
+    Cached per ~100 m. Best effort: "" on any failure."""
+    global _geocode_last
+    key = (round(lat, 3), round(lng, 3))
+    if key in _geocode_cache:
+        return _geocode_cache[key]
+    async with _geocode_lock:
+        wait = 1.1 - (time.time() - _geocode_last)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _geocode_last = time.time()
+        try:
+            import aiohttp
+            session = await _karlon_http()
+            async with session.get(
+                "https://nominatim.openstreetmap.org/reverse",
+                params={"format": "jsonv2", "lat": lat, "lon": lng, "zoom": 16, "addressdetails": 1},
+                headers={"User-Agent": "KarlonScraper/1.0 (KARLCON listings)"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                addr = (await resp.json()).get("address", {}) if resp.status == 200 else {}
+        except Exception:
+            addr = {}
+    name = (addr.get("suburb") or addr.get("neighbourhood") or addr.get("quarter")
+            or addr.get("city_district") or "")
+    _geocode_cache[key] = name
+    return name
 
 
 async def scrape_listing(
@@ -955,7 +1079,7 @@ async def scrape_listing(
         if await fill_dates_via_widget(page):
             await close_modals(page)
             raw_price = await get_raw_price_text(page)
-    price_detail = parse_price_text(raw_price)
+    price_detail = parse_price_text(raw_price, expected_nights=nights)
     price = format_price_for_index(price_detail)
 
     rating = ""
@@ -1001,6 +1125,17 @@ async def scrape_listing(
 
     image_urls = await collect_images(page)
 
+    capacity, overview = "", ""
+    try:
+        main_text = await page.locator("main").first.inner_text(timeout=4000)
+        capacity = extract_capacity(main_text)
+        overview = listing_overview(main_text)
+    except Exception:
+        pass
+    neighbourhood = find_suburb(description, overview, title, subtitle)
+    if not neighbourhood and lat is not None and lng is not None:
+        neighbourhood = await reverse_geocode_suburb(lat, lng)
+
     return {
         "listingId": listing_id,
         "url": url,
@@ -1015,6 +1150,8 @@ async def scrape_listing(
         "priceDetail": price_detail,
         "rating": rating,
         "reviewsCount": reviews_count,
+        "capacity": capacity,
+        "neighbourhood": neighbourhood,
         "description": description.strip(),
         "amenities": amenities,
         "host": host,

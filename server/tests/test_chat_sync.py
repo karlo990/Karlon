@@ -238,3 +238,33 @@ def test_chat_list_serves_local_time_and_web_page_handles_refresh(client, db):
     assert client.get("/api/chats").json()[0]["last_at"] == "2026-09-30T12:13:00.000000+02:00"
     page = (Path(__file__).resolve().parents[1] / "static/index.html").read_text(encoding="utf-8")
     assert "payload.type === 'refresh'" in page
+
+
+def test_house_send_is_details_text_then_plain_photos(client, db):
+    _insert_chat(db, KARL, "Karl")
+    db.commit()
+    listing = {"url": "https://www.airbnb.com/rooms/1731941150603946314", "title": "8 @Metcalf One",
+               "location": "Harare", "check_in": "2026-10-03", "check_out": "2026-10-25", "nights": 22,
+               "price_raw": "$3,172 for 22 nights", "price_currency": "USD", "price_usd_per_night": 144.18,
+               "images": ["https://a0.muscache.com/im/pictures/1.jpg", "https://a0.muscache.com/im/pictures/2.jpg"],
+               "neighbourhood": "Greendale", "capacity": "6 guests · 3 bedrooms · 3 beds · 2.5 baths",
+               "rating": "4.67", "reviews_count": "3"}
+    assert client.post("/api/houses/ingest", json={"listings": [listing]}).status_code == 200
+    offers = client.get("/api/houses/available", params={"location": "harare", "check_in": "2026-10-03",
+                                                          "check_out": "2026-10-25"}).json()
+    assert offers, offers
+    r = client.post("/api/houses/send", json={"chat_id": KARL, "listing_ids": [listing["url"]],
+                                              "offer_ids": [offers[0].get("offer_id")]})
+    assert r.status_code == 200, r.text
+    msgs = [m for m in r.json()["messages"]]
+    assert [m["kind"] for m in msgs] == ["text", "image", "image"]
+    text = msgs[0]["text"]
+    assert text.startswith("This is what I have found for you:")
+    for part in ("📍 Greendale, Harare", "👥 6 guests · 3 bedrooms · 3 beds · 2.5 baths", "⭐ 4.67 (3 reviews)",
+                 "📅 Free 03 Oct 2026 → 25 Oct 2026 (22 nights)", "💵 USD 144.18 per night · USD 3,171.96 total"):
+        assert part in text, (part, text)
+    assert "Managed by" not in text and "airbnb.com" not in text
+    assert all(not m["text"] for m in msgs[1:])                         # photos without captions
+    order = [r[0] for r in db.execute(
+        "SELECT kind FROM messages WHERE chat_id=? AND wa_status='pending' ORDER BY created_at, rowid", (KARL,))]
+    assert order == ["text", "image", "image"]                          # outbox delivers in this order
