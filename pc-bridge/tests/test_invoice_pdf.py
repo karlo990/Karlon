@@ -53,3 +53,20 @@ def test_invoice_number_and_figures():
     assert "No. KCER-2026-0010" in page and "2 Guests" in page
     fig = iw.invoice_figures({"nights": 1, "rate": 90})
     assert (fig["subtotal"], fig["fee"], fig["total"], fig["balance"]) == (90.0, 13.5, 103.5, 103.5)
+
+
+def test_a_full_invoice_fits_on_one_a4_page(tmp_path, monkeypatch):
+    """Long property details and a 28-night stay used to push the payment
+    methods and notes onto a second page."""
+    import re
+    monkeypatch.setenv("INVOICE_CHROMIUM_PATH", _chromium_path() or "")
+    inv = dict(INVOICE, invoice_number="KCER-2026-0011", guests=1, nights=28, check_in="2026-12-11",
+               check_out="2027-01-08", property_name="KCER 248", guest_name="Lynford Takudzwa Tapfumaneyi")
+    listing = {"neighbourhood": "Greendale", "capacity": "8 guests · 5 bedrooms · 6 beds · 2.5 baths"}
+    box = {}
+    t = threading.Thread(target=lambda: box.update(
+        pdf=iw.render_pdf_with_chromium(inv, tmp_path / "i.pdf", None, listing)))
+    t.start()
+    t.join(120)
+    data = box["pdf"].read_bytes()
+    assert len(re.findall(rb"/Type\s*/Page[^s]", data)) == 1
