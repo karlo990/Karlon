@@ -6,13 +6,13 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 63 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 69 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
 |---|---|
 | `wa_bridge.py` | WhatsApp Web ⇄ Karlon (import messages, deliver outbox) |
-| `invoice_worker.py` | pending invoice → .docx → PDF → upload |
+| `invoice_worker.py` | pending invoice → PDF (LibreOffice, else Word, else Chromium) → upload |
 | `airbnb_parallel_system.py` | listing scraper → `/api/houses/ingest`; books queued reservations |
 | `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
 | `karlon_supervisor.py` | starts the three above, restarts them with backoff |
@@ -120,6 +120,30 @@ next pass then re-syncs each chat cleanly.
 If a sync reports `prune skipped`, the snapshot would have removed more than
 half the chat's imported rows in that window. Check its JSON, then re-run
 the POST with `?force=true` if it's right.
+
+## Invoices, Terms & Conditions and other documents
+
+`invoice_worker.py` turns each pending invoice into a PDF with the first
+engine that works on this PC: LibreOffice, then Microsoft Word, then Chromium.
+Chromium is already installed for the WhatsApp bridge, so no other install
+is needed. The startup line says which engine will be used; force one with
+`INVOICE_PDF_ENGINE=libreoffice|word|chromium`. Re-queue a failed invoice
+with:
+
+```
+curl.exe -X POST https://davincii-code-karlcon.hf.space/api/invoices/<invoice id>/retry
+```
+
+Finished invoice PDFs and the Terms & Conditions PDF are queued on the server
+as documents (`/api/outbox/documents`). `wa_bridge.py` fetches that queue
+ahead of normal messages. The same document queued twice for one chat is sent
+once, and tapping Terms & Conditions again while one is waiting doesn't queue
+another.
+
+To send to a phone number with no chat row in WhatsApp (e.g. a guest who got
+an invoice before ever messaging), the bridge opens it through WhatsApp's
+`web.whatsapp.com/send?phone=…` link. Only outbound sends do this, as it
+reloads WhatsApp Web; numbers not on WhatsApp are reported and given up on.
 
 ## Reserve button: booking a house on Airbnb from the app
 

@@ -795,8 +795,12 @@ def ensure_jpeg(page: Page, path: str) -> str:
 def _outbox_poller(stop_event: threading.Event) -> None:
     """
     Dedicated background thread — the only REST calls this thread makes are:
+      GET  /api/outbox/documents → invoice PDFs and Terms & Conditions
+                                   (wa_status='documents'), queued first
       GET  /api/outbox           → fetch pending messages
     It does NOT touch Playwright; all browser ops stay on the main thread.
+    Documents used to be queued by the server but never fetched here, so
+    Terms & Conditions and invoice PDFs were never delivered.
 
     Items are deduplicated by message-id so we never put the same message
     into _outbox twice, even if it comes back on successive polls before the
@@ -805,9 +809,10 @@ def _outbox_poller(stop_event: threading.Event) -> None:
     print("[outbox-thread] started — polling every %ds" % OUTBOX_POLL_SEC)
     while not stop_event.is_set():
         try:
+            items = _fetch_documents_outbox()
             r = get_session().get(f"{KARLON_URL}/api/outbox", timeout=HTTP_TIMEOUT)
             r.raise_for_status()
-            items = r.json()
+            items += r.json()
             if items:
                 print(f"[outbox-thread] {len(items)} pending item(s) from server")
             with _ids_lock:
@@ -821,6 +826,46 @@ def _outbox_poller(stop_event: threading.Event) -> None:
             print(f"[outbox-thread] poll error: {e}")
         stop_event.wait(timeout=OUTBOX_POLL_SEC)
     print("[outbox-thread] stopped")
+
+def dedupe_documents(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """(to send, duplicates). The same file queued twice for the same chat
+    (Terms & Conditions tapped twice) is sent once."""
+    keep, dupes, seen = [], [], set()
+    for item in items:
+        key = (item.get("chat_id"), item.get("media_url"))
+        if item.get("media_url") and key in seen:
+            dupes.append(item)
+        else:
+            seen.add(key)
+            keep.append(item)
+    return keep, dupes
+
+
+_documents_endpoint_missing = False
+
+
+def _fetch_documents_outbox() -> list[dict]:
+    global _documents_endpoint_missing
+    if _documents_endpoint_missing:
+        return []
+    try:
+        r = get_session().get(f"{KARLON_URL}/api/outbox/documents", timeout=HTTP_TIMEOUT)
+        if r.status_code == 404:
+            _documents_endpoint_missing = True
+            return []
+        r.raise_for_status()
+        keep, dupes = dedupe_documents(r.json())
+    except Exception as e:
+        print(f"[outbox-thread] documents poll error: {e}")
+        return []
+    with _ids_lock:
+        fresh = [d for d in dupes if d.get("id") and d["id"] not in _queued_ids]
+        _queued_ids.update(d["id"] for d in fresh)
+    for d in fresh:
+        print(f"[outbox-thread] skipping duplicate '{_short(d.get('text'), 40)}' for {d.get('wa_name')}")
+        _ack_wa_message(d["chat_id"], d["id"], "superseded")
+    return keep
+
 
 # ─────────────────────── urgent outbox poller thread ─────────────────────────
 
@@ -1046,7 +1091,7 @@ def _process_items(
                 # Don't discard from ids_set — keeps it in the queue
 
         # Open the WhatsApp chat by clicking the correct row in the sidebar
-        if not open_chat_row(page, wa_name):
+        if not open_chat_row(page, wa_name, by_phone_link=True):
             _requeue_or_fail(f"could not open WA chat '{wa_name}'")
             continue
 
@@ -1682,7 +1727,9 @@ def _find_and_click_row(page: Page, chat_name: str) -> bool:
     for row in rows:
         try:
             name = _get_name_from_row(row, page)
-            if not name or name != chat_name.strip():
+            # Same comparison as the header check: WhatsApp shows a number as
+            # "+971 52 146 2917" while the server stores "+971521462917".
+            if not name or _name_key(name) != _name_key(chat_name):
                 continue
             try:
                 row.scroll_into_view_if_needed(timeout=2_000)
@@ -1795,12 +1842,15 @@ def _search_and_click_row(page: Page, chat_name: str) -> bool:
     if not search_box:
         return False
 
+    # A number is searched by its digits: WhatsApp's search doesn't match
+    # "+971521462917" against a chat titled "+971 52 146 2917".
+    query = re.sub(r"\D", "", chat_name) if is_unsaved_number(chat_name) else chat_name
     try:
         search_box.click()
         page.keyboard.press("Control+a")
         page.keyboard.press("Delete")
-        page.keyboard.type(chat_name, delay=15)
-        time.sleep(0.6)  # let WA's own filtering settle
+        page.keyboard.type(query, delay=15)
+        time.sleep(0.8)  # let WA's own filtering settle
     except Exception:
         _clear_sidebar_search(page)
         return False
@@ -1810,7 +1860,45 @@ def _search_and_click_row(page: Page, chat_name: str) -> bool:
     return found
 
 
-def open_chat_row(page: Page, chat_name: str) -> bool:
+_INVALID_PHONE_RE = re.compile(r"phone number shared via url is invalid", re.IGNORECASE)
+
+
+def _open_chat_by_phone(page: Page, chat_name: str) -> bool:
+    """Opens a phone-number chat through WhatsApp's own link
+    (web.whatsapp.com/send?phone=…). Used when the number has no row to click,
+    e.g. a guest who was given an invoice before they ever messaged. Reloads
+    WhatsApp Web, so it is the last resort and only for outbound sends."""
+    digits = re.sub(r"\D", "", chat_name)
+    if len(digits) < 8:
+        return False
+    print(f"  [open] '{chat_name}' has no chat row — opening it by number")
+    try:
+        page.goto(f"https://web.whatsapp.com/send?phone={digits}",
+                  wait_until="domcontentloaded", timeout=60_000)
+    except Exception as e:
+        print(f"  [open] couldn't load the chat link: {str(e).splitlines()[0][:120]}")
+        return False
+    deadline = time.time() + 45
+    while time.time() < deadline:
+        if header_shows(page, chat_name):
+            time.sleep(0.8)
+            return True
+        try:
+            text = page.evaluate("() => document.body ? document.body.innerText.slice(0, 4000) : ''")
+        except Exception:
+            text = ""
+        if _INVALID_PHONE_RE.search(text or ""):
+            print(f"  [open] {chat_name} is not on WhatsApp")
+            try:
+                page.get_by_role("button", name=re.compile(r"^\s*ok\s*$", re.IGNORECASE)).first.click(timeout=2_000)
+            except Exception:
+                page.keyboard.press("Escape")
+            return False
+        time.sleep(0.5)
+    return False
+
+
+def open_chat_row(page: Page, chat_name: str, by_phone_link: bool = False) -> bool:
     """
     Find `chat_name` and open it.
 
@@ -1841,7 +1929,7 @@ def open_chat_row(page: Page, chat_name: str) -> bool:
         except Exception:
             continue
     if not pane:
-        return False
+        return by_phone_link and is_unsaved_number(chat_name) and _open_chat_by_phone(page, chat_name)
 
     try:
         pane.evaluate("el => el.scrollTop = 0")
@@ -1863,6 +1951,8 @@ def open_chat_row(page: Page, chat_name: str) -> bool:
             return True
         no_new_streak += 1  # scrollTop clamps at the bottom, so this also caps the loop
 
+    if by_phone_link and is_unsaved_number(chat_name):
+        return _open_chat_by_phone(page, chat_name)
     return False
 
 # Direction signals for one message element, tried in order of how well each

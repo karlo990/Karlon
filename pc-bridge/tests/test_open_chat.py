@@ -64,3 +64,31 @@ def test_dom_report_lists_markers(page):
     w.open_chat_row(page, "Mom")
     rep = w.dom_report(page)
     assert "#main [data-id]" in rep and "header titles: ['Mom']" in rep
+
+
+def _route_phone_link(page, seen, valid=True):
+    def handle(route):
+        seen.append(route.request.url)
+        body = ('<div id="main"><header><span title="+971 52 146 2917">x</span></header>'
+                '<div style="height:300px"></div></div>' if valid else
+                '<div role="dialog">Phone number shared via url is invalid.<button>OK</button></div>')
+        route.fulfill(status=200, content_type="text/html", body=f"<html><body>{body}</body></html>")
+    page.route("https://web.whatsapp.com/**", handle)
+
+
+def test_number_without_a_chat_row_opens_by_phone_link_for_outbound_sends(page):
+    _load(page)
+    assert not w.open_chat_row(page, "+971521462917")              # sync never reloads WhatsApp
+    seen = []
+    _route_phone_link(page, seen)
+    assert w.open_chat_row(page, "+971521462917", by_phone_link=True)
+    assert seen and seen[0].endswith("/send?phone=971521462917")
+    assert w.header_shows(page, "+971521462917")
+
+
+def test_number_not_on_whatsapp_fails_cleanly(page):
+    _load(page)
+    seen = []
+    _route_phone_link(page, seen, valid=False)
+    assert not w.open_chat_row(page, "+971521462917", by_phone_link=True)
+    assert not w.open_chat_row(page, "Mom Junior", by_phone_link=True) and len(seen) == 1   # names never use the link

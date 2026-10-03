@@ -237,6 +237,7 @@ fun ChatDetailScreen(
         AvailableHousesDialog(
             state = housesUiState,
             onLocationChange = viewModel::onHousesLocationChange,
+            onLocationPicked = viewModel::onHousesLocationPicked,
             onCheckInChange = viewModel::onHousesCheckInChange,
             onCheckOutChange = viewModel::onHousesCheckOutChange,
             onSearch = viewModel::searchHouses,
@@ -264,10 +265,12 @@ fun ChatDetailScreen(
  * area the moment a search runs, and a Send button that WhatsApps every
  * checked listing's photos + price/title/link to this chat.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AvailableHousesDialog(
     state: AvailableHousesUiState,
     onLocationChange: (String) -> Unit,
+    onLocationPicked: (String) -> Unit,
     onCheckInChange: (String) -> Unit,
     onCheckOutChange: (String) -> Unit,
     onSearch: () -> Unit,
@@ -301,16 +304,40 @@ private fun AvailableHousesDialog(
 
                 Spacer(Modifier.height(10.dp))
 
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // Harare by default; the dropdown lists the other places (and
+                // anything typed narrows it). Picking one searches right away.
+                var locationMenuOpen by remember { mutableStateOf(false) }
+                val typed = state.location.trim()
+                val options = state.locationOptions.filter {
+                    typed.isEmpty() || it.equals(typed, ignoreCase = true) || it.contains(typed, ignoreCase = true)
+                }.ifEmpty { state.locationOptions }
+                ExposedDropdownMenuBox(
+                    expanded = locationMenuOpen,
+                    onExpandedChange = { locationMenuOpen = it },
+                ) {
                     OutlinedTextField(
                         value = state.location,
-                        onValueChange = onLocationChange,
+                        onValueChange = { onLocationChange(it); locationMenuOpen = true },
                         placeholder = { Text(stringResource(R.string.available_houses_location_hint)) },
                         singleLine = true,
-                        modifier = Modifier.weight(1f),
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = locationMenuOpen) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
                         shape = MaterialTheme.shapes.large,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { locationMenuOpen = false; onSearch() }),
                     )
+                    ExposedDropdownMenu(
+                        expanded = locationMenuOpen,
+                        onDismissRequest = { locationMenuOpen = false },
+                    ) {
+                        options.forEach { place ->
+                            DropdownMenuItem(
+                                text = { Text(place) },
+                                onClick = { locationMenuOpen = false; onLocationPicked(place) },
+                                contentPadding = ExposedDropdownMenuDefaults.ItemContentPadding,
+                            )
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(10.dp))

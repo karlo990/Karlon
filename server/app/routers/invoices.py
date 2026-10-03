@@ -258,3 +258,23 @@ def mark_invoice_error(invoice_id: str, body: InvoiceErrorIn):
     if not row:
         raise HTTPException(404, "invoice not found")
     return _invoice_row(row)
+
+@router.post("/{invoice_id}/retry")
+def retry_invoice(invoice_id: str):
+    """Puts a failed invoice (or one stuck in 'processing' after a worker
+    crash) back in the queue, so invoice_worker.py renders it again."""
+    conn = get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    cur = conn.execute(
+        "UPDATE invoices SET status='pending', error_message=NULL, updated_at=? "
+        "WHERE id=? AND status IN ('error', 'processing')",
+        (now, invoice_id),
+    )
+    conn.commit()
+    row = conn.execute("SELECT * FROM invoices WHERE id=?", (invoice_id,)).fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(404, "invoice not found")
+    if not cur.rowcount:
+        raise HTTPException(409, f"invoice is {row['status']}, only failed or stuck invoices can be retried")
+    return _invoice_row(row)

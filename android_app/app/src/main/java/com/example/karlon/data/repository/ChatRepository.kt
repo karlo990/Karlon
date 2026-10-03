@@ -179,7 +179,13 @@ class ChatRepository(
         checkOut: String? = null,
         limit: Int = 6,
     ): List<HouseListingDto> =
-        withContext(Dispatchers.IO) { api.getAvailableHouses(location, checkIn, checkOut, limit) }
+        withContext(Dispatchers.IO) {
+            // Photos come back as server paths (/static/houses/…); make them
+            // absolute or the image loader shows nothing.
+            api.getAvailableHouses(location, checkIn, checkOut, limit).map { listing ->
+                listing.copy(images = listing.images.filter { it.isNotBlank() }.map(::mediaUrl))
+            }
+        }
 
     suspend fun getHouseLocations(): List<String> =
         withContext(Dispatchers.IO) { api.getHouseLocations() }

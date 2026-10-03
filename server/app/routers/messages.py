@@ -55,7 +55,7 @@ def get_outbox(chat_id: str):
 def ack_wa_message(
     chat_id: str,
     msg_id: str,
-    status: str = Query(default="sent", pattern="^(sent|error|pending|urgent|documents)$"),
+    status: str = Query(default="sent", pattern="^(sent|error|pending|urgent|documents|superseded)$"),
 ):
     """
     Called by wa_bridge after attempting DOM delivery.
@@ -65,6 +65,7 @@ def ack_wa_message(
       status=urgent  → reset for retry, back into the priority queue
                        (routers/outbox.py::get_urgent_outbox) instead of
                        the normal 'pending' one
+      status=superseded → a duplicate of a document already being sent
     """
     conn = get_db()
     conn.execute(
@@ -267,10 +268,22 @@ async def send_terms(chat_id: str):
             f"(expected at {TERMS_PDF_PATH}); upload it before sending.",
         )
 
-    msg_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
     media_url = "/static/documents/terms_and_conditions.pdf"
     caption = "KARLCON Elite Retreats — Terms & Conditions"
+    # Tapping the button again while the PDF is still waiting to be sent
+    # returns the queued one instead of sending the guest two copies.
+    queued = conn.execute(
+        "SELECT * FROM messages WHERE chat_id=? AND direction='out' AND media_url=? "
+        "AND wa_status IN ('documents','pending') ORDER BY created_at LIMIT 1",
+        (chat_id, media_url),
+    ).fetchone()
+    if queued:
+        msg = serialize_message(conn, queued)
+        conn.close()
+        return msg
+
+    msg_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
         "INSERT INTO messages "
         "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "

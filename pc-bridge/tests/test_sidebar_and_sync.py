@@ -118,7 +118,7 @@ def test_failed_urgent_send_is_requeued_as_urgent(monkeypatch):
     acks = []
     monkeypatch.setattr(w, "_outbox", queue.Queue())
     monkeypatch.setattr(w, "_urgent_outbox", queue.Queue())
-    monkeypatch.setattr(w, "open_chat_row", lambda page, name: True)
+    monkeypatch.setattr(w, "open_chat_row", lambda page, name, **k: True)
     monkeypatch.setattr(w, "get_open_chat_title", lambda page: "Thabo")
     monkeypatch.setattr(w, "dom_send_message", lambda page, text: False)
     monkeypatch.setattr(w, "_ack_wa_message", lambda *a, **k: acks.append(a))
@@ -146,3 +146,47 @@ def test_ack_is_retried_then_gives_up(monkeypatch):
     monkeypatch.setattr(w.time, "sleep", lambda s: None)
     w._ack_wa_message("c", "m", "sent")
     assert len(calls) == 3
+
+
+def test_documents_queue_is_fetched_first_and_duplicates_sent_once(monkeypatch):
+    terms = "/static/documents/terms_and_conditions.pdf"
+    docs = [{"id": "t1", "chat_id": "c1", "media_url": terms, "text": "T&C", "wa_name": "+971521462917"},
+            {"id": "t2", "chat_id": "c1", "media_url": terms, "text": "T&C", "wa_name": "+971521462917"},
+            {"id": "t3", "chat_id": "c2", "media_url": terms, "text": "T&C", "wa_name": "Karl"},
+            {"id": "i1", "chat_id": "c1", "media_url": "/static/invoices/i1.pdf", "text": "Invoice"}]
+
+    class R:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.body
+
+    class S:
+        def get(self, url, **k):
+            return R(docs if url.endswith("/documents") else [{"id": "m1", "chat_id": "c1", "text": "hi"}])
+    acks = []
+    monkeypatch.setattr(w, "get_session", lambda: S())
+    monkeypatch.setattr(w, "_ack_wa_message", lambda c, m, s="sent": acks.append((m, s)))
+    monkeypatch.setattr(w, "_documents_endpoint_missing", False)
+    monkeypatch.setattr(w, "_queued_ids", set())
+    monkeypatch.setattr(w, "_outbox", queue.Queue())
+
+    class Stop:
+        n = 0
+
+        def is_set(self):
+            Stop.n += 1
+            return Stop.n > 1
+
+        def wait(self, timeout):
+            pass
+    w._outbox_poller(Stop())
+    queued = [w._outbox.get_nowait()["id"] for _ in range(w._outbox.qsize())]
+    assert queued == ["t1", "t3", "i1", "m1"]          # documents first, one T&C per chat
+    assert acks == [("t2", "superseded")]

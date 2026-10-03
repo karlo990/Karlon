@@ -27,9 +27,18 @@ data class ChatDetailUiState(
 /** Drives the house-icon popup: a location search box, up to 6
  * auto-populated available listings, a multi-select, and a Send action
  * that WhatsApps the picks (photos + price/title/link) to this chat. */
+/** Offered in the location dropdown even before the scraper has houses
+ * there; the server's own list (GET /api/houses/locations) is added to it. */
+val DEFAULT_HOUSE_LOCATIONS = listOf(
+    "Harare", "Bulawayo", "Victoria Falls", "Mutare", "Gweru", "Masvingo",
+    "Kwekwe", "Kadoma", "Chinhoyi", "Marondera", "Bindura", "Kariba", "Nyanga",
+)
+const val DEFAULT_HOUSE_LOCATION = "Harare"
+
 data class AvailableHousesUiState(
     val isVisible: Boolean = false,
     val location: String = "",
+    val locationOptions: List<String> = DEFAULT_HOUSE_LOCATIONS,
     /** Optional YYYY-MM-DD window — leave both blank to just see the
      * freshest scrape for the city; fill both in to narrow results to
      * listings actually priced for that exact window (see
@@ -168,16 +177,31 @@ class ChatDetailViewModel(
 
     // ── Available-houses popup (house-icon button) ──────────────────────────
 
-    /** Opens the popup and, if a location is already known (or was typed
-     * before), immediately fetches its up-to-6 fresh listings. */
-    fun openHousesPopup(defaultLocation: String = "") {
+    /** Opens the popup on Harare (or [defaultLocation]) and immediately
+     * fetches its up-to-6 fresh listings, then fills the location dropdown
+     * with every place the server has houses for. */
+    fun openHousesPopup(defaultLocation: String = DEFAULT_HOUSE_LOCATION) {
+        val location = defaultLocation.ifBlank { DEFAULT_HOUSE_LOCATION }
         _housesUiState.update {
             AvailableHousesUiState(
                 isVisible = true,
-                location = defaultLocation,
+                location = location,
             )
         }
-        if (defaultLocation.isNotBlank()) loadHouses(defaultLocation)
+        loadHouses(location)
+        viewModelScope.launch {
+            val fromServer = try { repository.getHouseLocations() } catch (e: Exception) { emptyList() }
+            val merged = (DEFAULT_HOUSE_LOCATIONS + fromServer.map { loc ->
+                loc.trim().split(" ").joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+            }).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
+            _housesUiState.update { it.copy(locationOptions = merged) }
+        }
+    }
+
+    /** Picking a place from the dropdown searches it straight away. */
+    fun onHousesLocationPicked(location: String) {
+        _housesUiState.update { it.copy(location = location) }
+        searchHouses()
     }
 
     fun dismissHousesPopup() {
