@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The raw PNG (drawable-nodpi/ic_launcher_foreground.png) bleeds its own
+  rounded-square logo all the way to the edge of the 108dp adaptive-icon
+  canvas. Android's launcher mask only ever shows the inner ~66dp "safe
+  zone" of that canvas — different launchers crop to a circle, squircle,
+  or teardrop — so an edge-to-edge foreground gets unevenly clipped on
+  every home screen and looks off-center/misplaced depending on the
+  launcher, exactly what was happening here.
+
+  Wrapping it in a 21dp inset on every side shrinks the visible artwork
+  down into that safe zone (108 - 21*2 = 66dp), so the same amount of
+  logo survives the mask on every launcher shape instead of a
+  launcher-dependent crop.
+-->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item
+        android:drawable="@drawable/ic_launcher_foreground"
+        android:left="21dp"
+        android:top="21dp"
+        android:right="21dp"
+        android:bottom="21dp" />
+</layer-list>

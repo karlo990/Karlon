@@ -1,0 +1,16 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+requests>=2.31
+python-multipart>=0.0.9
+
+# NOTE: playwright and python-docx were removed from this file. Neither is
+# imported anywhere under app/ — grep confirms zero `import playwright` or
+# `import docx` in the server code. Both belong on the PC side instead:
+#   - playwright  -> local_pc/wa_bridge.py (drives WhatsApp Web)
+#   - python-docx -> local_pc/invoice_worker.py (builds the invoice .docx
+#     before LibreOffice converts it to PDF)
+# Installing playwright + "playwright install --with-deps chromium" here
+# added a full headless Chromium + OS deps to every HF Space build for a
+# dependency the container never used — slower builds, bigger image, slower
+# cold starts, no benefit. If a genuinely server-side use for either ever
+# comes up, re-add it here with a comment explaining what imports it.

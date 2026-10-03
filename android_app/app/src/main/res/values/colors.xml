@@ -1,0 +1,17 @@
+<resources>
+    <!-- KARLCON Elite Retreats brand palette, sampled directly from the
+         logo (gold + brown) and the marketing site (deep retreat green). -->
+    <color name="karlon_gold">#C9962E</color>
+    <color name="karlon_gold_light">#E8B84D</color>
+    <color name="karlon_brown">#6B4A23</color>
+    <color name="karlon_brown_dark">#4A3117</color>
+    <color name="karlon_green">#1D7A4C</color>
+    <color name="karlon_green_dark">#155C39</color>
+    <color name="karlon_cream">#F7F3EC</color>
+    <color name="karlon_cream_dim">#EDE6D8</color>
+    <color name="karlon_ink">#26201A</color>
+    <color name="karlon_ink_soft">#5B5148</color>
+    <color name="karlon_bubble_out">#DCEFE2</color>
+    <color name="karlon_bubble_in">#FFFFFF</color>
+    <color name="karlon_error">#B3413A</color>
+</resources>

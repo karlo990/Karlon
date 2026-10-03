@@ -1,0 +1,8 @@
+__pycache__/
+*.db
+*.db-journal
+static/media/
+static/invoices/
+static/houses/
+static/profile_pics/
+.pytest_cache/
