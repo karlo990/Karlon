@@ -204,6 +204,18 @@ def init_db() -> None:
             completed_at TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS house_sends (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id     TEXT NOT NULL,
+            listing_url TEXT NOT NULL,
+            offer_id    TEXT,
+            option_no   INTEGER,
+            batch_id    TEXT NOT NULL,
+            sent_by     TEXT,
+            sent_at     TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_house_sends_chat ON house_sends(chat_id, sent_at DESC);
+
         CREATE TABLE IF NOT EXISTS reservations (
             -- Airbnb bookings made by the PC scraper on the app's request
             -- (routers/reservations.py). status: pending | in_progress |

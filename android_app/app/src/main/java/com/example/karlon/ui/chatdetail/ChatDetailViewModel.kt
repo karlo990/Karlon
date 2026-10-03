@@ -302,7 +302,10 @@ class ChatDetailViewModel(
         viewModelScope.launch {
             _housesUiState.update { it.copy(isSending = true, errorMessage = null) }
             try {
-                repository.sendHouses(chatId, ids, displayName)
+                // Send the dated offer each card was showing, so what the guest
+                // is told (and later invoiced) matches the dates picked here.
+                val byId = _housesUiState.value.listings.associateBy { it.id }
+                repository.sendHouses(chatId, ids, displayName, ids.map { byId[it]?.offerId })
                 _housesUiState.update {
                     it.copy(isSending = false, sendSuccess = true, selectedIds = emptySet())
                 }

@@ -128,6 +128,10 @@ data class InvoiceCreateRequest(
     @SerializedName("chat_id") val chatId: String? = null,
     /** Printed on the invoice ("2 Guests"). */
     val guests: Int = 1,
+    /** The house picked from the property list: links the invoice to its
+     * listing (photo, place, size) and to the offer that was sent. */
+    @SerializedName("listing_url") val listingUrl: String? = null,
+    @SerializedName("listing_offer_id") val listingOfferId: String? = null,
 )
 
 // ── Houses (Airbnb scraper -> server -> app "available now" popup) ────────
@@ -157,6 +161,12 @@ data class HouseListingDto(
     val neighbourhood: String? = null,
     val capacity: String? = null,
     val rating: String? = null,
+    /** The server now names listings "KCER 248 · Greendale, Harare" in [title];
+     * the Airbnb title (staff only) is kept here. */
+    @SerializedName("airbnb_title") val airbnbTitle: String? = null,
+    /** true = this house was already sent to the chat the list was asked for
+     * (invoice form), with the dates and price it was sent at. */
+    @SerializedName("sent_to_chat") val sentToChat: Boolean = false,
 ) {
     val displayPrice: String
         get() = priceUsdPerNight?.let { "$${it.toInt()}/night" } ?: (priceRaw ?: "Price on request")
@@ -208,6 +218,9 @@ data class HouseSendRequest(
     @SerializedName("chat_id") val chatId: String,
     @SerializedName("listing_ids") val listingIds: List<String>,
     val sender: String = "Front Desk",
+    /** Parallel to listingIds: the dated offer each pick was shown with, so
+     * the WhatsApp message and the invoice quote the same dates and price. */
+    @SerializedName("offer_ids") val offerIds: List<String?> = emptyList(),
 )
 
 data class HouseSendResponse(

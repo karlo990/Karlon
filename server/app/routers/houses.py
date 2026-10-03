@@ -96,6 +96,26 @@ def ref_code(listing: dict) -> str:
     return f"{REF_PREFIX} {n}" if n else REF_PREFIX
 
 
+def place_of(listing: dict) -> str:
+    """"Greendale, Harare": suburb plus city, as in the WhatsApp message."""
+    place = str(listing.get("location") or "").strip().title()
+    hood = str(listing.get("neighbourhood") or "").strip()
+    if hood and hood.lower() not in place.lower():
+        place = f"{hood}, {place}" if place else hood
+    return place
+
+
+def staff_view(listing: dict) -> dict:
+    """The listing as the staff app lists it: named by our reference and
+    place ("KCER 248 · Greendale, Harare"), the same way the guest was told,
+    never by its Airbnb title (kept as airbnb_title)."""
+    d = dict(listing)
+    d["airbnb_title"] = d.get("title")
+    place = place_of(d)
+    d["title"] = f"{ref_code(d)} · {place}" if place else ref_code(d)
+    return d
+
+
 def _row_to_listing(row, offer=None) -> dict:
     """Wire shape for the app (HouseListingDto). `images` is what the app
     should display/send: server-hosted copies when they exist, else the
@@ -312,6 +332,33 @@ def known_locations():
     return [r["location"] for r in rows]
 
 
+def sent_listings(conn, chat_id: str, limit: int = 12) -> list[dict]:
+    """The options already sent to this chat, latest batch first and in the
+    order they were sent, each with the dates and price it was offered at.
+    A house sent more than once appears once (its latest send)."""
+    rows = conn.execute(
+        "SELECT * FROM house_sends WHERE chat_id=? ORDER BY sent_at DESC, option_no ASC, id ASC", (chat_id,)
+    ).fetchall()
+    out, seen = [], set()
+    for r in rows:
+        if r["listing_url"] in seen:
+            continue
+        lrow = conn.execute("SELECT * FROM house_listings WHERE id=?", (r["listing_url"],)).fetchone()
+        if not lrow:
+            continue
+        offer = (conn.execute("SELECT * FROM listing_offers WHERE id=?", (r["offer_id"],)).fetchone()
+                 if r["offer_id"] else None)
+        d = staff_view(_row_to_listing(lrow, offer))
+        d["sent_to_chat"] = True
+        d["sent_at"] = r["sent_at"]
+        d["option_no"] = r["option_no"]
+        seen.add(r["listing_url"])
+        out.append(d)
+        if len(out) >= limit:
+            break
+    return out
+
+
 @router.get("/available")
 def available_listings(
     location: str,
@@ -319,6 +366,7 @@ def available_listings(
     check_out: Optional[str] = None,
     limit: int = 6,
     sort: str = Query("newest", pattern="^(newest|ref)$"),
+    chat_id: Optional[str] = None,
 ):
     """Listings for a location, newest-scraped first, or with sort=ref in
     KCER order (KCER 101, 102, …). location=all lists every city.
@@ -328,6 +376,11 @@ def available_listings(
     Without dates: the freshest property rows for the city regardless of
     dates. The app polls this while its search screen is open, so new rows
     show up progressively as the scraper pushes them.
+
+    With chat_id (the invoice form), the options already sent to that chat
+    come first, flagged sent_to_chat=true and carrying the dates/price they
+    were sent with, followed by the other houses. Titles are the staff label
+    ("KCER 248 · Greendale, Harare"); the Airbnb title is airbnb_title.
     """
     limit = max(1, min(limit, MAX_AVAILABLE_LIMIT))
     loc = _norm_location(location)
@@ -351,16 +404,33 @@ def available_listings(
             oid = d.pop("_oid")
             offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (oid,)).fetchone()
             out.append(_row_to_listing(d, offer))
-        conn.close()
-        return out
+    else:
+        rows = conn.execute(
+            "SELECT * FROM house_listings WHERE (? OR location = ?) ORDER BY "
+            + ("ref_no IS NULL, ref_no ASC" if by_ref else "updated_at DESC") + " LIMIT ?",
+            (every_city, loc, limit),
+        ).fetchall()
+        out = [_row_to_listing(r) for r in rows]
+    out = [staff_view(d) for d in out]
 
-    rows = conn.execute(
-        "SELECT * FROM house_listings WHERE (? OR location = ?) ORDER BY "
-        + ("ref_no IS NULL, ref_no ASC" if by_ref else "updated_at DESC") + " LIMIT ?",
-        (every_city, loc, limit),
-    ).fetchall()
+    if chat_id:
+        sent = [d for d in sent_listings(conn, chat_id)
+                if every_city or _norm_location(d.get("location") or "") == loc]
+        sent_urls = {d["url"] for d in sent}
+        out = sent + [d for d in out if d["url"] not in sent_urls]
+        out = out[:max(limit, len(sent))]
     conn.close()
-    return [_row_to_listing(r) for r in rows]
+    return out
+
+
+@router.get("/sent")
+def sent_to_chat(chat_id: str, limit: int = 12):
+    """The houses already sent to this chat, latest first (see sent_listings)."""
+    conn = get_db()
+    try:
+        return sent_listings(conn, chat_id, max(1, min(limit, 50)))
+    finally:
+        conn.close()
 
 
 @router.get("/listing")
@@ -417,10 +487,7 @@ def build_listing_message(listing: dict, option: int = 1, of: int = 1) -> str:
         lines.append(f"*Option {option} of {of}*")
     lines.append(f"🏠 {ref_code(listing)}")
 
-    place = str(listing.get("location") or "").strip().title()
-    hood = str(listing.get("neighbourhood") or "").strip()
-    if hood and hood.lower() not in place.lower():
-        place = f"{hood}, {place}" if place else hood
+    place = place_of(listing)
     if place:
         lines.append(f"📍 {place}")
     if listing.get("capacity"):
@@ -472,6 +539,7 @@ async def send_listings(body: HouseSendIn):
     now = datetime.now(timezone.utc)
     max_imgs = max(1, min(body.max_images_per_listing, 10))
     queued_ids: list[str] = []
+    batch_id, batch_at = str(uuid.uuid4()), now.isoformat()
 
     for n, listing_id in enumerate(body.listing_ids):
         row = conn.execute("SELECT * FROM house_listings WHERE id=?", (listing_id,)).fetchone()
@@ -482,6 +550,13 @@ async def send_listings(body: HouseSendIn):
             offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (body.offer_ids[n],)).fetchone()
         listing = _row_to_listing(row, offer)
         details = build_listing_message(listing, option=n + 1, of=len(body.listing_ids))
+        # Remember exactly what this guest was offered (the dated offer, so the
+        # invoice can quote the same dates and price).
+        conn.execute(
+            "INSERT INTO house_sends (chat_id, listing_url, offer_id, option_no, batch_id, sent_by, sent_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (body.chat_id, row["id"], listing.get("offer_id"), n + 1, batch_id, body.sender, batch_at),
+        )
 
         # Details text first, then the photos (no captions). created_at is
         # nudged a few ms per message so the outbox (ORDER BY created_at)

@@ -42,7 +42,7 @@ from fastapi import APIRouter, HTTPException, Query
 from ..database import get_db
 from ..models import ChatSnapshotIn
 from ..wa_clean import (
-    chat_slug, clean_chat_name, is_system_notice, is_time_only, normalize_text, to_utc_iso,
+    chat_slug, clean_chat_name, is_system_notice, is_time_only, echo_key, to_utc_iso,
 )
 from ..ws_manager import manager
 from .chats import incoming_pic, pic_version
@@ -183,7 +183,7 @@ async def sync_chat(chat_id: str, body: ChatSnapshotIn,
             if direction == "out":
                 wa_time = datetime.fromisoformat(created)
                 echo = next((r for r in app_sent if r["id"] not in kept
-                             and normalize_text(r["text"]) == normalize_text(text)
+                             and echo_key(r["text"]) == echo_key(text)
                              and _utc(r["created_at"])
                              and abs(datetime.fromisoformat(_utc(r["created_at"])) - wa_time) <= ECHO_WINDOW),
                             None)

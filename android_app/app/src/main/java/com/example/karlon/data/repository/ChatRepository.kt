@@ -179,22 +179,33 @@ class ChatRepository(
         checkOut: String? = null,
         limit: Int = 6,
         sort: String = "newest",
+        chatId: String? = null,
     ): List<HouseListingDto> =
         withContext(Dispatchers.IO) {
-            // Photos come back as server paths (/static/houses/…); make them
-            // absolute or the image loader shows nothing.
-            api.getAvailableHouses(location, checkIn, checkOut, limit, sort).map { listing ->
-                listing.copy(images = listing.images.filter { it.isNotBlank() }.map(::mediaUrl))
-            }
+            api.getAvailableHouses(location, checkIn, checkOut, limit, sort, chatId).map(::withAbsolutePhotos)
         }
+
+    /** The houses already sent to this chat, latest first. */
+    suspend fun getSentHouses(chatId: String): List<HouseListingDto> =
+        withContext(Dispatchers.IO) { api.getSentHouses(chatId).map(::withAbsolutePhotos) }
+
+    // Photos come back as server paths (/static/houses/…); make them absolute
+    // or the image loader shows nothing.
+    private fun withAbsolutePhotos(listing: HouseListingDto): HouseListingDto =
+        listing.copy(images = listing.images.filter { it.isNotBlank() }.map(::mediaUrl))
 
     suspend fun getHouseLocations(): List<String> =
         withContext(Dispatchers.IO) { api.getHouseLocations() }
 
     /** Sends the chosen listings' photos + price/title/link to this chat over
      * WhatsApp — same outbox/wa_bridge delivery path as sendTerms(). */
-    suspend fun sendHouses(chatId: String, listingIds: List<String>, sender: String): HouseSendResponse =
-        withContext(Dispatchers.IO) { api.sendHouses(HouseSendRequest(chatId, listingIds, sender)) }
+    suspend fun sendHouses(
+        chatId: String,
+        listingIds: List<String>,
+        sender: String,
+        offerIds: List<String?> = emptyList(),
+    ): HouseSendResponse =
+        withContext(Dispatchers.IO) { api.sendHouses(HouseSendRequest(chatId, listingIds, sender, offerIds)) }
 
     /** Reserve button: queues the booking for the PC's Airbnb session. */
     suspend fun createReservation(body: ReservationRequest): ReservationDto =

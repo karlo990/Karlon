@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 77 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 77 tests (server: 33), no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -154,6 +154,28 @@ To send to a phone number with no chat row in WhatsApp (e.g. a guest who got
 an invoice before ever messaging), the bridge opens it through WhatsApp's
 `web.whatsapp.com/send?phone=…` link. Only outbound sends do this, as it
 reloads WhatsApp Web; numbers not on WhatsApp are reported and given up on.
+
+## Invoices from the options you sent
+
+Every time houses are sent to a chat, the server records which ones and the
+dates and price each was offered at (`house_sends`). In the app, Invoices
+opened from a chat (the $ button) then lists those houses **first**, flagged
+"Sent to this guest", with the city preselected; tapping one fills in the
+property (`KCER 248`), dates and rate. `GET /api/houses/sent?chat_id=` returns
+the same list.
+
+Most of this lives on the server, so it also helps older app builds:
+- `/api/houses/available` names houses `KCER 248 · Greendale, Harare` (the
+  Airbnb title is `airbnb_title`), so every list shows what the guest was told;
+- creating an invoice whose property is named `KCER <n>` links it to that
+  listing by itself (photo, place, size, the offered dates and price), whether
+  or not the app sends the listing link;
+- WhatsApp's copy of a message the app sent (emoji gone, blank lines between
+  lines) is matched by its letters and digits only, so it links to the app's
+  own bubble instead of appearing as a second one.
+
+Only "sent first, per guest" needs the app to say which chat it is asking about
+(`chat_id`).
 
 ## Airbnb scraper: every city, 10 listings each
 
