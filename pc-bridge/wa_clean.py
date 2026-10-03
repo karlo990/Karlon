@@ -168,6 +168,15 @@ def normalize_text(t: str) -> str:
     return re.sub(r"\s+", " ", (t or "").strip().lower())
 
 
+def echo_key(t: str) -> str:
+    """Letters and digits only, case-folded. A message the app sent comes back
+    from WhatsApp Web looking different: emoji are drawn as images (so they
+    vanish from the text), *bold* markers are consumed, and line breaks and
+    spacing change. Matching on this key links the echo to the app's own row
+    instead of inserting it a second time as another outgoing bubble."""
+    return "".join(ch for ch in (t or "").casefold() if ch.isalnum())
+
+
 # ── dates & times ──────────────────────────────────────────────────────────
 
 _PRE_RE = re.compile(r"^\[(.*?)\]\s*(.*?):\s*$")

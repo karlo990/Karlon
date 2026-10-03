@@ -506,7 +506,8 @@ private fun PropertyDropdown(
             if (listings.isNotEmpty()) {
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline, thickness = 0.4.dp)
                 Text(
-                    "Available now (live scrape)",
+                    if (listings.any { it.sentToChat }) "Sent to this guest first, then available now"
+                    else "Available now (live scrape)",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -514,11 +515,26 @@ private fun PropertyDropdown(
                 listings.forEach { listing ->
                     DropdownMenuItem(
                         text = {
-                            Text(
-                                "🏠 ${listing.title ?: "Listing"} — ${listing.displayPrice}",
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
+                            Column {
+                                Text(
+                                    (if (listing.sentToChat) "✅ " else "🏠 ") +
+                                        "${listing.title ?: listing.displayName} — ${listing.displayPrice}",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                val stay = listOfNotNull(listing.checkIn, listing.checkOut).joinToString(" → ")
+                                if (stay.isNotBlank() || listing.sentToChat) {
+                                    Text(
+                                        listOfNotNull(
+                                            if (listing.sentToChat) "Sent to this guest" else null,
+                                            stay.ifBlank { null },
+                                            listing.nights?.let { "$it night${if (it == 1) "" else "s"}" },
+                                        ).joinToString(" · "),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         },
                         onClick = { onSelectListing(listing); expanded = false },
                     )

@@ -38,6 +38,9 @@ data class InvoiceFormState(
     val idNumber: String = "",
     val location: String? = null,
     val property: PropertyOption? = null,
+    /** The house picked from the live/sent list (null for a rate-card
+     * property): sent with the invoice so it links to the listing. */
+    val listing: HouseListingDto? = null,
     val checkIn: String = "",
     val checkOut: String = "",
     val nights: Int = 1,
@@ -82,7 +85,7 @@ class InvoiceViewModel(
      * guest name from the chat and locks "send to WhatsApp" onto that chat
      * (a deliberate, explicit pick, not an auto-match) rather than making
      * the front desk re-select it from the dropdown. */
-    prefillFromChat: ChatDto? = null,
+    private val prefillFromChat: ChatDto? = null,
 ) : ViewModel() {
 
     private val _catalogue = MutableStateFlow(InvoiceCatalogue())
@@ -110,6 +113,25 @@ class InvoiceViewModel(
     init {
         loadCatalogue()
         loadHistory()
+        loadSentOptions()
+    }
+
+    /** Opened from a chat: the houses already sent to that guest fill the
+     * Property list (first, flagged "Sent to this guest") and their city is
+     * preselected, so the invoice is one tap away. */
+    private fun loadSentOptions() {
+        val chat = prefillFromChat ?: return
+        viewModelScope.launch {
+            val sent = try { repository.getSentHouses(chat.id) } catch (_: Exception) { emptyList() }
+            val first = sent.firstOrNull() ?: return@launch
+            val city = first.location.split(" ").joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
+            _form.value = _form.value.copy(location = city, property = null, listing = null)
+            _houseListings.value = try {
+                repository.getAvailableHouses(location = city, limit = 12, chatId = chat.id)
+            } catch (_: Exception) {
+                sent
+            }
+        }
     }
 
     private fun loadCatalogue() {
@@ -175,7 +197,7 @@ class InvoiceViewModel(
         _houseListings.value = emptyList()
         viewModelScope.launch {
             _houseListings.value = try {
-                repository.getAvailableHouses(location = location, limit = 6)
+                repository.getAvailableHouses(location = location, limit = 12, chatId = prefillFromChat?.id)
             } catch (_: Exception) {
                 emptyList()
             }
@@ -183,7 +205,7 @@ class InvoiceViewModel(
     }
 
     fun onPropertyChange(property: PropertyOption) {
-        _form.value = _form.value.copy(property = property)
+        _form.value = _form.value.copy(property = property, listing = null)
     }
 
     /** Selecting a scraped listing from the Property dropdown — same as
@@ -192,13 +214,17 @@ class InvoiceViewModel(
      * for are copied in too when the invoice's own dates are still blank. */
     fun onListingChosenAsProperty(listing: HouseListingDto) {
         val current = _form.value
+        // A house that was sent to this guest brings the dates and price it
+        // was offered at, replacing any earlier pick's dates.
+        val useDates = listing.sentToChat || current.checkIn.isBlank() || current.checkOut.isBlank()
         _form.value = current.copy(
             property = PropertyOption(
-                name = listing.title?.takeIf { it.isNotBlank() } ?: listing.url,
+                name = listing.refCode ?: listing.title?.takeIf { it.isNotBlank() } ?: listing.url,
                 rate = listing.priceUsdPerNight ?: 0.0,
             ),
-            checkIn = current.checkIn.ifBlank { listing.checkIn ?: "" },
-            checkOut = current.checkOut.ifBlank { listing.checkOut ?: "" },
+            listing = listing,
+            checkIn = if (useDates) listing.checkIn ?: current.checkIn else current.checkIn,
+            checkOut = if (useDates) listing.checkOut ?: current.checkOut else current.checkOut,
         )
     }
 
@@ -271,6 +297,9 @@ class InvoiceViewModel(
                         checkOut = f.checkOut.trim().ifBlank { null },
                         nights = f.nights,
                         guests = f.guests,
+                        listingUrl = f.listing?.url,
+                        listingOfferId = f.listing?.takeIf { it.checkIn == f.checkIn.trim() && it.checkOut == f.checkOut.trim() }
+                            ?.offerId,
                         rate = f.rate,
                         createdBy = displayName,
                         chatId = f.sendToChat?.id,
@@ -282,6 +311,7 @@ class InvoiceViewModel(
                 _form.value = InvoiceFormState(
                     location = location,
                     property = property,
+                    listing = f.listing,
                     sendToChat = f.sendToChat,
                     lastSubmitted = created,
                 )

@@ -625,7 +625,7 @@ private fun HouseListingCard(
             Box {
                 AsyncImage(
                     model = listing.images.firstOrNull(),
-                    contentDescription = listing.title,
+                    contentDescription = listing.displayName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxWidth().height(96.dp).clip(RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp)),
                 )
@@ -652,10 +652,10 @@ private fun HouseListingCard(
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                 )
-                if (listing.refCode != null && !listing.title.isNullOrBlank()) {
+                if (listing.refCode != null && !listing.airbnbTitle.isNullOrBlank()) {
                     // Staff-only: the Airbnb title is never sent to guests.
                     Text(
-                        listing.title,
+                        listing.airbnbTitle,
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

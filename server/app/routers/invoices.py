@@ -19,6 +19,7 @@ Flow
 """
 
 import json
+import re
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -29,7 +30,7 @@ from ..config import INVOICES_DIR, PROPERTY_CATALOGUE
 from ..database import get_db
 from ..models import InvoiceCreateIn, InvoiceErrorIn, serialize_message
 from ..ws_manager import manager
-from .houses import _row_to_listing
+from .houses import _row_to_listing, ref_code
 
 router = APIRouter(prefix="/api/invoices", tags=["invoices"])
 
@@ -84,39 +85,58 @@ def create_invoice(body: InvoiceCreateIn):
         if not exists:
             raise HTTPException(404, "chat not found")
 
-    nights = max(1, body.nights)
-    # If both dates are valid, nights is derived from them (the app also does
-    # this — belt and braces so the PDF never disagrees with the dates).
-    if body.check_in and body.check_out:
-        try:
-            d = (date.fromisoformat(body.check_out) - date.fromisoformat(body.check_in)).days
-            if d >= 1:
-                nights = d
-        except ValueError:
-            pass
-
     conn = get_db()
 
-    # ── listing link (feature: listing metadata -> invoice auto-population) ──
+    # ── listing link (listing metadata -> invoice auto-population) ──
+    # The house can come from the app as a listing link, or just as a name
+    # ("KCER 248", "KCER 248 · Greendale, Harare"): either way it resolves to
+    # the listing, so the invoice carries its photo, place and size.
     listing_title = listing_images = zar = fx = None
     listing_url = body.listing_url
     offer_id = body.listing_offer_id
     rate = body.rate
+    check_in, check_out = body.check_in, body.check_out
+    property_name = body.property_name.strip()
+    lrow = None
     if listing_url:
         lrow = conn.execute("SELECT * FROM house_listings WHERE id=?", (listing_url,)).fetchone()
-        if lrow:
-            offer = None
-            if offer_id:
-                offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (offer_id,)).fetchone()
-            listing = _row_to_listing(lrow, offer)
-            listing_title = listing.get("title") or None
-            listing_images = json.dumps(listing.get("images") or [])
-            zar = listing.get("price_zar_per_night")
-            fx = listing.get("fx_rate_zar_per_usd")
-            if not rate and listing.get("price_usd_per_night"):
-                rate = float(listing["price_usd_per_night"])
-        else:
-            listing_url = None  # unknown listing — don't store a dangling link
+    if not lrow:
+        m = re.search(r"\bKCER\s*(\d+)\b", property_name, re.IGNORECASE)
+        if m:
+            lrow = conn.execute("SELECT * FROM house_listings WHERE ref_no=?", (int(m.group(1)),)).fetchone()
+    if lrow:
+        listing_url = lrow["id"]
+        if not offer_id and body.chat_id:      # the dates/price this guest was actually offered
+            sent = conn.execute(
+                "SELECT offer_id FROM house_sends WHERE chat_id=? AND listing_url=? AND offer_id IS NOT NULL "
+                "ORDER BY sent_at DESC, id DESC LIMIT 1", (body.chat_id, listing_url)).fetchone()
+            offer_id = sent["offer_id"] if sent else None
+        offer = None
+        if offer_id:
+            offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (offer_id,)).fetchone()
+        listing = _row_to_listing(lrow, offer)
+        listing_title = listing.get("title") or None
+        listing_images = json.dumps(listing.get("images") or [])
+        zar = listing.get("price_zar_per_night")
+        fx = listing.get("fx_rate_zar_per_usd")
+        if not rate and listing.get("price_usd_per_night"):
+            rate = float(listing["price_usd_per_night"])
+        if not (check_in and check_out) and listing.get("check_in") and listing.get("check_out"):
+            check_in, check_out = listing["check_in"], listing["check_out"]
+        property_name = ref_code(listing)          # the guest sees "KCER 248", not the Airbnb title
+    else:
+        listing_url = None  # unknown listing — don't store a dangling link
+
+    nights = max(1, body.nights)
+    # If both dates are valid, nights is derived from them (the app also does
+    # this — belt and braces so the PDF never disagrees with the dates).
+    if check_in and check_out:
+        try:
+            d = (date.fromisoformat(check_out) - date.fromisoformat(check_in)).days
+            if d >= 1:
+                nights = d
+        except ValueError:
+            pass
 
     total = round(rate * nights, 2)
     inv_id = str(uuid.uuid4())
@@ -130,7 +150,7 @@ def create_invoice(body: InvoiceCreateIn):
         "invoice_no, guests) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (inv_id, body.chat_id, body.guest_name.strip(), body.id_number.strip(),
-         body.location.strip(), body.property_name.strip(), body.check_in, body.check_out,
+         body.location.strip(), property_name, check_in, check_out,
          nights, rate, total, body.currency, body.created_by.strip(), now, now,
          listing_url, offer_id, listing_title, listing_images, zar, fx, invoice_no, body.guests),
     )

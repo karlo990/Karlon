@@ -280,3 +280,25 @@ def test_reference_numbers_start_at_101_and_never_change(client):
     ingest("https://www.airbnb.com/rooms/1", "A renamed")          # re-scrape keeps its number
     got = {l["url"][-1]: l["ref_code"] for l in client.get("/api/houses/available", params={"location": "harare"}).json()}
     assert got == {"1": "KCER 101", "2": "KCER 102"}
+
+
+def test_house_message_echo_from_whatsapp_is_linked_not_duplicated(client, db):
+    """What the app sent has emoji, *bold* and single line breaks; WhatsApp Web
+    reads it back without emoji or asterisks and with blank lines between
+    lines. It must link to the app's own row, not become a second bubble."""
+    _insert_chat(db, KARL, "Karl")
+    sent = ("*Option 6 of 6*\n🏠 KCER 248\n📍 Greendale, Harare\n👥 8 guests · 5 bedrooms · 6 beds · 2.5 baths\n"
+            "📅 Free 17 Oct 2026 → 19 Oct 2026 (2 nights)\n💵 USD 128.50 per night · USD 257.00 total\n\n"
+            "(T's and C's Apply)")
+    _insert_msg(db, "app-house", KARL, sent, "2026-10-03T11:14:00.000000+00:00",
+                direction="out", wa_status="sent", sender="Front Desk")
+    db.commit()
+    echoed = ("Option 6 of 6\n\n KCER 248\n\n Greendale, Harare\n\n 8 guests · 5 bedrooms · 6 beds · 2.5 baths\n\n"
+              " Free 17 Oct 2026 → 19 Oct 2026 (2 nights)\n\n USD 128.50 per night · USD 257.00 total\n\n\n\n"
+              "(T's and C's Apply)")
+    snap = _snap([_msg(0, echoed, "2026-10-03T11:14:20.000000+00:00", "k-house", direction="out", wa_id="true_H1")])
+    rep = client.post(f"/api/chats/{KARL}/sync", json=snap).json()
+    assert rep["linked_app_messages"] == 1 and rep["inserted"] == 0
+    rows = [dict(r) for r in db.execute("SELECT id, text, wa_msg_id FROM messages WHERE chat_id=?", (KARL,))]
+    assert [r["id"] for r in rows] == ["app-house"] and rows[0]["wa_msg_id"] == "true_H1"
+    assert "🏠 KCER 248" in rows[0]["text"]                       # the app's clean text is kept

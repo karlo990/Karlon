@@ -85,7 +85,13 @@ interface ApiService {
         @Query("limit") limit: Int = 6,
         /** "ref" = KCER order (KCER 101 first), "newest" = latest scraped first. */
         @Query("sort") sort: String = "newest",
+        /** Invoice form: put the houses already sent to this chat first. */
+        @Query("chat_id") chatId: String? = null,
     ): List<HouseListingDto>
+
+    /** The houses already sent to a chat, latest first. */
+    @GET("api/houses/sent")
+    suspend fun getSentHouses(@Query("chat_id") chatId: String): List<HouseListingDto>
 
     /** Distinct locations the scraper has pushed listings for so far. */
     @GET("api/houses/locations")
