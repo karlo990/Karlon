@@ -126,6 +126,8 @@ data class InvoiceCreateRequest(
     val currency: String = "USD",
     @SerializedName("created_by") val createdBy: String,
     @SerializedName("chat_id") val chatId: String? = null,
+    /** Printed on the invoice ("2 Guests"). */
+    val guests: Int = 1,
 )
 
 // ── Houses (Airbnb scraper -> server -> app "available now" popup) ────────
@@ -150,6 +152,11 @@ data class HouseListingDto(
      * reservation so the PC can check Airbnb's total against it. */
     @SerializedName("offer_id") val offerId: String? = null,
     val nights: Int? = null,
+    /** Suburb ("Hatfield, Harare"), guests/bedrooms line and rating, as
+     * sent in the WhatsApp listing message. */
+    val neighbourhood: String? = null,
+    val capacity: String? = null,
+    val rating: String? = null,
 ) {
     val displayPrice: String
         get() = priceUsdPerNight?.let { "$${it.toInt()}/night" } ?: (priceRaw ?: "Price on request")

@@ -127,6 +127,7 @@ class InvoiceCreateIn(BaseModel):
     nights: int = 1
     rate: float = 0.0
     currency: str = "USD"
+    guests: int = Field(1, ge=1, le=30)
     created_by: str = "Front Desk"
     # Optional — if set, the generated PDF is also delivered to WhatsApp
     # via this chat's outbox once invoice_worker.py finishes rendering it.

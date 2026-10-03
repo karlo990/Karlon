@@ -56,6 +56,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         "ALTER TABLE invoices ADD COLUMN listing_images       TEXT",
         "ALTER TABLE invoices ADD COLUMN price_zar_per_night  REAL",
         "ALTER TABLE invoices ADD COLUMN fx_rate_zar_per_usd  REAL",
+        # invoices: running number (KCER-<year>-0001…) and guest count for the PDF
+        "ALTER TABLE invoices ADD COLUMN invoice_no           INTEGER",
+        "ALTER TABLE invoices ADD COLUMN guests               INTEGER",
         # refresh_jobs: error text + how many listings landed while running
         "ALTER TABLE refresh_jobs ADD COLUMN error_message TEXT",
         "ALTER TABLE refresh_jobs ADD COLUMN started_at    TEXT",

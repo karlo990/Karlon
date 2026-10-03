@@ -30,7 +30,11 @@ INVOICES_DIR.mkdir(parents=True, exist_ok=True)
 # file is reused for every send, so it just needs to exist once here.
 DOCUMENTS_DIR = STATIC_DIR / "documents"
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
-TERMS_PDF_PATH = DOCUMENTS_DIR / "terms_and_conditions.pdf"
+# The file name is what the guest sees on the document in WhatsApp. The old
+# name is still used if only that file is on the server.
+TERMS_PDF_PATH = DOCUMENTS_DIR / "KARLCON_Elite_Retreats_Terms_and_Conditions.pdf"
+if not TERMS_PDF_PATH.exists() and (DOCUMENTS_DIR / "terms_and_conditions.pdf").exists():
+    TERMS_PDF_PATH = DOCUMENTS_DIR / "terms_and_conditions.pdf"
 
 # Server-hosted copies of scraped listing photos, one folder per listing
 # (see routers/houses.py: _cache_listing_images). Served at /static/houses/...

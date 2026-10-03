@@ -86,6 +86,7 @@ fun InvoiceScreen(viewModel: InvoiceViewModel) {
                     onCheckInChange = viewModel::onCheckInChange,
                     onCheckOutChange = viewModel::onCheckOutChange,
                     onNightsChange = viewModel::onNightsChange,
+                    onGuestsChange = viewModel::onGuestsChange,
                     onRateOverrideChange = viewModel::onRateOverrideChange,
                     onSendToChatChange = viewModel::onSendToChatChange,
                     onSubmit = viewModel::submit,
@@ -168,6 +169,7 @@ private fun InvoiceForm(
     onCheckInChange: (String) -> Unit,
     onCheckOutChange: (String) -> Unit,
     onNightsChange: (Int) -> Unit,
+    onGuestsChange: (Int) -> Unit,
     onRateOverrideChange: (String) -> Unit,
     onSendToChatChange: (ChatDto?) -> Unit,
     onSubmit: () -> Unit,
@@ -274,6 +276,22 @@ private fun InvoiceForm(
             }
             IconButton(onClick = { onNightsChange(form.nights + 1) }) {
                 Icon(Icons.Default.Add, contentDescription = "More nights", tint = KarlonGold)
+            }
+        }
+
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("Guests", color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.weight(1f))
+            IconButton(onClick = { onGuestsChange(form.guests - 1) }, enabled = form.guests > 1) {
+                Icon(Icons.Default.Remove, contentDescription = "Fewer guests", tint = KarlonGold)
+            }
+            Text(
+                form.guests.toString(),
+                color = MaterialTheme.colorScheme.onBackground,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            IconButton(onClick = { onGuestsChange(form.guests + 1) }, enabled = form.guests < 30) {
+                Icon(Icons.Default.Add, contentDescription = "More guests", tint = KarlonGold)
             }
         }
 

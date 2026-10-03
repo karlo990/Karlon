@@ -37,7 +37,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 import requests
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
 from ..config import (
     HOUSE_IMAGE_FETCH_TIMEOUT_SEC,
@@ -50,7 +50,7 @@ from ..ws_manager import manager
 
 router = APIRouter(prefix="/api/houses", tags=["houses"])
 
-MAX_AVAILABLE_LIMIT = 40
+MAX_AVAILABLE_LIMIT = 300
 
 
 # ─────────────────────────────── helpers ──────────────────────────────────────
@@ -318,8 +318,10 @@ def available_listings(
     check_in: Optional[str] = None,
     check_out: Optional[str] = None,
     limit: int = 6,
+    sort: str = Query("newest", pattern="^(newest|ref)$"),
 ):
-    """Listings for a location, newest-scraped first.
+    """Listings for a location, newest-scraped first, or with sort=ref in
+    KCER order (KCER 101, 102, …). location=all lists every city.
 
     With check_in+check_out: exactly the offers scraped for that window (from
     listing_offers, so a later scrape for other dates doesn't hide them).
@@ -329,6 +331,8 @@ def available_listings(
     """
     limit = max(1, min(limit, MAX_AVAILABLE_LIMIT))
     loc = _norm_location(location)
+    every_city = loc in ("", "all")
+    by_ref = sort == "ref"
     conn = get_db()
     if check_in and check_out:
         rows = conn.execute(
@@ -336,10 +340,10 @@ def available_listings(
             SELECT o.id AS _oid, h.*
             FROM listing_offers o
             JOIN house_listings h ON h.id = o.listing_url
-            WHERE o.location = ? AND o.check_in = ? AND o.check_out = ?
-            ORDER BY o.scraped_at DESC LIMIT ?
+            WHERE (? OR o.location = ?) AND o.check_in = ? AND o.check_out = ?
+            ORDER BY """ + ("h.ref_no IS NULL, h.ref_no ASC" if by_ref else "o.scraped_at DESC") + """ LIMIT ?
             """,
-            (loc, check_in, check_out, limit),
+            (every_city, loc, check_in, check_out, limit),
         ).fetchall()
         out = []
         for r in rows:
@@ -351,8 +355,9 @@ def available_listings(
         return out
 
     rows = conn.execute(
-        "SELECT * FROM house_listings WHERE location = ? ORDER BY updated_at DESC LIMIT ?",
-        (loc, limit),
+        "SELECT * FROM house_listings WHERE (? OR location = ?) ORDER BY "
+        + ("ref_no IS NULL, ref_no ASC" if by_ref else "updated_at DESC") + " LIMIT ?",
+        (every_city, loc, limit),
     ).fetchall()
     conn.close()
     return [_row_to_listing(r) for r in rows]

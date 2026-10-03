@@ -18,11 +18,21 @@
     <string name="available_houses_checkin_label">Check-in</string>
     <string name="available_houses_checkout_label">Check-out</string>
     <string name="available_houses_dates_incomplete">Fill in both check-in and check-out, or leave both blank.</string>
-    <string name="available_houses_empty">Search a location to see what\'s available right now.</string>
+    <string name="available_houses_empty">No houses here yet. Pick another city, or wait for the scraper to reach this one.</string>
     <string name="available_houses_untitled">Available property</string>
     <string name="available_houses_send">Send</string>
     <string name="available_houses_send_count">Send (%1$d)</string>
     <string name="available_houses_sent">Sent! Delivering to WhatsApp shortly.</string>
+    <string name="available_houses_any_dates">Any dates</string>
+    <string name="available_houses_clear_dates">Clear dates</string>
+    <string name="available_houses_pick_stay">Check-in → check-out</string>
+    <string name="available_houses_dates_ok">OK</string>
+    <string name="available_houses_sort_ref">KCER order</string>
+    <string name="available_houses_sort_newest">Newest</string>
+    <plurals name="available_houses_count">
+        <item quantity="one">%d house</item>
+        <item quantity="other">%d houses</item>
+    </plurals>
     <string name="reserve">Reserve</string>
     <string name="reserve_pick_one">Select exactly one house to reserve.</string>
     <string name="reserve_confirm_title">Reserve %1$s?</string>

@@ -268,7 +268,7 @@ async def send_terms(chat_id: str):
             f"(expected at {TERMS_PDF_PATH}); upload it before sending.",
         )
 
-    media_url = "/static/documents/terms_and_conditions.pdf"
+    media_url = f"/static/documents/{TERMS_PDF_PATH.name}"
     caption = "KARLCON Elite Retreats — Terms & Conditions"
     # Tapping the button again while the PDF is still waiting to be sent
     # returns the queued one instead of sending the guest two copies.

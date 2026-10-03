@@ -54,8 +54,18 @@ def list_locations():
     return [{"location": loc, "properties": props} for loc, props in sorted(out.items())]
 
 
+def invoice_number(d: dict) -> str:
+    """KCER-<year>-<0001>: the number printed on the invoice and its file name."""
+    year = (d.get("created_at") or datetime.now(timezone.utc).isoformat())[:4]
+    if not d.get("invoice_no"):                     # created before numbering existed
+        return f"KCER-{year}-{str(d.get('id') or '')[:6].upper()}"
+    return f"KCER-{year}-{int(d['invoice_no']):04d}"
+
+
 def _invoice_row(row) -> dict:
     d = dict(row)
+    d["invoice_number"] = invoice_number(d)
+    d["guests"] = d.get("guests") or 1
     try:
         d["listing_images"] = json.loads(d.get("listing_images") or "[]")
     except Exception:
@@ -111,16 +121,18 @@ def create_invoice(body: InvoiceCreateIn):
     total = round(rate * nights, 2)
     inv_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
+    invoice_no = conn.execute("SELECT COALESCE(MAX(invoice_no), 0) + 1 FROM invoices").fetchone()[0]
     conn.execute(
         "INSERT INTO invoices "
         "(id, chat_id, guest_name, id_number, location, property_name, check_in, "
         "check_out, nights, rate, total, currency, status, created_by, created_at, updated_at, "
-        "listing_url, listing_offer_id, listing_title, listing_images, price_zar_per_night, fx_rate_zar_per_usd) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "listing_url, listing_offer_id, listing_title, listing_images, price_zar_per_night, fx_rate_zar_per_usd, "
+        "invoice_no, guests) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (inv_id, body.chat_id, body.guest_name.strip(), body.id_number.strip(),
          body.location.strip(), body.property_name.strip(), body.check_in, body.check_out,
          nights, rate, total, body.currency, body.created_by.strip(), now, now,
-         listing_url, offer_id, listing_title, listing_images, zar, fx),
+         listing_url, offer_id, listing_title, listing_images, zar, fx, invoice_no, body.guests),
     )
     conn.commit()
     row = conn.execute("SELECT * FROM invoices WHERE id=?", (inv_id,)).fetchone()
@@ -207,7 +219,8 @@ async def upload_invoice_pdf(invoice_id: str, file: UploadFile = File(...)):
         conn.close()
         raise HTTPException(400, "empty file")
 
-    fname = f"invoice_{invoice_id}.pdf"
+    # The file name is what the guest sees on the document in WhatsApp.
+    fname = f"KARLCON_Invoice_{invoice_number(dict(inv))}.pdf"
     (INVOICES_DIR / fname).write_bytes(data)
     pdf_url = f"/static/invoices/{fname}"
 
@@ -222,7 +235,7 @@ async def upload_invoice_pdf(invoice_id: str, file: UploadFile = File(...)):
     chat_id = inv["chat_id"]
     if chat_id:
         msg_id = str(uuid.uuid4())
-        caption = f"Invoice — {inv['guest_name']} — {inv['property_name']}"
+        caption = f"Invoice {invoice_number(dict(inv))} — {inv['guest_name']}"
         conn.execute(
             "INSERT INTO messages "
             "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "

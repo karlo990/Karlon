@@ -66,6 +66,17 @@ KARLON_API_TOKEN = os.environ.get("KARLON_API_TOKEN", "")
 # ── Scraper ────────────────────────────────────────────────────────────────
 AIRBNB_LOGIN_TIMEOUT_SECONDS = _int_env("AIRBNB_LOGIN_TIMEOUT_SECONDS", 360)
 
+# Which cities the scraper sweeps (comma-separated). Empty = the full
+# ZIMBABWE_CITIES list in airbnb_parallel_system.py.
+AIRBNB_CITIES = [c.strip() for c in os.environ.get("AIRBNB_CITIES", "").split(",") if c.strip()]
+# Listings scraped per city per cycle: new ones first, then ones not refreshed
+# for AIRBNB_RESCRAPE_HOURS. Each city is searched, scraped and pushed on its
+# own, so a city's houses show in the app as soon as that city is done.
+AIRBNB_LISTINGS_PER_CITY = _int_env("AIRBNB_LISTINGS_PER_CITY", 10)
+AIRBNB_RESCRAPE_HOURS = _int_env("AIRBNB_RESCRAPE_HOURS", 12)
+AIRBNB_CITY_WORKERS = _int_env("AIRBNB_CITY_WORKERS", 3)          # cities searched at the same time
+AIRBNB_CYCLE_REST_SECONDS = _int_env("AIRBNB_CYCLE_REST_SECONDS", 300, minimum=0)
+
 # ── Reservations (Reserve button in the app → airbnb_reserve.py) ──────────
 # TEST MODE unless AIRBNB_RESERVE_LIVE=1: every step runs (listing, Reserve,
 # card/total checks, message to host) except the final "Request to book"

@@ -34,11 +34,17 @@ val DEFAULT_HOUSE_LOCATIONS = listOf(
     "Kwekwe", "Kadoma", "Chinhoyi", "Marondera", "Bindura", "Kariba", "Nyanga",
 )
 const val DEFAULT_HOUSE_LOCATION = "Harare"
+/** Dropdown entry that lists every city's houses together. */
+const val ALL_HOUSE_LOCATIONS = "All cities"
+/** How many houses one search shows: enough for KCER 101 to the latest. */
+const val HOUSES_PAGE_SIZE = 150
 
 data class AvailableHousesUiState(
     val isVisible: Boolean = false,
     val location: String = "",
-    val locationOptions: List<String> = DEFAULT_HOUSE_LOCATIONS,
+    val locationOptions: List<String> = listOf(ALL_HOUSE_LOCATIONS) + DEFAULT_HOUSE_LOCATIONS,
+    /** true = KCER order (KCER 101 first); false = newest scraped first. */
+    val sortByRef: Boolean = true,
     /** Optional YYYY-MM-DD window — leave both blank to just see the
      * freshest scrape for the city; fill both in to narrow results to
      * listings actually priced for that exact window (see
@@ -191,11 +197,24 @@ class ChatDetailViewModel(
         loadHouses(location)
         viewModelScope.launch {
             val fromServer = try { repository.getHouseLocations() } catch (e: Exception) { emptyList() }
-            val merged = (DEFAULT_HOUSE_LOCATIONS + fromServer.map { loc ->
+            val merged = (listOf(ALL_HOUSE_LOCATIONS) + DEFAULT_HOUSE_LOCATIONS + fromServer.map { loc ->
                 loc.trim().split(" ").joinToString(" ") { w -> w.replaceFirstChar { it.uppercase() } }
             }).filter { it.isNotBlank() }.distinctBy { it.lowercase() }
             _housesUiState.update { it.copy(locationOptions = merged) }
         }
+    }
+
+    /** Both dates from the range picker at once (YYYY-MM-DD, or blank to
+     * clear), then search. */
+    fun onHousesDatesPicked(checkIn: String, checkOut: String) {
+        _housesUiState.update { it.copy(checkIn = checkIn, checkOut = checkOut) }
+        searchHouses()
+    }
+
+    fun onHousesSortChange(byRef: Boolean) {
+        if (_housesUiState.value.sortByRef == byRef) return
+        _housesUiState.update { it.copy(sortByRef = byRef) }
+        searchHouses()
     }
 
     /** Picking a place from the dropdown searches it straight away. */
@@ -246,7 +265,11 @@ class ChatDetailViewModel(
                 it.copy(isLoading = true, errorMessage = null, sendSuccess = false, location = query)
             }
             try {
-                val listings = repository.getAvailableHouses(query, checkIn = ci, checkOut = co, limit = 6)
+                val listings = repository.getAvailableHouses(
+                    if (query.equals(ALL_HOUSE_LOCATIONS, ignoreCase = true)) "all" else query,
+                    checkIn = ci, checkOut = co, limit = HOUSES_PAGE_SIZE,
+                    sort = if (_housesUiState.value.sortByRef) "ref" else "newest",
+                )
                 _housesUiState.update {
                     it.copy(
                         isLoading = false,

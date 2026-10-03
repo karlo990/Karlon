@@ -241,12 +241,18 @@ _DOCUMENT_INPUT_SELECTORS = [
 # "Photos & videos" first. WhatsApp's attach menu also has a STICKER input
 # that accepts image/* — picking it sent house photos as stickers. Only the
 # photos input also accepts video, so that is what identifies it.
+# A plain image/* input is never used: in current WhatsApp Web that one is the
+# sticker maker, so failing (and retrying) beats sending a sticker.
 _IMAGE_INPUT_SELECTORS = [
     'input[type="file"][accept*="video"][accept*="image"]',
     'input[type="file"][accept*="video"]',
-    'input[type="file"][accept*="image"]:not([accept="image/webp"])',
-    'input[type="file"][accept*="image"]',
 ]
+# The attach menu's own items, clicked the way a person would; the file
+# picker each one opens is caught by Playwright (no OS dialog).
+_ATTACH_MENU_LABELS = {
+    "image": re.compile(r"^\s*photos?\s*(?:&|and)\s*videos?\s*$", re.IGNORECASE),
+    "document": re.compile(r"^\s*documents?\s*$", re.IGNORECASE),
+}
 
 # Send button inside the media/document preview modal (distinct DOM from
 # the plain-text compose send button above, though WA sometimes reuses it).
@@ -405,6 +411,19 @@ def _ack_wa_message(chat_id: str, msg_id: str, status: str = "sent") -> None:
 
 # ─────────────────────────────── DOM send ─────────────────────────────────────
 
+def type_multiline(page: Page, text: str, delay: int = 15) -> None:
+    """Types text into WhatsApp's compose box keeping line breaks inside ONE
+    message: Enter means "send" there, so each newline is Shift+Enter.
+    (keyboard.type pressed Enter at every line break, so a 6-line house
+    description went out as 6 separate messages.)"""
+    lines = text.replace("\r\n", "\n").split("\n")
+    for i, line in enumerate(lines):
+        if line:
+            page.keyboard.type(line, delay=delay)
+        if i < len(lines) - 1:
+            page.keyboard.press("Shift+Enter")
+
+
 def dom_send_message(page: Page, text: str) -> bool:
     """
     Type `text` into the currently-open WA chat compose box and press Send.
@@ -447,7 +466,7 @@ def dom_send_message(page: Page, text: str) -> bool:
 
         # Use keyboard.type so special characters survive (keyboard.fill works
         # for <input> but often doesn't trigger WA's onChange for contenteditable)
-        page.keyboard.type(text, delay=15)
+        type_multiline(page, text)
         page.wait_for_timeout(350)
 
         # ── 3. send ──────────────────────────────────────────────────────────
@@ -475,6 +494,39 @@ def dom_send_message(page: Page, text: str) -> bool:
         return False
 
 # ─────────────────────────────── DOM send: file/document ──────────────────────
+
+def _attach_via_menu(page: Page, kind: str, file_path: str) -> bool:
+    """Clicks "Photos & videos" (or "Document") in the open attach menu and
+    hands the file to the picker it opens. True if the file was chosen."""
+    rx = _ATTACH_MENU_LABELS["image" if kind == "image" else "document"]
+    try:
+        items = page.get_by_text(rx)
+        for i in range(min(items.count(), 4)):
+            item = items.nth(i)
+            try:
+                if not item.is_visible():
+                    continue
+                with page.expect_file_chooser(timeout=4_000) as chooser:
+                    item.click(timeout=3_000)
+                chooser.value.set_files(file_path)
+                return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return False
+
+
+def _find_file_input(page: Page, kind: str):
+    for sel in (_DOCUMENT_INPUT_SELECTORS if kind == "document" else _IMAGE_INPUT_SELECTORS):
+        try:
+            el = page.query_selector(sel)
+            if el:
+                return el
+        except Exception:
+            continue
+    return None
+
 
 def dom_send_file(page: Page, file_path: str, caption: str = "", kind: str = "document") -> bool:
     """
@@ -516,29 +568,19 @@ def dom_send_file(page: Page, file_path: str, caption: str = "", kind: str = "do
         attach_btn.click(timeout=5_000)
         page.wait_for_timeout(400)
 
-        input_candidates = _DOCUMENT_INPUT_SELECTORS if kind == "document" else _IMAGE_INPUT_SELECTORS
-        file_input = None
-        for sel in input_candidates:
-            try:
-                el = page.query_selector(sel)
-                if el:
-                    file_input = el
-                    break
-            except Exception:
-                continue
-
-        if not file_input:
-            print(f"  [dom_send_file] no matching file input found for kind='{kind}'")
-            # Close the menu (Escape) so we don't leave the UI in a stuck state.
-            try:
-                page.keyboard.press("Escape")
-            except Exception:
-                pass
-            return False
-
-        file_input.set_input_files(file_path)
+        if not _attach_via_menu(page, kind, file_path):
+            file_input = _find_file_input(page, kind)
+            if not file_input:
+                print(f"  [dom_send_file] no '{'Photos & videos' if kind == 'image' else 'Document'}' "
+                      f"option or matching file input found — not sending")
+                # Close the menu (Escape) so we don't leave the UI in a stuck state.
+                try:
+                    page.keyboard.press("Escape")
+                except Exception:
+                    pass
+                return False
+            file_input.set_input_files(file_path)
         page.wait_for_timeout(1_200)  # preview modal render + upload thumbnail
-
         # Defensive: if the sticker toggle is sitting in an active/pressed
         # state (from a stray earlier focus/keypress), click it back off
         # before we do anything else. We only ever act on it to disarm it.
@@ -564,7 +606,7 @@ def dom_send_file(page: Page, file_path: str, caption: str = "", kind: str = "do
             if caption_box:
                 try:
                     _click_center(page, caption_box)
-                    page.keyboard.type(caption.strip(), delay=15)
+                    type_multiline(page, caption.strip())
                     page.wait_for_timeout(200)
                 except Exception:
                     pass  # send without caption rather than failing the whole attach
@@ -715,8 +757,15 @@ def download_to_temp(url: str, suffix: str = "") -> Optional[str]:
             raise RuntimeError("empty body")
         if not suffix:
             suffix = _suffix_for(url, r.headers.get("content-type", ""))
-        fd, tmp_path = tempfile.mkstemp(prefix="karlon_", suffix=suffix)
-        with os.fdopen(fd, "wb") as f:
+        # Keep the server's file name: WhatsApp shows it on the document
+        # ("KARLCON_Invoice_KCER-2026-0010.pdf", not "karlon_x7f3.pdf").
+        name = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(url.split("?", 1)[0]).name).strip("._")
+        if not name:
+            name = "file"
+        if suffix and not name.lower().endswith(suffix.lower()):
+            name += suffix
+        tmp_path = os.path.join(tempfile.mkdtemp(prefix="karlon_"), name)
+        with open(tmp_path, "wb") as f:
             f.write(r.content)
         return tmp_path
     except Exception as e:
@@ -1119,6 +1168,8 @@ def _process_items(
             finally:
                 try:
                     os.remove(local_path)
+                    if Path(local_path).parent.name.startswith("karlon_"):
+                        os.rmdir(Path(local_path).parent)
                 except OSError:
                     pass
         else:

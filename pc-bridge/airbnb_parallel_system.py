@@ -44,27 +44,15 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 # Trimmed to Harare only per request. The rest of the towns are kept here, commented
 # out, so it's a one-line uncomment to bring the full sweep back later.
 ZIMBABWE_CITIES = [
-    "Harare",
-    # "Bulawayo",
-    # "Masvingo",
-    # "Gweru",
-    # "Mutare",
-    # "Chinhoyi",
-    # "Kwekwe",
-    # "Kadoma",
-    # "Chegutu",
-    # "Marondera",
-    # "Victoria Falls",
-    # "Bindura",
-    # "Beitbridge",
-    # "Gwanda",
-    # "Zvishavane",
-    # "Chiredzi",
-    # "Kariba",
-    # "Rusape",
-    # "Chipinge",
-    # "Norton",
+    "Harare", "Bulawayo", "Victoria Falls", "Mutare", "Gweru", "Masvingo",
+    "Kwekwe", "Kadoma", "Chinhoyi", "Marondera", "Bindura", "Kariba",
+    "Chegutu", "Beitbridge", "Gwanda", "Zvishavane", "Chiredzi", "Rusape",
+    "Chipinge", "Norton",
 ]
+from local_config import (AIRBNB_CITIES, AIRBNB_CITY_WORKERS, AIRBNB_CYCLE_REST_SECONDS,
+                          AIRBNB_LISTINGS_PER_CITY, AIRBNB_RESCRAPE_HOURS)
+if AIRBNB_CITIES:
+    ZIMBABWE_CITIES = list(AIRBNB_CITIES)
 SEARCH_QUERIES = list(ZIMBABWE_CITIES)
 LISTING_URLS = []
 
@@ -76,7 +64,11 @@ LISTING_URLS = []
 # search landed somewhere else (South Africa etc).
 DISALLOWED_COUNTRY_HINTS = ["south africa", "sandton", "johannesburg", "pretoria", "cape town", "durban"]
 
-MAX_LISTINGS_PER_SEARCH = 0   # 0 = no cap — pull EVERY listing found for a city via pagination
+# Per city per cycle (see pick_listings_to_scrape). The search collects a few
+# times as many links so there are new ones to choose from.
+MAX_LISTINGS_PER_SEARCH = AIRBNB_LISTINGS_PER_CITY
+SEARCH_LINKS_PER_CITY = AIRBNB_LISTINGS_PER_CITY * 4
+RESCRAPE_AFTER_SECONDS = AIRBNB_RESCRAPE_HOURS * 3600
 MAX_PAGES_PER_CITY = 40       # hard safety ceiling so a buggy "next page" loop can't run forever
 MIN_IMAGES_PER_LISTING = 8    # try to get at least this many per listing
 MAX_IMAGES_PER_LISTING = 0    # 0 = no cap; download every photo the listing's gallery has
@@ -89,8 +81,8 @@ MAX_IMAGES_PER_LISTING = 0    # 0 = no cap; download every photo the listing's g
 # city no longer starves the rest. MAX_SECONDS_PER_CITY (see perform_search) is the
 # per-city safety valve — even a single stuck city can only hold its own worker
 # hostage for so long before it's cut loose and the worker grabs the next city.
-MAX_SEARCH_WORKERS = 40
-MAX_SECONDS_PER_CITY = 900000   # 15 min hard cap per city, on top of MAX_PAGES_PER_CITY
+MAX_SEARCH_WORKERS = AIRBNB_CITY_WORKERS   # was 40 browser pages at once
+MAX_SECONDS_PER_CITY = 900      # 15 min hard cap per city (was 900000 s, ~10 days)
 MAX_SCRAPE_WORKERS = 4
 MAX_MESSAGE_WORKERS = 2
 MAX_IMAGE_DOWNLOADS = 20
@@ -100,7 +92,7 @@ MAX_IMAGE_DOWNLOADS = 20
 # between cycles, until you Ctrl+C it. checkpoint.scraped_urls / sent_urls keep listings
 # from being re-scraped/re-messaged pointlessly on later cycles (see scrape_worker /
 # message_worker), so each cycle mainly picks up NEW listings + refreshed prices.
-CYCLE_REST_SECONDS = 1   # 30 minutes; raise/lower to taste
+CYCLE_REST_SECONDS = AIRBNB_CYCLE_REST_SECONDS   # default 5 min (was 1 s)
 
 # Master switch for the "message every host" phase. Set to False to pause outreach
 # while you keep scraping/updating listings, prices, and coordinates — flip it back
@@ -195,11 +187,24 @@ KARLON_MAX_IMAGES_PER_LISTING = 6
 class Checkpoint:
     scraped_urls: Set[str] = field(default_factory=set)
     sent_urls: Set[str] = field(default_factory=set)
+    # When each listing was last scraped (epoch seconds). A listing is skipped
+    # only while fresh, so prices get refreshed and houses lost in a server
+    # wipe are pushed again. Older checkpoints have no times: those count as
+    # stale and are refreshed once.
+    scraped_at: Dict[str, float] = field(default_factory=dict)
+
+    def mark_scraped(self, url: str) -> None:
+        self.scraped_urls.add(url)
+        self.scraped_at[url] = time.time()
+
+    def is_fresh(self, url: str) -> bool:
+        return time.time() - self.scraped_at.get(url, 0) < RESCRAPE_AFTER_SECONDS
 
     def save(self):
         data = {
             "scraped_urls": list(self.scraped_urls),
             "sent_urls": list(self.sent_urls),
+            "scraped_at": self.scraped_at,
         }
         CHECKPOINT_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
@@ -207,8 +212,19 @@ class Checkpoint:
     def load(cls):
         if CHECKPOINT_FILE.exists():
             data = json.loads(CHECKPOINT_FILE.read_text(encoding="utf-8"))
-            return cls(set(data.get("scraped_urls", [])), set(data.get("sent_urls", [])))
+            return cls(set(data.get("scraped_urls", [])), set(data.get("sent_urls", [])),
+                       {k: float(v) for k, v in (data.get("scraped_at") or {}).items()})
         return cls()
+
+
+def pick_listings_to_scrape(urls: List[str], checkpoint: "Checkpoint", limit: int) -> List[str]:
+    """Up to `limit` of a city's search results: never-scraped first (in
+    search order), then the stalest; listings refreshed recently are left."""
+    new = [u for u in urls if u not in checkpoint.scraped_at and u not in checkpoint.scraped_urls]
+    stale = sorted((u for u in urls if u not in new and not checkpoint.is_fresh(u)),
+                   key=lambda u: checkpoint.scraped_at.get(u, 0))
+    picked = list(dict.fromkeys(new + stale))
+    return picked[:limit] if limit > 0 else picked
 
 # ---------- HELPERS ----------
 def sanitize_folder_name(name: str, max_len: int = 80) -> str:
@@ -876,8 +892,8 @@ async def scrape_worker(
             break
         url, city_hint = item if isinstance(item, tuple) else (item, "")
 
-        if url in checkpoint.scraped_urls:
-            print(f"⏭️  Already scraped: {url}")
+        if checkpoint.is_fresh(url):
+            print(f"⏭️  Scraped recently: {url}")
             task_queue.task_done()
             continue
 
@@ -895,7 +911,7 @@ async def scrape_worker(
                     continue
                 folder_path = await save_listing_data(data, image_sem)
                 await result_queue.put((data, folder_path))
-                checkpoint.scraped_urls.add(url)
+                checkpoint.mark_scraped(url)
                 checkpoint.save()
                 print(f"✅ Scraped: {url} -> {folder_path}")
         except Exception as e:
@@ -1945,6 +1961,7 @@ async def search_worker(
     max_listings: int,
     days_from_now: int = CHECKIN_DAYS_FROM_NOW,
     nights: int = STAY_NIGHTS,
+    checkpoint: Optional["Checkpoint"] = None,
 ):
     while True:
         query = await search_queue.get()
@@ -1956,10 +1973,13 @@ async def search_worker(
         try:
             await apply_stealth(page)
             print(f"\n🔍 ===== Starting city: {query} (running concurrently with other cities) =====")
-            urls = await perform_search(page, query, max_listings, days_from_now=days_from_now, nights=nights)
+            found = await perform_search(page, query, SEARCH_LINKS_PER_CITY if checkpoint else max_listings,
+                                         days_from_now=days_from_now, nights=nights)
+            urls = pick_listings_to_scrape(found, checkpoint, max_listings) if checkpoint else found
             for url in urls:
                 await listing_queue.put((url, query))
-            print(f"✅ City '{query}' done for this pass — {len(urls)} listings found.\n")
+            print(f"✅ City '{query}': {len(found)} found, {len(urls)} queued to scrape now "
+                  f"(new first, then any not refreshed in {AIRBNB_RESCRAPE_HOURS}h).\n")
         except Exception as e:
             print(f"❌ Search error for '{query}': {e}")
         finally:
@@ -2695,37 +2715,36 @@ async def main():
                 # let scraping begin on early links while other pages/cities were still
                 # being harvested. Splitting into two clean phases guarantees the full
                 # link set is in hand before phase 2 opens a single listing.
-                print(f"\n🔎 Phase 1/2: searching — harvesting every listing link across "
-                      f"all result pages for {', '.join(SEARCH_QUERIES)}...")
+                print(f"\n🔎 Searching {len(cycle_cities)} cities ({MAX_SEARCH_WORKERS} at a time), "
+                      f"{MAX_LISTINGS_PER_SEARCH} listings each: {', '.join(cycle_cities)}")
+
+                # Scrapers start together with the searches: a city's listings
+                # are scraped and pushed to Karlon as soon as that city's search
+                # is done, so every city populates in the app on its own instead
+                # of waiting for all cities to be searched first.
+                scrape_workers = []
+                for _ in range(MAX_SCRAPE_WORKERS):
+                    w = asyncio.create_task(scrape_worker(listing_queue, result_queue, context, checkpoint, image_sem))
+                    scrape_workers.append(w)
+                index_worker_task = asyncio.create_task(index_worker(result_queue))
 
                 search_workers = []
                 for _ in range(MAX_SEARCH_WORKERS):
-                    w = asyncio.create_task(search_worker(search_queue, listing_queue, context, MAX_LISTINGS_PER_SEARCH))
+                    w = asyncio.create_task(search_worker(search_queue, listing_queue, context,
+                                                          MAX_LISTINGS_PER_SEARCH, checkpoint=checkpoint))
                     search_workers.append(w)
 
                 await search_queue.join()
                 for _ in search_workers:
                     await search_queue.put(None)
                 await asyncio.gather(*search_workers)
-
-                harvested = listing_queue.qsize()
-                print(f"✅ Phase 1/2 complete — {harvested} listing link(s) harvested "
-                      f"from every page. Starting phase 2 (individual scraping) now.\n")
-
-                # ---- PHASE 2: SCRAPE ----
-                # Only now do we start opening individual listing pages for images/info.
-                scrape_workers = []
-                for _ in range(MAX_SCRAPE_WORKERS):
-                    w = asyncio.create_task(scrape_worker(listing_queue, result_queue, context, checkpoint, image_sem))
-                    scrape_workers.append(w)
+                print(f"✅ All {len(cycle_cities)} cities searched — finishing the last listings...\n")
 
                 msg_workers = []
                 if ENABLE_MESSAGING:
                     for _ in range(MAX_MESSAGE_WORKERS):
                         w = asyncio.create_task(message_worker(msg_queue, context, checkpoint))
                         msg_workers.append(w)
-
-                index_worker_task = asyncio.create_task(index_worker(result_queue))
 
                 await listing_queue.join()
                 for _ in scrape_workers:

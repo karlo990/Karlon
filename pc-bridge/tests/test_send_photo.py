@@ -111,3 +111,89 @@ def test_webp_conversion_works_without_pillow(page, tmp_path, monkeypatch):
     page.set_content("<p>x</p>")
     out = w.ensure_jpeg(page, str(_webp(page, tmp_path)))
     assert w._image_format(open(out, "rb").read()) == "jpeg"
+
+
+MENU_PAGE = """
+<div id="main"><footer>
+  <div id="compose" contenteditable="true" data-tab="10" aria-label="Type a message" style="width:600px;height:40px"></div>
+  <button aria-label="Attach" id="attach" style="width:40px;height:40px">+</button>
+</footer></div>
+<div id="menu" style="display:none">
+  <div role="button" id="m-doc"><span>Document</span></div>
+  <div role="button" id="m-photos"><span>Photos &amp; videos</span></div>
+  <div role="button" id="m-sticker"><span>New sticker</span></div>
+</div>
+<input type="file" id="sticker" accept="image/*" style="display:none">
+<div id="editor" style="display:none;position:fixed;inset:0;background:#fff">
+  <div role="button" aria-label="Send" id="editor-send" style="position:absolute;bottom:10px;right:10px;width:48px;height:48px">
+    <span data-icon="wds-ic-send-filled" style="display:block;width:24px;height:24px"></span></div>
+</div>
+<script>
+window.SENT = [];
+const editor = document.getElementById('editor');
+document.getElementById('attach').onclick = () => { document.getElementById('menu').style.display = 'block'; };
+document.getElementById('sticker').onchange = () => { window.SENT.push('WRONG: sticker'); editor.style.display = 'block'; };
+document.getElementById('m-sticker').onclick = () => document.getElementById('sticker').click();
+document.getElementById('m-photos').onclick = () => {
+  // current WhatsApp: the photos input only exists once its menu item is clicked
+  const i = document.createElement('input'); i.type = 'file'; i.accept = 'image/*,video/mp4';
+  i.style.display = 'none'; i.onchange = () => { window.SENT.push('photo'); editor.style.display = 'block'; };
+  document.body.appendChild(i); i.click();
+};
+document.getElementById('editor-send').onclick = () => { window.SENT.push('sent'); editor.remove(); };
+</script>
+"""
+
+
+def test_photo_goes_through_photos_and_videos_never_the_sticker_input(page, tmp_path):
+    page.set_content(MENU_PAGE)
+    assert w.dom_send_file(page, _photo(tmp_path), kind="image")
+    assert page.evaluate("window.SENT") == ["photo", "sent"]
+
+
+def test_no_photos_option_fails_instead_of_sending_a_sticker(page, tmp_path):
+    page.set_content(MENU_PAGE.replace('<span>Photos &amp; videos</span>', '<span>Gallery</span>'))
+    assert not w.dom_send_file(page, _photo(tmp_path), kind="image")
+    assert page.evaluate("window.SENT") == []
+
+
+def test_multiline_text_is_one_message(page):
+    page.set_content('<div id="box" contenteditable="true" style="width:500px;height:200px"></div>'
+                     '<script>window.SENDS = 0; document.getElementById("box").addEventListener("keydown", e => {'
+                     ' if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); window.SENDS++; } });</script>')
+    page.click("#box")
+    w.type_multiline(page, "This is what I have found for you:\n🏠 KCER 116\n📍 Hatfield, Harare")
+    assert page.evaluate("window.SENDS") == 0                      # no line was sent on its own
+    assert page.evaluate("document.getElementById('box').innerText").count("KCER 116") == 1
+
+
+def test_pdf_goes_through_document_option_with_its_real_name(page, tmp_path):
+    doc_page = MENU_PAGE.replace("document.getElementById('editor-send').onclick", """document.getElementById('m-doc').onclick = () => {
+  const i = document.createElement('input'); i.type = 'file'; i.accept = '*';
+  i.style.display = 'none'; i.onchange = () => { window.SENT.push('doc:' + i.files[0].name); editor.style.display = 'block'; };
+  document.body.appendChild(i); i.click();
+};
+document.getElementById('editor-send').onclick""")
+    page.set_content(doc_page)
+    pdf = tmp_path / "KARLCON_Invoice_KCER-2026-0010.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    assert w.dom_send_file(page, str(pdf), kind="document")
+    assert page.evaluate("window.SENT") == ["doc:KARLCON_Invoice_KCER-2026-0010.pdf", "sent"]
+
+
+def test_download_keeps_the_server_file_name(monkeypatch):
+    class R:
+        content, headers = b"%PDF-1.4", {"content-type": "application/pdf"}
+
+        def raise_for_status(self):
+            pass
+
+    class S:
+        def get(self, *a, **k):
+            return R()
+    monkeypatch.setattr(w, "get_session", lambda: S())
+    path = w.download_to_temp("/static/invoices/KARLCON_Invoice_KCER-2026-0010.pdf")
+    import os
+    assert os.path.basename(path) == "KARLCON_Invoice_KCER-2026-0010.pdf"
+    os.remove(path)
+    os.rmdir(os.path.dirname(path))

@@ -28,6 +28,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.EventAvailable
 import androidx.compose.material.icons.filled.House
@@ -49,6 +51,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.pluralStringResource
 import coil.compose.AsyncImage
 import com.example.karlon.R
 import com.example.karlon.data.model.ChatDto
@@ -238,8 +242,8 @@ fun ChatDetailScreen(
             state = housesUiState,
             onLocationChange = viewModel::onHousesLocationChange,
             onLocationPicked = viewModel::onHousesLocationPicked,
-            onCheckInChange = viewModel::onHousesCheckInChange,
-            onCheckOutChange = viewModel::onHousesCheckOutChange,
+            onDatesPicked = viewModel::onHousesDatesPicked,
+            onSortChange = viewModel::onHousesSortChange,
             onSearch = viewModel::searchHouses,
             onToggleSelect = viewModel::toggleHouseSelection,
             onSend = viewModel::sendSelectedHouses,
@@ -271,8 +275,8 @@ private fun AvailableHousesDialog(
     state: AvailableHousesUiState,
     onLocationChange: (String) -> Unit,
     onLocationPicked: (String) -> Unit,
-    onCheckInChange: (String) -> Unit,
-    onCheckOutChange: (String) -> Unit,
+    onDatesPicked: (String, String) -> Unit,
+    onSortChange: (Boolean) -> Unit,
     onSearch: () -> Unit,
     onToggleSelect: (String) -> Unit,
     onSend: () -> Unit,
@@ -280,12 +284,12 @@ private fun AvailableHousesDialog(
     onCancelReservation: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(
             shape = MaterialTheme.shapes.extraLarge,
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 6.dp,
-            modifier = Modifier.fillMaxWidth().heightIn(max = 620.dp),
+            modifier = Modifier.fillMaxWidth(0.95f).fillMaxHeight(0.92f),
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -342,44 +346,72 @@ private fun AvailableHousesDialog(
 
                 Spacer(Modifier.height(10.dp))
 
-                // Exact dates are optional — leave both blank to just see the
-                // freshest scrape for the city. Fill both in (YYYY-MM-DD) to
-                // narrow the grid to listings actually priced for that
-                // check-in/check-out window (see server routers/houses.py).
-                Row(Modifier.fillMaxWidth()) {
-                    com.example.karlon.ui.components.DateField(
-                        value = state.checkIn,
-                        onValueChange = onCheckInChange,
-                        label = stringResource(R.string.available_houses_checkin_label),
-                        fieldColors = OutlinedTextFieldDefaults.colors(),
-                        modifier = Modifier.weight(1f),
-                    )
+                // Dates are optional. One button opens a Material 3 date range
+                // picker (check-in → check-out in one go); with dates, only
+                // houses priced for exactly that stay are shown.
+                var showDatePicker by remember { mutableStateOf(false) }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { showDatePicker = true },
+                        modifier = Modifier.weight(1f).heightIn(min = 52.dp),
+                        shape = MaterialTheme.shapes.large,
+                    ) {
+                        Icon(Icons.Default.DateRange, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            stayLabel(state.checkIn, state.checkOut)
+                                ?: stringResource(R.string.available_houses_any_dates),
+                            maxLines = 1,
+                        )
+                    }
+                    if (state.checkIn.isNotBlank() || state.checkOut.isNotBlank()) {
+                        IconButton(onClick = { onDatesPicked("", "") }) {
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.available_houses_clear_dates))
+                        }
+                    }
                     Spacer(Modifier.width(8.dp))
-                    com.example.karlon.ui.components.DateField(
-                        value = state.checkOut,
-                        onValueChange = onCheckOutChange,
-                        label = stringResource(R.string.available_houses_checkout_label),
-                        fieldColors = OutlinedTextFieldDefaults.colors(),
-                        modifier = Modifier.weight(1f),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    FilledIconButton(onClick = onSearch, enabled = state.canSearch) {
+                    FilledIconButton(onClick = onSearch, enabled = state.canSearch, modifier = Modifier.size(52.dp)) {
                         Icon(Icons.Default.Search, contentDescription = stringResource(R.string.search))
                     }
                 }
-
-                if (state.location.isNotBlank() && state.checkIn.isBlank() != state.checkOut.isBlank()) {
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        stringResource(R.string.available_houses_dates_incomplete),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
+                if (showDatePicker) {
+                    StayRangePickerDialog(
+                        checkIn = state.checkIn,
+                        checkOut = state.checkOut,
+                        onDismiss = { showDatePicker = false },
+                        onConfirm = { ci, co -> showDatePicker = false; onDatesPicked(ci, co) },
                     )
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // Sort + count: filter chips, as Material 3 suggests for
+                // narrowing search results (two choices, short labels).
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(
+                        selected = state.sortByRef,
+                        onClick = { onSortChange(true) },
+                        label = { Text(stringResource(R.string.available_houses_sort_ref)) },
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    FilterChip(
+                        selected = !state.sortByRef,
+                        onClick = { onSortChange(false) },
+                        label = { Text(stringResource(R.string.available_houses_sort_newest)) },
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (!state.isLoading && state.listings.isNotEmpty()) {
+                        Text(
+                            pluralStringResource(R.plurals.available_houses_count, state.listings.size, state.listings.size),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(12.dp))
 
-                Box(modifier = Modifier.weight(1f, fill = false)) {
+                Box(modifier = Modifier.weight(1f)) {
                     when {
                         state.isLoading -> Column(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
@@ -394,10 +426,10 @@ private fun AvailableHousesDialog(
                         )
 
                         else -> LazyVerticalGrid(
-                            columns = GridCells.Fixed(2),
+                            columns = GridCells.Adaptive(minSize = 150.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp),
-                            modifier = Modifier.heightIn(max = 420.dp),
+                            modifier = Modifier.fillMaxSize(),
                         ) {
                             items(state.listings, key = { it.id }) { listing ->
                                 HouseListingCard(
@@ -629,9 +661,25 @@ private fun HouseListingCard(
                         maxLines = 1,
                     )
                 }
+                val place = listing.neighbourhood?.takeIf { it.isNotBlank() }
+                    ?: listing.location.replaceFirstChar { it.uppercase() }
+                Text(
+                    "📍 $place",
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                )
+                listing.capacity?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        "👥 $it",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
                 Text(
                     listing.displayPrice,
                     style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
@@ -722,5 +770,65 @@ private fun Composer(
                 )
             }
         }
+    }
+}
+
+/** "5 Oct → 8 Oct · 3 nights", or null when no full date range is set. */
+private fun stayLabel(checkIn: String, checkOut: String): String? = try {
+    val ci = java.time.LocalDate.parse(checkIn)
+    val co = java.time.LocalDate.parse(checkOut)
+    val fmt = java.time.format.DateTimeFormatter.ofPattern("d MMM")
+    val nights = java.time.temporal.ChronoUnit.DAYS.between(ci, co)
+    "${ci.format(fmt)} → ${co.format(fmt)} · $nights night${if (nights == 1L) "" else "s"}"
+} catch (e: Exception) {
+    null
+}
+
+/** Check-in and check-out in one Material 3 date range picker; past days
+ * can't be picked. Returns YYYY-MM-DD strings. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StayRangePickerDialog(
+    checkIn: String,
+    checkOut: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String) -> Unit,
+) {
+    fun toMillis(d: String): Long? = try {
+        java.time.LocalDate.parse(d).atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli()
+    } catch (e: Exception) { null }
+    fun toDate(ms: Long): String =
+        java.time.Instant.ofEpochMilli(ms).atZone(java.time.ZoneOffset.UTC).toLocalDate().toString()
+    val today = remember { java.time.LocalDate.now().atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli() }
+    val state = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = toMillis(checkIn),
+        initialSelectedEndDateMillis = toMillis(checkOut),
+        selectableDates = object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long) = utcTimeMillis >= today
+        },
+    )
+    val start = state.selectedStartDateMillis
+    val end = state.selectedEndDateMillis
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = { if (start != null && end != null) onConfirm(toDate(start), toDate(end)) },
+                enabled = start != null && end != null && end > start,
+            ) { Text(stringResource(R.string.available_houses_dates_ok)) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.reserve_confirm_cancel)) } },
+    ) {
+        DateRangePicker(
+            state = state,
+            modifier = Modifier.weight(1f),
+            title = {
+                Text(
+                    stringResource(R.string.available_houses_pick_stay),
+                    modifier = Modifier.padding(start = 24.dp, end = 12.dp, top = 16.dp),
+                )
+            },
+            showModeToggle = false,
+        )
     }
 }

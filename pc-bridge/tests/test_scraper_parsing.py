@@ -28,3 +28,34 @@ def test_capacity_and_suburb_from_the_listing_page():
     assert a.find_suburb("", overview) == "Greendale"
     assert "Borrowdale" not in overview                       # below the fold: ignored
     assert a.find_suburb("Close to Borrowdale Brooke estate") == "Borrowdale Brooke"
+
+
+def test_ten_per_city_new_first_then_stale_and_fresh_ones_left(monkeypatch, tmp_path):
+    import time
+    cp = a.Checkpoint()
+    urls = [f"https://www.airbnb.com/rooms/{i}" for i in range(30)]
+    now = time.time()
+    for u in urls[:20]:                                   # 20 already scraped...
+        cp.mark_scraped(u)
+    cp.scraped_at[urls[0]] = now - 13 * 3600              # ...two of them 13 h ago (stale)
+    cp.scraped_at[urls[1]] = now - 20 * 3600
+    picked = a.pick_listings_to_scrape(urls, cp, 10)
+    assert picked == urls[20:30]                          # the 10 new ones fill the quota
+    picked = a.pick_listings_to_scrape(urls[:25], cp, 10)
+    assert picked == urls[20:25] + [urls[1], urls[0]]     # 5 new, then stalest first
+    assert all(not cp.is_fresh(u) or u in urls[20:] for u in picked)
+
+    old = a.Checkpoint(scraped_urls={urls[3]})            # checkpoint from before scraped_at
+    assert not old.is_fresh(urls[3])                      # refreshed once (re-pushed after a wipe)
+    assert a.pick_listings_to_scrape([urls[3], urls[29]], old, 10) == [urls[29], urls[3]]
+
+    monkeypatch.setattr(a, "CHECKPOINT_FILE", tmp_path / "cp.json")
+    cp.save()
+    again = a.Checkpoint.load()
+    assert again.is_fresh(urls[5]) and not again.is_fresh(urls[1])
+
+
+def test_all_cities_enabled_with_sane_limits():
+    assert len(a.ZIMBABWE_CITIES) >= 10 and "Harare" in a.ZIMBABWE_CITIES
+    assert a.MAX_LISTINGS_PER_SEARCH == 10
+    assert a.MAX_SECONDS_PER_CITY <= 3600 and a.MAX_SEARCH_WORKERS <= 5

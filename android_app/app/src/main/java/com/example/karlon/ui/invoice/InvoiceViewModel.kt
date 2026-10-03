@@ -41,6 +41,7 @@ data class InvoiceFormState(
     val checkIn: String = "",
     val checkOut: String = "",
     val nights: Int = 1,
+    val guests: Int = 1,
     val rateOverride: String = "",
     /** null = generate the PDF only; set = also queue it onto that chat's
      * WhatsApp outbox once invoice_worker.py finishes rendering it. */
@@ -158,6 +159,10 @@ class InvoiceViewModel(
     fun onCheckOutChange(v: String) { _form.value = _form.value.copy(checkOut = v) }
     fun onRateOverrideChange(v: String) { _form.value = _form.value.copy(rateOverride = v) }
 
+    fun onGuestsChange(v: Int) {
+        _form.value = _form.value.copy(guests = v.coerceIn(1, 30))
+    }
+
     fun onNightsChange(v: Int) {
         _form.value = _form.value.copy(nights = v.coerceAtLeast(1))
     }
@@ -265,6 +270,7 @@ class InvoiceViewModel(
                         checkIn = f.checkIn.trim().ifBlank { null },
                         checkOut = f.checkOut.trim().ifBlank { null },
                         nights = f.nights,
+                        guests = f.guests,
                         rate = f.rate,
                         createdBy = displayName,
                         chatId = f.sendToChat?.id,

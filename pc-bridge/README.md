@@ -6,13 +6,13 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 69 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 77 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
 |---|---|
 | `wa_bridge.py` | WhatsApp Web ⇄ Karlon (import messages, deliver outbox) |
-| `invoice_worker.py` | pending invoice → PDF (LibreOffice, else Word, else Chromium) → upload |
+| `invoice_worker.py` | pending invoice → KARLCON-layout PDF (Chromium; LibreOffice/Word fallback) → upload |
 | `airbnb_parallel_system.py` | listing scraper → `/api/houses/ingest`; books queued reservations |
 | `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
 | `karlon_supervisor.py` | starts the three above, restarts them with backoff |
@@ -123,19 +123,29 @@ the POST with `?force=true` if it's right.
 
 ## Invoices, Terms & Conditions and other documents
 
-`invoice_worker.py` turns each pending invoice into a PDF with the first
-engine that works on this PC: LibreOffice, then Microsoft Word, then Chromium.
-Chromium is already installed for the WhatsApp bridge, so no other install
-is needed. The startup line says which engine will be used; force one with
-`INVOICE_PDF_ENGINE=libreoffice|word|chromium`. Re-queue a failed invoice
-with:
+`invoice_worker.py` prints each pending invoice as an A4 PDF in the KARLCON
+layout (as `KARLCON_Invoice_KCER-2026-0010.pdf`): number `KCER-<year>-0001…`,
+billed from/to, stay band with 2:00 PM / 10:00 AM times, items, a 15% service
+fee (`INVOICE_SERVICE_FEE_PCT`), payment methods and notes. It uses Chromium,
+which Playwright already installed for the WhatsApp bridge; LibreOffice and
+Word are only used if Chromium fails (`INVOICE_PDF_ENGINE` forces one). Check
+it on the PC without a booking:
+
+```
+py invoice_worker.py --sample        # writes sample_invoice.pdf next to the script
+```
+
+Re-queue a failed invoice with:
 
 ```
 curl.exe -X POST https://davincii-code-karlcon.hf.space/api/invoices/<invoice id>/retry
 ```
 
-Finished invoice PDFs and the Terms & Conditions PDF are queued on the server
-as documents (`/api/outbox/documents`). `wa_bridge.py` fetches that queue
+Finished invoice PDFs and the Terms & Conditions PDF
+(`server/static/documents/KARLCON_Elite_Retreats_Terms_and_Conditions.pdf`) are
+queued on the server as documents (`/api/outbox/documents`). The bridge sends
+them through WhatsApp's **Document** option under their real file name, and
+photos through **Photos & videos** (never the sticker maker). `wa_bridge.py` fetches that queue
 ahead of normal messages. The same document queued twice for one chat is sent
 once, and tapping Terms & Conditions again while one is waiting doesn't queue
 another.
@@ -144,6 +154,16 @@ To send to a phone number with no chat row in WhatsApp (e.g. a guest who got
 an invoice before ever messaging), the bridge opens it through WhatsApp's
 `web.whatsapp.com/send?phone=…` link. Only outbound sends do this, as it
 reloads WhatsApp Web; numbers not on WhatsApp are reported and given up on.
+
+## Airbnb scraper: every city, 10 listings each
+
+`airbnb_parallel_system.py` sweeps the 20 cities in `ZIMBABWE_CITIES` (or
+`AIRBNB_CITIES="Harare,Bulawayo"`), `AIRBNB_CITY_WORKERS` (3) at a time. Per
+city it takes `AIRBNB_LISTINGS_PER_CITY` (10) listings: new ones first, then
+any not refreshed for `AIRBNB_RESCRAPE_HOURS` (12). A city's listings are
+scraped and pushed as soon as its search finishes, so each city fills the app
+on its own. Houses wiped by a Space restart are pushed again on the next
+refresh. Cycles rest `AIRBNB_CYCLE_REST_SECONDS` (300).
 
 ## Reserve button: booking a house on Airbnb from the app
 

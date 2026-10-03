@@ -83,6 +83,8 @@ interface ApiService {
         @Query("check_in") checkIn: String? = null,
         @Query("check_out") checkOut: String? = null,
         @Query("limit") limit: Int = 6,
+        /** "ref" = KCER order (KCER 101 first), "newest" = latest scraped first. */
+        @Query("sort") sort: String = "newest",
     ): List<HouseListingDto>
 
     /** Distinct locations the scraper has pushed listings for so far. */

@@ -178,11 +178,12 @@ class ChatRepository(
         checkIn: String? = null,
         checkOut: String? = null,
         limit: Int = 6,
+        sort: String = "newest",
     ): List<HouseListingDto> =
         withContext(Dispatchers.IO) {
             // Photos come back as server paths (/static/houses/…); make them
             // absolute or the image loader shows nothing.
-            api.getAvailableHouses(location, checkIn, checkOut, limit).map { listing ->
+            api.getAvailableHouses(location, checkIn, checkOut, limit, sort).map { listing ->
                 listing.copy(images = listing.images.filter { it.isNotBlank() }.map(::mediaUrl))
             }
         }
