@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 77 tests (server: 33), no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 85 tests (server: 33), no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -19,6 +19,34 @@ python -m pytest tests               # 77 tests (server: 33), no WhatsApp/Airbnb
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
 | `wa_clean.py` | good-vs-bad data rules (names, notices, times); identical copy in `server/app/` |
+
+## First start, login and "no chats"
+
+`wa_bridge.py` opens WhatsApp Web in a visible browser window and waits for
+whatever it shows first, saying what it is waiting for:
+
+| WhatsApp shows | the bridge |
+|---|---|
+| the login page / QR code | tells you to scan it (WhatsApp on the phone > Settings > Linked devices > Link a device) and waits up to `WA_LOGIN_TIMEOUT` (600 s) |
+| "WhatsApp is open in another window" | clicks **Use here** |
+| a loading screen | waits up to `WA_LOAD_TIMEOUT` (300 s) |
+| the chat list, still empty | waits up to `WA_CHATS_TIMEOUT` (180 s) for chats; a newly linked phone can take a few minutes |
+
+If it still can't get there it saves a screenshot and the page text to
+`logs/wa_launch_failed_*.png/.txt` and exits, and the supervisor restarts it. A
+pass that finds 0 chats says why ("logged out", "still loading", …) and saves
+`logs/wa_empty_sidebar_*.png` once.
+
+**Where the login is kept.** The browser profile (your WhatsApp login) is in
+`~/.karlon/wa_session` (for example `C:\Users\Administrator\.karlon\wa_session`),
+the same place whichever folder the scripts run from, so unzipping an update
+into a new folder no longer logs you out. Set `WA_SESSION_DIR` to move it. An
+older `./wa_session` is still used if there is no home-folder session yet. To
+switch an old folder over, delete its `wa_session` and scan once.
+
+If the browser won't open at all, an earlier Chromium is probably still running
+on that session folder. End `chrome.exe` / `chromium` in Task Manager and start
+again.
 
 ## Syncing chats: one JSON snapshot per chat
 

@@ -81,7 +81,7 @@ from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_se
 from local_config import (
     KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, WA_FULL_SWEEP_EVERY,
     WA_SYNC_LAST_N_CHATS, CHAT_SNAPSHOT_DIR, WA_UTC_OFFSET_MINUTES, WA_RELOAD_HOURS,
-    print_active_config,
+    LOG_DIR, print_active_config,
 )
 from wa_clean import (
     chat_slug, clean_chat_name, combine, detect_dayfirst, is_system_notice,
@@ -98,7 +98,27 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-SESSION_DIR         = "./wa_session"
+def _default_session_dir() -> str:
+    """Where the WhatsApp login (the Chromium profile) is kept. It used to be
+    ./wa_session, relative to wherever the script was started, so every
+    unzip of a new version into a new folder started logged out. Now:
+    WA_SESSION_DIR if set, else ~/.karlon/wa_session (the same place whatever
+    folder the scripts run from). An existing ./wa_session is still used when
+    there is no home-folder session yet, so old setups keep their login."""
+    env = os.environ.get("WA_SESSION_DIR", "").strip()
+    if env:
+        return str(Path(env).expanduser().resolve())
+    home = Path.home() / ".karlon" / "wa_session"
+    legacy = Path("./wa_session")
+    if not home.exists() and legacy.exists():
+        return str(legacy.resolve())
+    return str(home)
+
+
+SESSION_DIR         = _default_session_dir()
+WA_LOAD_TIMEOUT     = int(os.environ.get("WA_LOAD_TIMEOUT", "300"))     # s, WhatsApp Web loading / connecting
+WA_LOGIN_TIMEOUT    = int(os.environ.get("WA_LOGIN_TIMEOUT", "600"))    # s, to scan the QR code
+WA_CHATS_TIMEOUT    = int(os.environ.get("WA_CHATS_TIMEOUT", "180"))    # s, for the chat list to fill after login
 POLL_INTERVAL       = WA_POLL_INTERVAL     # seconds between WA→Karlon import cycles
 OUTBOX_POLL_SEC     = WA_OUTBOX_POLL_SEC   # seconds between outbox REST polls
 
@@ -1429,42 +1449,163 @@ def reload_whatsapp(page: Page) -> None:
         print(f"[wa_bridge] reload incomplete ({e}) — continuing")
 
 
+_LOGIN_TEXT_RE = re.compile(
+    r"(scan (this |the )?qr|scan to log in|log in to whatsapp|link with phone number|"
+    r"use whatsapp on your computer|steps to log in|log in with phone number)", re.IGNORECASE)
+_ANOTHER_WINDOW_RE = re.compile(r"whatsapp is open in another window", re.IGNORECASE)
+_LOADING_TEXT_RE = re.compile(r"(loading your chats|don.?t close this window|connecting|syncing|starting)", re.IGNORECASE)
+_QR_SELECTOR = ('canvas[aria-label*="QR" i], div[data-testid="qrcode"], div[data-ref] canvas, '
+                'canvas[aria-label*="scan" i]')
+
+
+def _page_text(page: Page, limit: int = 4000) -> str:
+    try:
+        return re.sub(r"\s+", " ", page.evaluate("() => document.body ? document.body.innerText : ''"))[:limit].strip()
+    except Exception:
+        return ""
+
+
+def whatsapp_state(page: Page) -> tuple[str, str]:
+    """What WhatsApp Web is showing: 'chats' (logged in, list drawn), 'another_window'
+    ("WhatsApp is open in another window"), 'qr' (login screen), 'loading' or
+    'unknown'; plus the page text for diagnostics."""
+    try:
+        if page.is_visible(_CHATLIST_CONTAINER):
+            return "chats", ""
+    except Exception:
+        pass
+    text = _page_text(page)
+    if _ANOTHER_WINDOW_RE.search(text):
+        return "another_window", text
+    try:
+        qr = page.is_visible(_QR_SELECTOR)
+    except Exception:
+        qr = False
+    if qr or _LOGIN_TEXT_RE.search(text):
+        return "qr", text
+    if _LOADING_TEXT_RE.search(text):
+        return "loading", text
+    return "unknown", text
+
+
+def dump_whatsapp_state(page: Page, tag: str, out_dir: Optional[str] = None) -> Optional[str]:
+    """Screenshot + page text into the logs folder, so what the browser showed
+    can be looked at afterwards. Returns the screenshot path."""
+    try:
+        d = Path(out_dir or LOG_DIR)
+        d.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        png = d / f"wa_{tag}_{stamp}.png"
+        page.screenshot(path=str(png))
+        (d / f"wa_{tag}_{stamp}.txt").write_text(_page_text(page, 6000), encoding="utf-8")
+        return str(png)
+    except Exception:
+        return None
+
+
+def wait_for_whatsapp(page: Page, load_timeout: float = WA_LOAD_TIMEOUT, login_timeout: float = WA_LOGIN_TIMEOUT,
+                      poll: float = 2.0, report_every: float = 15.0, out_dir: Optional[str] = None) -> bool:
+    """Waits until the WhatsApp chat list is drawn, handling what comes first:
+    the login QR (waits up to login_timeout for it to be scanned), the "open in
+    another window" notice (clicks Use here) and the loading screen (up to
+    load_timeout). True when the chat list is there. On a timeout, saves a
+    screenshot and returns False."""
+    phase, phase_start = "", time.time()
+    last_report = 0.0
+    while True:
+        kind, text = whatsapp_state(page)
+        now = time.time()
+        if kind == "chats":
+            return True
+        if kind != phase:                       # a new phase gets its own full timeout
+            phase, phase_start, last_report = kind, now, 0.0
+            if kind == "qr":
+                print("[wa_bridge] WhatsApp is asking you to log in. In the browser window that just opened:\n"
+                      "            WhatsApp on your phone > Settings > Linked devices > Link a device,\n"
+                      "            then scan the QR code. (It stays on screen; there is no need to hurry.)")
+            elif kind == "another_window":
+                print("[wa_bridge] WhatsApp says it is open in another window; clicking 'Use here'...")
+        if kind == "another_window":
+            try:
+                page.get_by_role("button", name=re.compile(r"use here", re.IGNORECASE)).first.click(timeout=2000)
+            except Exception:
+                pass
+        limit = login_timeout if kind == "qr" else load_timeout
+        left = limit - (now - phase_start)
+        if left <= 0:
+            shot = dump_whatsapp_state(page, "launch_failed", out_dir)
+            print(f"[wa_bridge] WhatsApp did not get to the chat list ({kind} for {limit:.0f}s). "
+                  f"Page said: {text[:200]!r}" + (f"\n            Screenshot: {shot}" if shot else ""))
+            return False
+        if now - last_report >= report_every:
+            last_report = now
+            what = {"qr": "waiting for the QR code to be scanned", "loading": "WhatsApp is loading",
+                    "another_window": "waiting for 'Use here'", "unknown": "waiting for WhatsApp to show something"}[kind]
+            print(f"[wa_bridge] {what} ({left:.0f}s left)")
+        time.sleep(poll)
+
+
+def wait_for_chat_rows(page: Page, timeout: float = WA_CHATS_TIMEOUT, poll: float = 2.0) -> bool:
+    """A freshly linked account shows an empty list while WhatsApp downloads
+    the chats ("Loading your chats"). Wait for rows instead of syncing 0 chats."""
+    deadline, said = time.time() + timeout, False
+    while time.time() < deadline:
+        for sel in _ROW_SELECTOR_CANDIDATES:
+            try:
+                if page.query_selector(sel):
+                    return True
+            except Exception:
+                pass
+        if not said:
+            print("[wa_bridge] logged in; waiting for WhatsApp to load your chats (a new link can take a few minutes)...")
+            said = True
+        time.sleep(poll)
+    return False
+
+
 def launch_page(headless: bool = False):
+    print(f"[wa_bridge] WhatsApp session folder: {SESSION_DIR}")
     pw = sync_playwright().start()
-    ctx = pw.chromium.launch_persistent_context(
-        user_data_dir=SESSION_DIR,
-        headless=headless,
-        viewport={"width": 1400, "height": 900},
-    )
-    page = ctx.new_page()
+    try:
+        ctx = pw.chromium.launch_persistent_context(
+            user_data_dir=SESSION_DIR,
+            headless=headless,
+            viewport={"width": 1400, "height": 900},
+        )
+    except Exception as e:
+        pw.stop()
+        if re.search(r"ProcessSingleton|already in use|profile.*in use|has been closed", str(e), re.IGNORECASE):
+            raise SystemExit(
+                "[wa_bridge] The WhatsApp browser could not start: a browser window from an earlier run is "
+                "probably still open and using the same session folder.\n"
+                "            Close it (Task Manager > end 'chrome.exe' / 'chromium'), then start again.")
+        raise
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
     try:
         page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=60_000)
     except Exception as e:
         print(f"[wa_bridge] goto warning: {e} — retrying once...")
         page.goto("https://web.whatsapp.com", wait_until="domcontentloaded", timeout=60_000)
-
-    qr_sel = (
-        'canvas[aria-label="Scan this QR code to link a device!"],'
-        ' div[data-testid="qrcode"]'
-    )
-    list_sel = _CHATLIST_CONTAINER
+    try:
+        page.bring_to_front()
+    except Exception:
+        pass
 
     print(f"[wa_bridge] Browser: {'HEADLESS' if headless else 'HEADED (visible)'}")
     print("Waiting for WhatsApp to load...")
-    try:
-        page.wait_for_selector(f"{qr_sel}, {list_sel}", timeout=20_000)
-    except Exception:
-        pass
-    if page.query_selector(qr_sel):
-        print("QR shown — scan it within 5 minutes...")
-        page.wait_for_selector(list_sel, timeout=5 * 60 * 1000)
-        print("Scanned — logged in.")
-    else:
-        print("Session active — waiting for chat list...")
-        page.wait_for_selector(list_sel, timeout=30_000)
-        print("Logged in.")
-    print("Letting chat list populate (3 s)...")
-    time.sleep(3)
+    if not wait_for_whatsapp(page):
+        try:
+            ctx.close()
+        finally:
+            pw.stop()
+        raise SystemExit("[wa_bridge] Could not reach the WhatsApp chat list; see the message above. "
+                         "Starting again will retry.")
+    print("Logged in.")
+    if not wait_for_chat_rows(page):
+        shot = dump_whatsapp_state(page, "no_chats")
+        print("[wa_bridge] Logged in, but WhatsApp shows no chats yet. Continuing; the bridge picks them up as "
+              "they appear." + (f" Screenshot: {shot}" if shot else ""))
+    time.sleep(1)
     return pw, ctx, page
 
 def _resolve_row_selector(page: Page) -> str:
@@ -3029,6 +3170,36 @@ def sync_chat(page: Page, name: str, fetch_pics: bool, max_scroll_rounds: int,
     return snapshot
 
 
+_empty_reports = 0
+
+
+def _explain_empty_sidebar(page: Page) -> None:
+    """0 chats usually means WhatsApp isn't showing any: still loading, logged
+    out, or its layout changed. Say which, now and every ~minute, not never."""
+    global _empty_reports
+    try:
+        if _wait_for_rows(page, 1):
+            return                     # rows exist: 0 targets is just "nothing flagged"
+    except Exception:
+        pass
+    _empty_reports += 1
+    if (_empty_reports - 1) % 12:
+        return
+    kind, text = whatsapp_state(page)
+    if kind == "chats":                      # list drawn but empty: is WhatsApp still filling it?
+        text = _page_text(page, 400)
+        if _LOADING_TEXT_RE.search(text):
+            kind = "loading"
+    shot = dump_whatsapp_state(page, "empty_sidebar") if _empty_reports == 1 else None
+    hint = {"qr": "WhatsApp is logged out: scan the QR code in the browser window.",
+            "another_window": "WhatsApp is open in another window: click 'Use here'.",
+            "loading": "WhatsApp is still loading your chats; wait a few minutes.",
+            "chats": "the chat list is open but has no rows I recognise (a new layout, or an empty account).",
+            "unknown": "WhatsApp is showing something unexpected."}[kind]
+    print(f"  ! no chats visible in WhatsApp Web: {hint}"
+          + (f" Page says: {text[:160]!r}" if text else "") + (f" Screenshot: {shot}" if shot else ""))
+
+
 def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: int = 12,
               only_chat: Optional[str] = None, limit: Optional[int] = None,
               dry_run: bool = False) -> None:
@@ -3037,6 +3208,8 @@ def sync_once(page: Page, sync_all: bool, fetch_pics: bool, max_scroll_rounds: i
     full_sweep = only_chat is not None or (_sync_pass - 1) % WA_FULL_SWEEP_EVERY == 0
     limit = WA_SYNC_LAST_N_CHATS if limit is None else limit
     targets = select_targets(page, sync_all, only_chat, limit)
+    if not targets:
+        _explain_empty_sidebar(page)
     scope = (f"chat {only_chat!r}" if only_chat
              else f"last {limit} chats" if limit > 0 and not sync_all else "all flagged chats")
     print(f"Syncing {len(targets)} chat(s) ({scope}){'  [full sweep]' if full_sweep else ''}"
