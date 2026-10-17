@@ -125,7 +125,7 @@ main{padding:16px 18px 40px;max-width:1680px;margin:0 auto}
 .ev .t{color:var(--faint);float:right}
 .ev .d{color:var(--dim);margin-top:2px;white-space:pre-wrap;word-break:break-word}
 .k.inbound{color:var(--blue)} .k.plan{color:var(--gold2)} .k.skip{color:var(--faint)} .k.error{color:var(--err)}
-.k.handoff,.k.draft_sent{color:var(--warn)} .k.settings,.k.catalogue{color:var(--violet)}
+.k.handoff,.k.alert,.k.draft_sent{color:var(--warn)} .k.settings,.k.catalogue{color:var(--violet)}
 .ev.new{animation:flash 1.2s ease-out}
 @keyframes flash{from{background:var(--gold-faint)}to{background:transparent}}
 /* try */
@@ -284,7 +284,7 @@ function renderStatus(){
     ["Mode", `<span style="color:${st.mode==="live"?"var(--ok)":st.mode==="shadow"?"var(--violet)":"var(--dim)"}">${esc(st.mode.toUpperCase())}</span>${st.paused?' <span>paused</span>':""}`],
     ["Guest turns", c.turns || 0], ["Replies sent", c.replies || 0],
     ["Drafts waiting", s.drafts_pending], ["Houses sent", c.options_sent || 0],
-    ["Invoices", c.invoices || 0], ["Handoffs", c.handoffs || 0],
+    ["Invoices", c.invoices || 0], ["Staff alerts", c.alerts || 0],
     ["Speed to lead", lat(m.speed_to_lead_s, "s")], ["Pipeline", lat(m.pipeline_ms, "ms")],
     ["Model", lat(m.llm_ms, "ms")],
     ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : st.provider === "local" ? "model " + esc(s.local_model.state) : (s.llm.stats.errors||0) + " err"}</span>`],
@@ -293,7 +293,8 @@ function renderStatus(){
   const f = s.funnel, top = Math.max(1, ...STAGES.map(k => f[k] || 0));
   $("#funnel").innerHTML = STAGES.map(k => `<div class="stage"><label>${STAGE_LABEL[k]}</label><b>${f[k]||0}</b>
     <div class="bar"><i style="width:${Math.round(100*(f[k]||0)/top)}%"></i></div></div>`).join("")
-    + `<div class="stage hand"><label>With staff</label><b>${f.handoff||0}</b><div class="bar"><i style="width:0"></i></div></div>`;
+    + `<div class="stage hand"><label>Needs staff</label><b>${f.attention||0}</b><div class="bar"><i style="width:0"></i></div></div>`
+    + `<div class="stage hand"><label>Taken over</label><b>${f.handoff||0}</b><div class="bar"><i style="width:0"></i></div></div>`;
   $("#draftCount").textContent = s.drafts_pending; $("#draftCount").style.display = s.drafts_pending ? "" : "none";
   if (state.tab === "settings") renderSettings();
 }
@@ -306,7 +307,8 @@ function renderSessions(){
   $("#convCount").textContent = list.length;
   $("#convList").innerHTML = list.length ? list.map(s => {
     const flags = [];
-    if (s.handoff) flags.push(`<span class="chip warn">⚑ staff</span>`);
+    if (s.attention) flags.push(`<span class="chip warn">⚑ needs staff</span>`);
+    if (s.handoff) flags.push(`<span class="chip err">taken over</span>`);
     if (s.paused) flags.push(`<span class="chip err">paused</span>`);
     if (s.opted_out) flags.push(`<span class="chip err">opted out</span>`);
     if (s.drafts) flags.push(`<span class="chip vio">${s.drafts} draft</span>`);
@@ -348,7 +350,7 @@ function draftCard(d){
   const acts = (plan.actions || []).filter(a => a.type !== "reply").map(a => {
     if (a.type === "send_options") return `<span class="chip st">send ${a.options.length} houses: ${a.options.map(o => esc(o.ref)).join(", ")}</span>`;
     if (a.type === "create_invoice") return `<span class="chip st">invoice ${esc(a.invoice.property_name)} · ${esc(a.invoice.guest_name)}</span>`;
-    if (a.type === "handoff") return `<span class="chip warn">hand to staff: ${esc(a.reason)}</span>`;
+    if (a.type === "alert_staff") return `<span class="chip warn">alert staff: ${esc(a.reason)}</span>`;
     return `<span class="chip">${esc(a.type.replace(/_/g, " "))}</span>`;
   }).join("");
   return `<div class="draft" data-draft="${d.id}">
@@ -369,13 +371,15 @@ function renderDetail(){
   box.innerHTML = `
     <div class="ph"><div class="row"><div class="av">${esc(initials(d.chat.name))}</div>
       <div><b>${esc(d.chat.name)}</b><div class="chips"><span class="chip st">${esc(STAGE_LABEL[s.stage] || s.stage)}</span>
-      ${s.handoff ? `<span class="chip warn">⚑ ${esc(s.handoff_reason || "with staff")}</span>` : ""}
+      ${s.attention ? `<span class="chip warn">⚑ needs staff: ${esc(s.attention_reason || "")}</span>` : ""}
+      ${s.handoff ? `<span class="chip err">taken over: Davis muted</span>` : ""}
       ${s.paused ? `<span class="chip err">paused</span>` : ""}${s.opted_out ? `<span class="chip err">opted out</span>` : ""}
       ${s.refresh_job_id ? `<span class="chip vio">live prices job #${s.refresh_job_id}</span>` : ""}</div></div></div>
       <div class="row">
         <button class="btn sm" data-act="run">Run now</button>
         <button class="btn sm" data-act="pause">${s.paused ? "Resume" : "Pause"}</button>
-        <button class="btn sm" data-act="handoff">${s.handoff ? "Give back to Davis" : "Take over"}</button>
+        ${s.attention ? `<button class="btn sm" data-act="attention">Alert done</button>` : ""}
+        <button class="btn sm" data-act="handoff" title="Mute Davis in this chat while you handle it">${s.handoff ? "Give back to Davis" : "Take over"}</button>
         <button class="btn sm danger" data-act="reset">Reset</button>
       </div></div>
     ${pending.length ? `<div class="sec"><h3>Waiting for approval</h3>${pending.map(draftCard).join("")}</div>` : ""}
@@ -434,8 +438,8 @@ function renderSettings(){
 </div>
     <div class="limits"><label>Fixed by the Space's environment</label>
       Max words per message: <b>${L.max_words}</b><br>Replies per guest turn: <b>${L.max_replies_per_turn}</b><br>
-      Wait for typing to stop: <b>${L.debounce_sec}s</b><br>Ignore messages older than: <b>${L.fresh_minutes} min</b><br>
-      Step back after staff reply: <b>${L.human_quiet_minutes} min</b><br>Conversations at once: <b>${L.concurrency}</b><br>
+      Wait for typing to stop: <b>${L.debounce_sec}s</b><br>Answers messages up to: <b>${Math.round(L.fresh_minutes / 1440 * 10) / 10} days old</b><br>
+      Step back after staff reply: <b>${L.human_quiet_minutes ? L.human_quiet_minutes + " min" : "never (Davis has the last word)"}</b><br>Conversations at once: <b>${L.concurrency}</b><br>
       Houses per send: <b>${L.options_per_send}</b> × <b>${L.images_per_option}</b> photos<br>
       Local model: <b>${esc(s.local_model.file)}</b><br>State: <b>${esc(s.local_model.state)}</b>${s.local_model.error ? ` <span style="color:var(--err)">${esc(s.local_model.error)}</span>` : ""}<br>
       Threads: <b>${s.local_model.threads}</b>${s.local_model.load_s != null ? ` · loaded in <b>${s.local_model.load_s}s</b>` : ""}<br>
@@ -516,6 +520,7 @@ document.addEventListener("click", async e => {
     if (act.dataset.act === "run"){ const r = await api(`/api/davis/sessions/${id}/run?again=true`, {method: "POST"}); toast(r.status === "skipped" ? "Davis would stay quiet: " + r.reason : "Davis " + r.status); }
     if (act.dataset.act === "pause") await api(`/api/davis/sessions/${id}/pause`, {method: "POST", body: JSON.stringify({paused: !s.paused})});
     if (act.dataset.act === "handoff") await api(`/api/davis/sessions/${id}/handoff`, {method: "POST", body: JSON.stringify({active: !s.handoff})});
+    if (act.dataset.act === "attention") await api(`/api/davis/sessions/${id}/attention`, {method: "POST", body: JSON.stringify({active: false})});
     if (act.dataset.act === "reset" && confirm("Forget what Davis knows about this booking?")) await api(`/api/davis/sessions/${id}/reset`, {method: "POST"});
     refreshAll(); return; }
   if (e.target.id === "saveSettings"){ const lines = id => $(id).value.split(/[\n,]/).map(x => x.trim()).filter(Boolean);

@@ -402,6 +402,13 @@ def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = Non
                              "show me more", "any more")
     f["explicit_choice"] = _has(t, "take", "want", "book", "choose", "go with", "like", "prefer", "reserve",
                                 "i'?ll have", "we'?ll have", "that one", "this one")
+    f["viewing_request"] = _has(t, "see the (?:place|house|home|property|flat|apartment|room)s?(?: first)?",
+                                "view(?:ing)? the (?:place|house|home|property)", "viewings?", "come (?:and|to) see",
+                                "visit the (?:place|house|home|property)", "inspect(?:ion)?", "physical(?:ly)? (?:see|check)",
+                                "check (?:it|the place|the house) out(?: first)?", "can i come (?:over|through|and see)")
+    f["checkin_query"] = _has(t, "check[- ]?in time", "check[- ]?out time", "what time (?:is|do|can) (?:we |i )?"
+                              "(?:check|arrive|come|leave)", "when (?:can|do) (?:we|i) (?:check in|arrive|come in|leave)",
+                              "early check[- ]?in", "late check[- ]?out")
     f["location_query"] = _has(t, "where (?:is|are) (?:it|they|the house|this)", "location", "address", "directions",
                                "pin", "how far")
     f["question"] = "?" in t or bool(re.match(r"(what|where|when|how|can|could|is|are|do|does|will|would|which|who)\b", t))

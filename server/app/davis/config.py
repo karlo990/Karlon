@@ -68,8 +68,10 @@ IMAGES_PER_OPTION = _int("DAVIS_IMAGES_PER_OPTION", 3, 1)
 
 # ── when Davis stays quiet ─────────────────────────────────────────────────
 DEBOUNCE_SEC = _float("DAVIS_DEBOUNCE_SEC", 8.0)            # let the guest finish typing
-FRESH_MINUTES = _int("DAVIS_FRESH_MINUTES", 15, 1)          # never answer older messages
-HUMAN_QUIET_MINUTES = _int("DAVIS_HUMAN_QUIET_MINUTES", 30)  # staff replied → step back
+FRESH_MINUTES = _int("DAVIS_FRESH_MINUTES", 3 * 24 * 60, 1)  # answer guests who wrote in the last 3 days
+# 0 = Davis answers every guest message, even right after a staff reply (Davis
+# always has the last word; "Take over" on the dashboard mutes a chat).
+HUMAN_QUIET_MINUTES = _int("DAVIS_HUMAN_QUIET_MINUTES", 0)
 HISTORY_MESSAGES = _int("DAVIS_HISTORY_MESSAGES", 24, 4)    # what Davis reads per turn
 # Where the model writes: "open" = only answers to open questions (from the
 # team's house notes); every booking step uses the persona's lines (instant,

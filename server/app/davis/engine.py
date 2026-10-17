@@ -145,6 +145,13 @@ class Engine:
     # ── hooks ─────────────────────────────────────────────────────────────────
     def notify_inbound(self, chat_id: str) -> None:
         self._submit(self._schedule, chat_id, None)
+        self._submit(self._ensure_sweeper)
+
+    def _ensure_sweeper(self) -> None:
+        """Watchdog: the safety-net loop must always run; restart it if it died."""
+        if self.loop and (self._sweeper is None or self._sweeper.done()):
+            self._sweeper = asyncio.create_task(self._sweep_loop())
+            self.metrics.counters["sweeper_restarts"] += 1
 
     def notify_refresh_done(self, job_id: int) -> None:
         self._submit(lambda: self._spawn(self._refresh_done(job_id)))
@@ -288,6 +295,23 @@ class Engine:
                 return await self._process_locked(chat_id, trigger, force)
 
     async def _process_locked(self, chat_id: str, trigger: str, force: bool) -> dict:
+        """Runs one pass; if it fails after claiming the guest's message, the
+        claim is released so the sweeper retries it (a guest never ends up
+        unanswered because of an error)."""
+        claim: dict = {}
+        try:
+            return await self._process_body(chat_id, trigger, force, claim)
+        except Exception:
+            if claim.get("claimed"):
+                conn = get_db()
+                try:
+                    store.update_session(conn, chat_id, last_inbound_id=claim.get("prev"))
+                finally:
+                    conn.close()
+                self.metrics.counters["retries_queued"] += 1
+            raise
+
+    async def _process_body(self, chat_id: str, trigger: str, force: bool, claim: dict) -> dict:
         t0 = time.monotonic()
         resume = trigger in ("refresh_done", "refresh_timeout")
         conn = get_db()
@@ -318,9 +342,12 @@ class Engine:
                     await self.emit(chat_id, "skip", {"reason": decision["reason"], "trigger": trigger,
                                                       "text": (texts[-1] if texts else "")[:160]})
                 return {"status": "skipped", "reason": decision["reason"]}
+            prev_inbound = session.get("last_inbound_id")
             if not resume and not store.claim_inbound(conn, chat_id, latest_in["id"]):
                 self.metrics.skips["already_handled"] += 1
                 return {"status": "skipped", "reason": "already_handled"}
+            if not resume:
+                claim.update(claimed=True, prev=prev_inbound)
             self.metrics.counters["turns"] += 1
             await self.emit(chat_id, "inbound", {
                 "trigger": trigger, "text": " / ".join(texts)[:300],
@@ -331,7 +358,7 @@ class Engine:
             cat = _Cat(conn, chat_id)
             plan_ = policy.plan(ctx, feats, cat, trigger="refresh_done" if resume else "message")
             if trigger == "refresh_timeout" and not any(a["type"] == "send_options" for a in plan_["actions"]):
-                plan_["actions"] = [{"type": "handoff", "reason": "live prices did not arrive"},
+                plan_["actions"] = [{"type": "alert_staff", "reason": "live prices did not arrive"},
                                     {"type": "reply", "text": L("prices_late")}]
                 plan_["stage"] = "qualify"
             plan_ = await self._phrase(ctx, feats, plan_, cat, settings)
@@ -459,9 +486,10 @@ class Engine:
                     patch["refresh_job_id"] = job["id"]
                     result["refresh_job_id"] = job["id"]
                     self.metrics.counters["refresh_requests"] += 1
-                elif kind == "handoff":
-                    patch["handoff"], patch["handoff_reason"] = True, a.get("reason") or "handoff"
-                    self.metrics.counters["handoffs"] += 1
+                elif kind == "alert_staff":
+                    # The team is told (dashboard); Davis keeps answering the guest.
+                    patch["attention"], patch["attention_reason"] = True, a.get("reason") or "needs staff"
+                    self.metrics.counters["alerts"] += 1
                 elif kind == "opt_out":
                     patch["opted_out"] = True
                 elif kind == "opt_in":
@@ -530,16 +558,16 @@ def _brief(a: dict) -> dict:
 
 
 def _resolve_maybe(plan_: dict, model: Optional[dict]) -> dict:
-    """maybe_handoff marks a question the rules can't answer. It is dropped
+    """maybe_alert marks a question the rules can't answer. It is dropped
     when the model answered it (reply accepted, no handoff asked); otherwise
-    the chat goes to staff. The model's handoff flag counts only there: a
-    small model's opinion never takes a chat away from Davis by itself
-    (complaints and requests for a person are caught by the rules)."""
+    the team is alerted to answer it (Davis keeps the conversation going).
+    The model's handoff flag counts only there (complaints and requests for
+    a person are caught by the rules)."""
     acts = []
     for a in plan_["actions"]:
-        if a["type"] == "maybe_handoff":
+        if a["type"] == "maybe_alert":
             if model is None or model["wants"] or not model["answered"]:
-                acts.append({"type": "handoff", "reason": (model and model["reason"]) or a["reason"]})
+                acts.append({"type": "alert_staff", "reason": (model and model["reason"]) or a["reason"]})
             continue
         acts.append(a)
     plan_["actions"] = acts

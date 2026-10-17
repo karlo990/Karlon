@@ -7,7 +7,8 @@ PUT  /api/davis/settings                     mode / provider / model / pause / c
 GET  /api/davis/sessions                     conversations Davis knows, newest first
 GET  /api/davis/sessions/{chat_id}           one conversation: frame, messages, events, drafts
 POST /api/davis/sessions/{chat_id}/pause     {paused: bool}
-POST /api/davis/sessions/{chat_id}/handoff   {active: bool}   (false = give the chat back to Davis)
+POST /api/davis/sessions/{chat_id}/handoff   {active: bool}   staff take over (Davis muted) / give back
+POST /api/davis/sessions/{chat_id}/attention {active: false}  mark Davis's "needs staff" alert as done
 POST /api/davis/sessions/{chat_id}/reset     forget the frame (stage back to new)
 POST /api/davis/sessions/{chat_id}/run       process now (shadow: draft only)
 GET  /api/davis/events                       recent events
@@ -107,6 +108,7 @@ def _funnel(conn) -> dict:
     out = {s: 0 for s in policy.STAGES}
     out.update({r["stage"]: r["n"] for r in rows})
     out["handoff"] = conn.execute("SELECT COUNT(*) FROM davis_sessions WHERE handoff=1").fetchone()[0]
+    out["attention"] = conn.execute("SELECT COUNT(*) FROM davis_sessions WHERE attention=1").fetchone()[0]
     return out
 
 
@@ -229,12 +231,26 @@ async def handoff(chat_id: str, body: FlagIn):
     return {"ok": True, "handoff": bool(body.active)}
 
 
+@router.post("/api/davis/sessions/{chat_id}/attention", dependencies=[Depends(admin)])
+async def attention(chat_id: str, body: FlagIn):
+    conn = get_db()
+    try:
+        _need_session(conn, chat_id)
+        store.update_session(conn, chat_id, attention=bool(body.active),
+                             **({} if body.active else {"attention_reason": None}))
+    finally:
+        conn.close()
+    await engine.emit(chat_id, "alert" if body.active else "alert_done")
+    return {"ok": True, "attention": bool(body.active)}
+
+
 @router.post("/api/davis/sessions/{chat_id}/reset", dependencies=[Depends(admin)])
 async def reset(chat_id: str):
     conn = get_db()
     try:
         _need_session(conn, chat_id)
         store.update_session(conn, chat_id, stage="new", slots={}, choice=None, handoff=False, handoff_reason=None,
+                             attention=False, attention_reason=None,
                              refresh_job_id=None, invoice_key=None)
     finally:
         conn.close()

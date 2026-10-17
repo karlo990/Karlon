@@ -6,7 +6,7 @@ the guest from "hello" to a paid booking:
 ```
 greeting → city + dates + guests → 3 houses with photos (live catalogue)
         → guest picks a KCER → full name + ID → invoice PDF + Terms & Conditions PDF
-        → "I have paid" / proof photo → handed to staff to confirm
+        → "I have paid" / proof photo → team alerted to confirm (Davis keeps replying)
 ```
 
 Davis runs inside the Karlon server on the Karlon Space, next to the outbox, the house catalogue and the invoice
@@ -26,7 +26,7 @@ change how Davis sounds:
   It also lists the hard "never" rules: no invented prices or amenities, no links, no Airbnb, never pretends
   to be human.
 - `LINES` holds the exact sentences for each situation: greeting, asking dates, presenting houses, confirming
-  the choice, asking for name and ID, invoice sent, payment, handoff, and so on. Each one is under 40 words
+  the choice, asking for name and ID, invoice sent, payment, staff alerts, and so on. Each one is under 40 words
   (a test checks this).
 - `EXAMPLES` are worked examples shown to the model.
 - `PAYMENT` holds the EcoCash details: **0780563561 (Karl Muzunze)**. Davis gives them when a guest asks
@@ -46,7 +46,8 @@ notes per house on the dashboard (Catalogue → team note: "wifi, pool, borehole
    solar backup ✨ …").
 2. The model may reword that reply. Its answer must still pass the guard and must use the note's word.
 3. If no note covers the question ("can we bring our dog?", "is it near the airport?"), Davis says the team
-   will confirm and hands the chat to staff. The model isn't asked, so there's no wait.
+   will confirm, alerts the team on the dashboard and continues with the next booking step. The model isn't
+   asked, so there's no wait.
 
 This was decided from real tests of the 1.5B model on 2 CPU threads:
 
@@ -74,7 +75,7 @@ draft's KCERs, amounts and closing question, or the persona line goes out. A big
 |---|---|
 | A message never exceeds 40 words | persona lines (tested), `nlu.clip_words` on every reply, the guard, `catalogue.compact_card` |
 | One reply, at most 2 per guest turn, then wait for the guest | `gate.davis_replies_this_turn` + `Engine._cap`; Davis speaks only when the guest spoke last (the second reply is only "here are the houses" after "checking live prices…") |
-| Decide whether to answer at all | `gate.decide`: off/paused, allow/ignore lists, group chats, messages older than 15 min, already answered, opted out, with staff, a staff reply in the last 30 min, a plain "ok/thanks" |
+| Decide whether to answer at all | `gate.decide`: off/paused, allow/ignore lists, group chats, messages older than 3 days, already answered, opted out, "Take over" pressed on the dashboard, a plain "ok/thanks" |
 | Send T&Cs and the invoice | `send_terms` (`messages.queue_terms`), `create_invoice` (`invoices.create_invoice`, `created_by="Davis"`) |
 | Houses with images per city from the existing endpoints | `catalogue.find_options` → `houses.available_listings`; `houses.queue_listings` (shared with `POST /api/houses/send`) |
 | Session memory | `davis_sessions`, the booking frame, rebuilt from chat history after a restart |
@@ -108,8 +109,27 @@ chats** in Settings is the safe way to go live with one or two test chats first.
 10. **Events and metrics** go to the dashboard over the WebSocket `/api/davis/ws`.
 
 If there are no prices yet for the guest's dates, Davis queues a scraper refresh job and says it's checking.
-When the scraper finishes, Davis sends the houses by itself. If no prices arrive within 20 minutes, it hands
-the chat to staff.
+When the scraper finishes, Davis sends the houses by itself. If no prices arrive within 20 minutes, it tells
+the guest and alerts the team.
+
+## Operating norms (built into the code)
+
+1. **Davis always has the last word.** Every guest message from the last 3 days gets a reply, even right after
+   a staff reply. The only exceptions are a plain "ok/thanks", group chats, the ignore list, opt-outs, and
+   chats where staff pressed **Take over** on the dashboard.
+2. **Alerts never mute Davis.** A complaint, "speak to a person", a payment to confirm, or a question no
+   note answers raises a **needs staff** alert on the dashboard. Davis keeps helping the guest meanwhile.
+   Press "Alert done" when it's handled.
+3. **Every reply ends with the next step**: city and dates → which KCER → name and ID → pay by EcoCash.
+4. **House policies are answered, not escalated:**
+   - No viewings before a reservation; once payment is confirmed the guest gets the live location and host
+     address.
+   - Check-in is from 2:00 PM, check-out by 10:00 AM.
+   - Payment is by EcoCash 0780563561 (Karl Muzunze).
+5. **Never lost, always running.**
+   - If a pass fails, the guest's message is released and retried.
+   - A sweeper re-checks every 30 s for unanswered guests, and a watchdog restarts it if it ever stops.
+   - If the model is slow or down, the persona's lines go out.
 
 ## Speed
 
@@ -151,8 +171,10 @@ Optional:
 | `DAVIS_MAX_WORDS` | 40 | |
 | `DAVIS_MAX_REPLIES_PER_TURN` | 2 | |
 | `DAVIS_DEBOUNCE_SEC` | 8 | |
-| `DAVIS_FRESH_MINUTES` | 15 | |
-| `DAVIS_HUMAN_QUIET_MINUTES` | 30 | |
+| `DAVIS_FRESH_MINUTES` | 4320 | 3 days; older messages aren't answered |
+| `DAVIS_HUMAN_QUIET_MINUTES` | 0 | 0 = Davis replies even right after staff; set e.g. 30 to step back |
+| `DAVIS_IGNORE_CHATS` | | comma-separated chat ids Davis never answers (survives restarts) |
+| `DAVIS_ONLY_CHATS` | | comma-separated chat ids for a test rollout |
 
 For Ollama elsewhere: `DAVIS_PROVIDER=ollama`, `DAVIS_OLLAMA_URL`, `DAVIS_OLLAMA_MODEL`.
 
@@ -173,8 +195,9 @@ Open `https://<space>/davis` (same password as the web dashboard). Settings show
   banned, more likely with fast automated replies. The WhatsApp Business Platform (Cloud API) is the durable
   route; only the delivery step would change.
 - **Restarts.** The Space has no persistent disk, so a restart wipes Davis's settings and memory along with
-  the rest of the database. Davis rebuilds each frame from the re-synced chats and never answers messages
-  older than 15 minutes.
+  the rest of the database. Davis rebuilds each frame from the re-synced chats. After a restart it answers every
+  guest whose last message (within 3 days) is still unanswered, so keep `DAVIS_IGNORE_CHATS` up to date for
+  family, team and supplier chats.
 - **Prices** come only from the dated offers the scraper stored. Payment is never confirmed by Davis.
   Group chats are never answered.
 

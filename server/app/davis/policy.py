@@ -100,6 +100,8 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
     if feats.get("full_name"):
         slots["full_name"] = feats["full_name"]
     offers = ctx.get("offers") or []
+    if stage in ("new", "qualify") and offers:
+        stage = "present"                 # houses were already sent (by staff from the app, or by Davis)
     first = _first_name(slots, ctx.get("chat_name", ""))
     hi = f" {first}" if first else ""
     actions: list[dict] = []
@@ -125,7 +127,7 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
                     said.append(f"{o['ref']} has {o['note'].strip().rstrip('.')}")
             if said:
                 # A team note answers it: quote the note (exact), no handoff needed.
-                actions[:] = [a for a in actions if a["type"] not in ("maybe_handoff", "reply")]
+                actions[:] = [a for a in actions if a["type"] not in ("maybe_alert", "reply")]
                 key = "note_answer_after" if stage_ in ("invoice", "payment") else "note_answer"
                 reply(prefix + L(key, notes="; ".join(said[:2])),
                       "answer the guest's question from the team's note in FACTS", "open_question")
@@ -146,14 +148,20 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
         reply(L("opt_out"),
               "confirm we will stop messaging", "opt_out")
         return done("opted_out")
+    # Davis never goes quiet on a guest: a complaint, a request for a person or
+    # a payment to confirm ALERTS the team (dashboard) and Davis keeps the
+    # conversation going. Only "Take over" on the dashboard mutes Davis.
+    def nxt(stage_: Optional[str] = None) -> str:
+        return next_step(stage_ or stage, slots, out.get("choice") or s.get("choice"), offers)
+
     if feats.get("complaint") or feats.get("human_request"):
         reason = "complaint" if feats.get("complaint") else "asked for a person"
-        actions.append({"type": "handoff", "reason": reason})
-        reply(L("handoff_complaint" if feats.get("complaint") else "handoff_person"),
-              "tell the guest a team member will take over", "handoff")
-        return done(stage)
+        actions.append({"type": "alert_staff", "reason": reason})
+        reply(L("alert_complaint") if feats.get("complaint") else L("alert_person", next=nxt()),
+              "tell the guest the team is alerted and keep helping", "alert")
+        return done(stage if stage != "new" else "qualify")
     if feats.get("payment_claim") or (feats.get("has_image") and stage in ("invoice", "payment")):
-        actions.append({"type": "handoff", "reason": "payment proof to verify"})
+        actions.append({"type": "alert_staff", "reason": "payment proof to verify"})
         reply(L("payment", hi=hi), "thank the guest; staff will confirm the payment", "payment")
         return done("payment")
 
@@ -166,6 +174,14 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
     if feats.get("terms_request") and not s.get("terms_sent_at"):
         actions.append({"type": "send_terms"})
         prefix += L("terms_attached")
+    # Standing answers (house rules of the business), then the normal next step.
+    faq = False
+    if feats.get("viewing_request"):
+        prefix += L("no_viewing", next="").strip() + " "
+        faq = True
+    if feats.get("checkin_query"):
+        prefix += L("checkin_times", next="").strip() + " "
+        faq = True
 
     def say(text: str, goal: str, intent: str) -> None:
         reply(prefix + text, goal, intent)
@@ -178,15 +194,15 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
     choice = cat.resolve_choice(feats, offers, slots, stage)
     tentative = bool(choice) and feats.get("question") and not feats.get("explicit_choice") \
         and not feats.get("affirm")
-    about_house = bool(choice) and feats.get("question") and not feats.get("explicit_choice") \
+    about_house = bool(choice) and not faq and feats.get("question") and not feats.get("explicit_choice") \
         and not feats.get("affirm") and not any(feats.get(k) for k in ("price_query", "availability_query",
                                                                         "location_query", "invoice_request")) \
         and (feats.get("words") or 0) > 4
     if about_house:                                           # "does KCER 102 have wifi?"
         out["choice"] = choice if not s.get("choice") or stage == "present" else s["choice"]
         facts_house = dict(choice)
-        actions.append({"type": "maybe_handoff", "reason": "question about " + choice["ref"]})
-        say(L("team_confirm_soon"), f"answer the guest's question about {choice['ref']} from its note in FACTS, "
+        actions.append({"type": "maybe_alert", "reason": "question about " + choice["ref"]})
+        say(L("team_confirm_soon", next=nxt("present")), f"answer the guest's question about {choice['ref']} from its note in FACTS, "
             "or say the team will confirm", "open_question")
         out["asked_about"] = facts_house
         res = done(stage if stage not in ("new", "qualify") else "present")
@@ -207,7 +223,7 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
                   price=", " + price if price else ""), "answer about the house and offer to reserve it", "price")
             return done("present")
         stage = "details"
-    elif s.get("choice") and stage in ("details", "invoice", "searching"):
+    elif s.get("choice") and stage in ("details", "invoice", "searching", "payment"):
         choice = s["choice"]
         new_dates = (slots.get("check_in"), slots.get("check_out")) != (choice.get("check_in"), choice.get("check_out"))
         if new_dates and slots.get("check_in") and slots.get("check_out"):
@@ -215,7 +231,7 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
         out["choice"] = choice
 
     # ── collecting the invoice details ───────────────────────────────────────
-    if choice and stage in ("details", "invoice", "searching"):
+    if choice and stage in ("details", "invoice", "searching", "payment"):
         if stage == "details" and not slots.get("full_name") and feats.get("name_like"):
             slots["full_name"] = feats["name_like"]
         if feats.get("id_number"):
@@ -240,17 +256,18 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
         name, ident = slots.get("full_name"), slots.get("id_number")
         gave_details = feats.get("id_number") or feats.get("name_like") or feats.get("full_name") \
             or feats.get("long_number")
-        if (not name or not ident) and feats.get("question") and not gave_details and not any(
+        if (not name or not ident) and feats.get("question") and not gave_details and not faq and not any(
                 feats.get(k) for k in ("invoice_request", "price_query", "location_query")):
-            actions.append({"type": "maybe_handoff", "reason": "question Davis has no facts for"})
-            say(L("team_confirm_soon"), "answer the guest's question from FACTS, or say the team will confirm",
+            actions.append({"type": "maybe_alert", "reason": "question Davis has no facts for"})
+            say(L("team_confirm_soon", next=L("next_details")), "answer the guest's question from FACTS, or say the team will confirm",
                 "open_question")
             return done(stage)
         if (not name or not ident) and feats.get("price_query") and L("invoice_hint") not in prefix:
             prefix += L("invoice_hint")
         if not name and not ident:
-            say(L("ask_name_id", summary=summary), "confirm the choice and ask full name and ID number",
-                "collect_details")
+            # After an answer (EcoCash, viewings, check-in) the short ask keeps the reply under 40 words.
+            say(L("next_details") if prefix else L("ask_name_id", summary=summary),
+                "confirm the choice and ask full name and ID number", "collect_details")
             return done("details")
         if not ident:
             say(L("ask_id", hi=hi),
@@ -274,12 +291,20 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
             say(L("invoice_sent", hi=hi, summary=summary),
                 "say the invoice and terms are coming; payment confirms", "invoice")
             return done("invoice")
+        if stage == "payment":
+            real_question = feats.get("question") and not feats.get("greeting") and (feats.get("words") or 0) > 2
+            if real_question and not faq and not feats.get("invoice_request"):
+                actions.append({"type": "maybe_alert", "reason": "question after payment"})
+                say(L("team_confirm", next=""), "answer from FACTS, or say the team will confirm", "open_question")
+            else:
+                say(L("payment_wait", hi=hi), "reassure: payment being confirmed, details follow", "payment")
+            return done("payment")
         if feats.get("invoice_request"):
             say(L("invoice_above"), "point to the invoice and ask for proof of payment", "invoice")
             return done("invoice")
-        if feats.get("question"):
-            actions.append({"type": "maybe_handoff", "reason": "question Davis has no facts for"})
-            say(L("team_confirm"),
+        if feats.get("question") and not faq:
+            actions.append({"type": "maybe_alert", "reason": "question Davis has no facts for"})
+            say(L("team_confirm", next=L("next_pay")),
                 "answer the guest's question from the facts, or say the team will confirm", "open_question")
             return done("invoice")
         say(L("after_invoice", hi=hi), "acknowledge; ask for proof of payment once paid", "invoice")
@@ -292,9 +317,10 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
     if not slots.get("city") and not (slots.get("check_in") and slots.get("check_out")):
         greet = ""
         if stage == "new" or feats.get("greeting"):
-            greet = "" if feats.get("bot_question") else L("greet", hi=hi)
-        if stage == "present" and offers and not (feats.get("availability_query") or feats.get("greeting")):
-            return _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix)
+            greet = "" if feats.get("bot_question") else (L("hello", hi=hi) if prefix else L("greet", hi=hi))
+        if stage == "present" and offers and (faq or feats.get("invoice_request") or feats.get("question")
+                                              or not (feats.get("availability_query") or feats.get("greeting"))):
+            return _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix, faq)
         reply(greet + prefix + L("ask_city_dates"),          # the greeting always comes first
               "greet and ask which city and dates", "qualify")
         return done("qualify")
@@ -318,7 +344,7 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
         return done("searching")
     if stage in ("new", "qualify") or changed or feats.get("more_options") or not offers:
         return _present(ctx, slots, cat, actions, say, done, out, resumed=False)
-    return _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix)
+    return _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix, faq)
 
 
 def _price_line(o: dict) -> str:
@@ -363,7 +389,20 @@ def _present(ctx, slots, cat, actions, say, done, out, resumed: bool) -> dict:
     return done("qualify")
 
 
-def _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix) -> dict:
+def next_step(stage: str, slots: dict, choice: Optional[dict], offers: list) -> str:
+    """The question that moves this booking on: every reply ends with one."""
+    if stage == "payment":
+        return ""
+    if stage == "invoice":
+        return L("next_pay")
+    if choice and stage in ("details", "searching"):
+        return L("next_details")
+    if offers or stage == "present":
+        return L("next_pick")
+    return L("next_city_dates")
+
+
+def _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix, faq=False) -> dict:
     latest = [o for o in offers if o.get("sent_at") == offers[0].get("sent_at")]
     latest.sort(key=lambda o: o.get("option_no") or 0)
     if feats.get("price_query") and latest:
@@ -378,12 +417,13 @@ def _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix) -> dic
             say("; ".join(parts) + L("location_tail"),
                 "say where the houses are", "location")
             return done("present")
-    if feats.get("invoice_request"):              # "how do I pay?": the EcoCash line is in prefix
-        say(L("which_home"), "give the EcoCash details; ask which house they want", "payment_info")
-        return done("present")
+    if feats.get("invoice_request") or faq:      # the answer is already in prefix
+        say(L("next_pick") if offers else L("next_city_dates"), "answer, then ask which house they want",
+            "payment_info" if feats.get("invoice_request") else "faq")
+        return done("present" if offers else "qualify")
     if feats.get("question") or not feats.get("ack_only"):
-        actions.append({"type": "maybe_handoff", "reason": "question Davis has no facts for"})
-        say(L("team_confirm_soon"),
+        actions.append({"type": "maybe_alert", "reason": "question Davis has no facts for"})
+        say(L("team_confirm_soon", next=L("next_pick") if offers else L("next_city_dates")),
             "answer the guest's question from the facts, or say the team will confirm", "open_question")
         return done("present" if offers else "qualify")
     say(L("which_home"),

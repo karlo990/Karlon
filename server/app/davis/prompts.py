@@ -29,8 +29,8 @@ _ACTION_TEXT = {
     "send_terms": "send the Terms & Conditions PDF",
     "create_invoice": "create and send the invoice PDF",
     "request_refresh": "check live prices for the guest's dates (a few minutes)",
-    "handoff": "hand the chat to a team member",
-    "maybe_handoff": "hand the chat to a team member unless FACTS answer the question",
+    "alert_staff": "alert a team member (you keep helping the guest)",
+    "maybe_alert": "alert a team member unless FACTS answer the question",
     "opt_out": "stop messaging this guest",
     "opt_in": "resume messaging this guest",
 }

@@ -153,8 +153,8 @@ def decide(ctx: dict, turn_feats: dict, resume: bool = False) -> dict:
         return no("guest_message_too_old")
     if s.get("opted_out") and not turn_feats.get("opt_in"):
         return no("opted_out")
-    if s.get("handoff"):
-        return no("handed_to_staff")
+    if s.get("handoff"):                 # only "Take over" on the dashboard mutes Davis
+        return no("staff_took_over")
     if s.get("paused"):
         return no("chat_paused")
     staff = staff_spoke_recently(msgs, now, config.HUMAN_QUIET_MINUTES)

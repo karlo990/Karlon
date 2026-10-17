@@ -25,8 +25,10 @@ CREATE TABLE IF NOT EXISTS davis_sessions (
     last_inbound_id TEXT,                 -- newest guest message already handled
     last_reply_at   TEXT,
     paused          INTEGER NOT NULL DEFAULT 0,
-    handoff         INTEGER NOT NULL DEFAULT 0,
+    handoff         INTEGER NOT NULL DEFAULT 0,   -- staff took over on the dashboard: Davis is muted
     handoff_reason  TEXT,
+    attention       INTEGER NOT NULL DEFAULT 0,   -- Davis alerted the team (Davis keeps replying)
+    attention_reason TEXT,
     opted_out       INTEGER NOT NULL DEFAULT 0,
     refresh_job_id  INTEGER,              -- waiting for live prices for the guest's dates
     invoice_id      TEXT,
@@ -83,6 +85,13 @@ def now_iso() -> str:
 
 def init(conn) -> None:
     conn.executescript(SCHEMA)
+    for stmt in ("ALTER TABLE davis_sessions ADD COLUMN attention INTEGER NOT NULL DEFAULT 0",
+                 "ALTER TABLE davis_sessions ADD COLUMN attention_reason TEXT"):
+        try:
+            conn.execute(stmt)
+        except Exception:
+            pass                       # column already there
+    conn.commit()
 
 
 # ─────────────────────────── settings ────────────────────────────────────────
@@ -135,7 +144,7 @@ def _session_row(row) -> dict:
             d[c] = json.loads(d[c]) if d.get(c) else ({} if c == "slots" else None)
         except Exception:
             d[c] = {} if c == "slots" else None
-    for c in ("paused", "handoff", "opted_out"):
+    for c in ("paused", "handoff", "opted_out", "attention"):
         d[c] = bool(d.get(c))
     return d
 

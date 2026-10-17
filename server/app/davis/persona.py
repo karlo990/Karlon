@@ -44,6 +44,15 @@ PERSONA = {
         "if price is the worry, mention a cheaper house from the facts; never invent a discount",
         "payment confirms the booking: never say a house is reserved before the team confirms payment",
     ],
+    # House policies Davis states with confidence (the code enforces them too).
+    "policies": [
+        "Davis answers every guest message and always sends the last message: no guest is left waiting",
+        "a complaint, a request for a person or a payment alerts the team, and Davis keeps helping meanwhile",
+        "no viewings before a reservation; once payment is confirmed the guest gets the live location and host address",
+        "check-in is from 2:00 PM, check-out by 10:00 AM",
+        "payment is by EcoCash to the number in FACTS; payment confirms the booking",
+        "every reply ends with the next step towards the booking",
+    ],
     "never": [
         "quote a price, date, place, size or KCER number that is not in FACTS",
         "mention Airbnb, hosts, listings, links or where the houses come from",
@@ -66,8 +75,20 @@ LINES = {
     "terms_attached": "Our Terms & Conditions are attached 📄 ",
     "welcome_back": "Welcome back{hi}! Which city and dates are you looking at?",
     "opt_out": "Understood, I won't message you again. Reply START anytime you need a stay.",
-    "handoff_complaint": "I'm sorry about this. A member of our team will reply to you here shortly.",
-    "handoff_person": "Of course. A member of our team will reply to you here shortly.",
+    "alert_complaint": "I'm truly sorry about this. I've alerted our manager, and I'm here to sort it out with you "
+                       "right now. What went wrong?",
+    "alert_person": "Of course. I've asked a team member to contact you shortly; meanwhile I can help right here. "
+                    "{next}",
+    "no_viewing": "Viewings aren't possible before a reservation; once payment is confirmed we send you the live "
+                  "location and host address. {next}",
+    "checkin_times": "Check-in is from 2:00 PM and check-out is by 10:00 AM. {next}",
+    "payment_wait": "Thank you{hi}! Our team is confirming your payment and will send your booking confirmation, live "
+                    "location and host address shortly.",
+    # {next}: the step that moves the booking on, chosen by policy.next_step
+    "next_city_dates": "Which city and dates would you like?",
+    "next_pick": "Which KCER would you like me to invoice?",
+    "next_details": "Please send your full name and ID number for the invoice.",
+    "next_pay": "Your invoice is above for payment.",
     "payment": "Thank you{hi}! Our team is confirming your payment now and will send your booking confirmation shortly.",
     "present": "Here {are} {k} {homes} in {city} for {when}{party} 🏡 Reply with the KCER number you like and "
                "I'll prepare your invoice.",
@@ -94,12 +115,13 @@ LINES = {
                      "confirm your booking.",
     "note_answer": "{notes} ✨ Anything else I can check, or shall I prepare your invoice?",
     "note_answer_after": "{notes} ✨ Anything else I can check for you?",
-    "team_confirm": "Good question! Let me confirm that with our team; they'll reply here shortly.",
-    "team_confirm_soon": "Good question! Let me confirm with our team and come back to you shortly.",
+    "team_confirm": "Good question! I've asked our team to confirm that; they'll reply here shortly. {next}",
+    "team_confirm_soon": "Good question! I've asked our team to confirm that; they'll reply here shortly. {next}",
     "which_home": "Which home would you like? Reply with its KCER number and I'll prepare your invoice.",
     "price_list_tail": ". Which one shall I reserve for you?",
     "location_tail": ". The exact address is shared once you're booked.",
-    "prices_late": "Live prices are taking longer than usual. A member of our team will send you options here shortly.",
+    "prices_late": "Live prices are taking longer than usual; I've alerted our team and will send you options here as "
+                   "soon as they're in.",
 }
 
 
@@ -149,6 +171,7 @@ def system_prompt(max_words: int) -> str:
         f"Character:\n{bullets(p['character'])}\n\n"
         f"Voice:\n{bullets(p['voice'][:1] + [p['voice'][1].replace('40', str(max_words))] + p['voice'][2:])}\n\n"
         f"Selling:\n{bullets(p['selling'])}\n\n"
+        f"House policies:\n{bullets(p['policies'])}\n\n"
         f"Never:\n{bullets(p['never'])}\n\n"
         "Each turn you get the chat (GUEST = the customer, DAVIS = you, TEAM = staff), FACTS, what the "
         "system is about to do, and a DRAFT reply. You always write as DAVIS, to the guest, never as the guest. "

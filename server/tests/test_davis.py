@@ -113,9 +113,10 @@ def test_gate_reasons():
                 "settings": {"mode": "live", "paused": False, "only_chats": [], "ignore_chats": []}}
 
     assert gate.decide(ctx([m("in", "hi", 1)]), {})["respond"]
-    assert gate.decide(ctx([m("in", "hi", 120)]), {})["reason"] == "guest_message_too_old"
-    assert gate.decide(ctx([m("out", "Sure, sending now", 5, "You (WhatsApp)"), m("in", "ok?", 1)]), {})["reason"] \
-        == "staff_replied_recently"
+    assert gate.decide(ctx([m("in", "hi", 120)]), {})["respond"]                       # 2 hours: still answered
+    assert gate.decide(ctx([m("in", "hi", 4 * 24 * 60)]), {})["reason"] == "guest_message_too_old"   # 4 days
+    staff_then_guest = [m("out", "Sure, sending now", 5, "You (WhatsApp)"), m("in", "ok?", 1)]
+    assert gate.decide(ctx(staff_then_guest), {})["respond"]                          # Davis has the last word
     # Davis's own echo, a returning PDF bubble and photos are not staff
     echo = [m("out", "Here are 3 homes 🏡", 5, "Davis"), m("out", "Here are 3 homes", 5, "You (WhatsApp)"),
             m("out", "KARLCON_Invoice_KCER-2026-0001.pdf 1 page 80 kB", 4, "You (WhatsApp)"),
@@ -130,7 +131,8 @@ def test_gate_reasons():
     assert gate.decide(ctx([m("out", "Which dates?", 3, "Davis"), m("in", "ok", 1)]), {"ack_only": True})["respond"]
     last = m("in", "hi", 1)
     assert gate.decide(ctx([last], last_inbound_id=last["id"]), {})["reason"] == "already_handled"
-    assert gate.decide(ctx([m("in", "hi", 1)], handoff=True), {})["reason"] == "handed_to_staff"
+    assert gate.decide(ctx([m("in", "hi", 1)], handoff=True), {})["reason"] == "staff_took_over"
+    assert gate.decide(ctx([m("in", "hi", 1)], attention=True), {})["respond"]     # an alert never mutes Davis
 
 
 # ─────────────────────────── the booking, live ───────────────────────────────
@@ -186,13 +188,16 @@ def test_full_booking_flow_live(dc, db):
     _guest(db, "I have paid, here is the proof")
     r = _run(dc)
     s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
-    assert s["handoff"] and s["stage"] == "payment"
-    before = len(_davis(db))
-    _guest(db, "hello?")
-    assert _run(dc)["reason"] == "handed_to_staff" and len(_davis(db)) == before
+    assert s["attention"] and s["attention_reason"] == "payment proof to verify" and s["stage"] == "payment"
+    assert not s["handoff"]
+    _guest(db, "hello?")                                       # Davis still answers after payment
+    assert _run(dc)["status"] == "sent" and "confirming your payment" in _davis(db)[-1]["text"]
 
-    dc.post(f"/api/davis/sessions/{GUEST}/handoff", json={"active": False})
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+    dc.post(f"/api/davis/sessions/{GUEST}/handoff", json={"active": True})   # staff take over: Davis muted
+    _guest(db, "any update?")
+    assert _run(dc)["reason"] == "staff_took_over"
+    dc.post(f"/api/davis/sessions/{GUEST}/attention", json={"active": False})
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
 
 def test_never_more_than_two_replies_per_guest_turn(dc, db):
@@ -210,9 +215,9 @@ def test_never_more_than_two_replies_per_guest_turn(dc, db):
     assert gate.davis_replies_this_turn(msgs) == 2 and Engine._cap(two, msgs) == [two[1]]
 
 
-def test_staff_reply_and_stale_messages_keep_davis_quiet(dc, db):
+def test_old_messages_quiet_but_davis_answers_after_staff(dc, db, monkeypatch):
     _setup(dc, db)
-    _guest(db, "Hi, any houses in Harare?", minutes_ago=90)
+    _guest(db, "Hi, any houses in Harare?", minutes_ago=4 * 24 * 60)       # older than 3 days
     assert _run(dc)["reason"] == "guest_message_too_old"
     db.execute("INSERT INTO messages (id, chat_id, sender, kind, text, created_at, direction, wa_status) "
                "VALUES (?,?,?,?,?,?, 'out', 'sent')",
@@ -220,8 +225,15 @@ def test_staff_reply_and_stale_messages_keep_davis_quiet(dc, db):
                 (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()))
     db.commit()
     _guest(db, f"{_human(CI)} to {_human(CO)}")
+    assert _run(dc)["status"] == "sent" and _davis(db)                     # Davis has the last word
+    from app.davis import config
+    monkeypatch.setattr(config, "HUMAN_QUIET_MINUTES", 30)                 # optional quiet window still works
+    _guest(db, "thanks, and for 4 people?")
+    db.execute("INSERT INTO messages (id, chat_id, sender, kind, text, created_at, direction, wa_status) "
+               "VALUES ('staff2', ?, 'Front Desk', 'text', 'Sure!', ?, 'out', 'sent')",
+               (GUEST, datetime.now(timezone.utc).isoformat()))
+    _guest(db, "ok great")
     assert _run(dc)["reason"] == "staff_replied_recently"
-    assert _davis(db) == []
 
 
 def test_opt_out_and_back(dc, db):
@@ -240,7 +252,10 @@ def test_complaint_hands_over_to_staff(dc, db):
     _guest(db, "This is a scam, I want a refund")
     _run(dc)
     s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
-    assert s["handoff"] and s["handoff_reason"] == "complaint"
+    assert s["attention"] and s["attention_reason"] == "complaint" and not s["handoff"]
+    assert "sorry" in _davis(db)[-1]["text"].lower()
+    _guest(db, "The last house had no water")
+    assert _run(dc)["status"] == "sent"                        # Davis stays with the guest
 
 
 def test_hidden_and_featured_houses(dc, db):
@@ -370,7 +385,7 @@ def test_model_handoff_only_counts_on_open_questions(dc, db, monkeypatch):
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
     _guest(db, "Hello")
     _run(dc)
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]   # a greeting is not handed over
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]   # a greeting raises no alert
 
 
 def test_model_down_falls_back_and_breaker_opens(dc, db, monkeypatch):
@@ -412,18 +427,18 @@ def test_open_question_uses_house_note_or_hands_over(dc, db, monkeypatch):
     assert calls == []                                                          # booking steps: persona lines, no model
     _guest(db, "is there wifi?")
     _run(dc)
-    assert calls == [] and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]   # no note: team
-    dc.post(f"/api/davis/sessions/{GUEST}/handoff", json={"active": False})
+    assert calls == [] and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]   # no note: team
+    dc.post(f"/api/davis/sessions/{GUEST}/attention", json={"active": False})
     dc.patch("/api/davis/catalogue", json={"listing_url": "https://www.airbnb.com/rooms/2", "note": "wifi, pool"})
     _guest(db, "does KCER 102 have wifi?")
     r = _run(dc)
     assert len(calls) == 1 and "note: wifi, pool" in calls[0]["user"]
     assert _davis(db)[-1]["text"].startswith("Yes, KCER 102 has wifi")
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
     _guest(db, "is KCER 102 near the airport?")              # no note mentions it: never ask the model
     _run(dc)
-    assert len(calls) == 1 and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+    assert len(calls) == 1 and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
 
 def test_model_answer_must_use_the_note(dc, db, monkeypatch):
@@ -437,7 +452,7 @@ def test_model_answer_must_use_the_note(dc, db, monkeypatch):
     r = _run(dc)
     assert r["plan"]["llm"]["rejected"] == "answer_not_grounded_in_note"
     assert _davis(db)[-1]["text"].startswith("KCER 102 has wifi, pool")            # the note itself goes out
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
 
 def test_question_while_collecting_details(dc, db):
@@ -448,7 +463,8 @@ def test_question_while_collecting_details(dc, db):
     _run(dc)
     _guest(db, "can we bring our dog?")
     _run(dc)
-    assert "team" in _davis(db)[-1]["text"] and "name" not in _davis(db)[-1]["text"]
+    text = _davis(db)[-1]["text"]
+    assert "team" in text and text.endswith("Please send your full name and ID number for the invoice.")
 
 
 def test_choice_and_name_in_one_burst_are_both_kept(dc, db):
@@ -473,7 +489,7 @@ def test_ecocash_number_is_given_and_no_other(dc, db, monkeypatch):
     _guest(db, "what is your ecocash number?")
     _run(dc)
     assert "EcoCash 0780563561 (Karl Muzunze)" in _davis(db)[-1]["text"]
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]      # not a payment claim
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]    # not a payment claim
     for t in ("KCER 102", "Leon Moyo 63-1234567 X 42"):
         _guest(db, t)
         r = _run(dc)
@@ -507,6 +523,39 @@ def test_ignore_list_from_space_variable_survives_restarts(davis_env, monkeypatc
     assert set(client.get("/api/davis/status").json()["settings"]["ignore_chats"]) == {GUEST, "wa-other"}
 
 
+def test_viewing_request_is_answered_not_handed_over(dc, db):
+    """Taku's chat (live): staff sent options, then "where do I pay" and "I
+    need to see the place first" sat unanswered behind a handoff."""
+    _setup(dc, db)
+    dc.post("/api/houses/send", json={"chat_id": GUEST, "listing_ids": ["https://www.airbnb.com/rooms/2"],
+                                      "sender": "Front Desk"})
+    db.execute("UPDATE messages SET created_at=? WHERE sender='Front Desk'",
+               ((datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),))
+    db.commit()
+    _guest(db, "Okay where do I pay")
+    _guest(db, "Also I need to see the place first")
+    r = _run(dc)
+    text = _davis(db)[-1]["text"]
+    assert "EcoCash 0780563561" in text and "Viewings aren't possible before a reservation" in text
+    assert "live location and host address" in text and text.rstrip().endswith("?") and _words(text) <= 40
+    assert not any(a["type"] == "alert_staff" for a in r["plan"]["actions"])
+    _guest(db, "what time is check in?")
+    _run(dc)
+    assert "Check-in is from 2:00 PM" in _davis(db)[-1]["text"]
+
+
+def test_a_failed_pass_is_retried_not_lost(dc, db, monkeypatch):
+    from app.davis import policy
+    _setup(dc, db)
+    real = policy.plan
+    monkeypatch.setattr(policy, "plan", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    _guest(db, "Hi")
+    with pytest.raises(RuntimeError):
+        dc.post(f"/api/davis/sessions/{GUEST}/run")
+    monkeypatch.setattr(policy, "plan", real)
+    assert _run(dc)["status"] == "sent"                       # the guest still gets an answer
+
+
 def test_persona_lines_fit_the_word_limit():
     from app.davis import persona
     sample = dict(hi=" Tendai", city="Victoria Falls", when="28 Dec–2 Jan", party=" for 12 guests", k=3,
@@ -514,7 +563,8 @@ def test_persona_lines_fit_the_word_limit():
                   price=", USD 1,250.50 per night, USD 6,252.50 for 5 nights",
                   summary="KCER 1234, 28 Dec–2 Jan, USD 6,252.50 total", money="USD 6,252.50",
                   total_word=" total", start="28 Dec",
-                  notes="KCER 1234 has wifi, pool, solar backup; KCER 1235 has wifi, borehole")
+                  notes="KCER 1234 has wifi, pool, solar backup; KCER 1235 has wifi, borehole",
+                  next="Please send your full name and ID number for the invoice.")
     for key in persona.LINES:
         assert _words(persona.line(key, **sample)) <= 40, key
 
