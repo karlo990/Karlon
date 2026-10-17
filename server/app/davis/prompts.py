@@ -89,7 +89,38 @@ def _who(m: dict) -> str:
     return "DAVIS" if (m.get("sender") or "").startswith("Davis") else "TEAM"
 
 
-def user_turn(chat_name: str, history: list[dict], plan: dict, today: str) -> str:
+_MUST = [r"EcoCash \d+ \([^)]*\)", r"Reg\. No\. [\d/]+", r"KCER \d+", r"USD [\d,]+(?:\.\d+)?", r"\d{1,2}:\d{2} [AP]M",
+         r"\d{1,2}(?:–\d{1,2})? (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:–\d{1,2} \w{3})?",
+         r"\d+% service fee", r"\d+ hours", r"[Vv]iewings aren't possible before a reservation",
+         r"live location and host address", r"karl-con-elite-retreats\.vercel\.app"]
+
+
+def covers(reply: str, item: str) -> bool:
+    """The reply keeps this detail: every number in it, and its words of 4+
+    letters (so "viewings … reservation" can be rephrased but not skipped)."""
+    import re
+    low = (reply or "").lower()
+    nums = re.findall(r"\d[\d,./:]*", item)
+    if any(n.rstrip(".") not in low for n in nums):
+        return False
+    words = [w for w in re.findall(r"[a-z]{4,}", item.lower()) if w not in ("aren't", "with")]
+    hits = sum(1 for w in words if w.rstrip("s") in low)
+    return not words or hits >= max(1, int(len(words) * 0.6 + 0.5))
+
+
+def must_include(points: str) -> list[str]:
+    """The exact details a reply must keep (payment number, KCER, totals,
+    times, dates): listed separately so a small model doesn't drop them."""
+    import re
+    out: list[str] = []
+    for rx in _MUST:
+        for m in re.finditer(rx, points or ""):
+            if not any(m.group(0) in o for o in out):
+                out.append(m.group(0))
+    return out
+
+
+def user_turn(chat_name: str, history: list[dict], plan: dict, today: str, feedback: str = "") -> str:
     focus = plan.get("intent") == "open_question"
     lines, last = [], None
     for m in history[-(4 if focus else config.MODEL_HISTORY):]:
@@ -113,8 +144,10 @@ def user_turn(chat_name: str, history: list[dict], plan: dict, today: str) -> st
         f"FACTS:\n{facts_text(plan['facts'], focus)}\n"
         f"SYSTEM WILL: " + ("; ".join(doing) if doing else "send your reply only") + "\n"
         f"GOAL: {plan['goal']}\n"
-        f"DRAFT: {draft}\n"
-        f"Write DAVIS's next WhatsApp message to the guest."
+        f"KEY POINTS: {draft}\n"
+        + (f"MUST INCLUDE EXACTLY: {' | '.join(must_include(draft))}\n" if must_include(draft) else "")
+        + (f"YOUR LAST ANSWER WAS REJECTED ({feedback}). Write it again and fix that.\n" if feedback else "")
+        + "Write DAVIS's next WhatsApp message to the guest."
     )
 
 

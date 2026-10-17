@@ -231,8 +231,8 @@ async def put_settings(body: SettingsIn):
         raise HTTPException(400, f"mode must be one of {config.MODES}")
     if "provider" in changes and changes["provider"] not in config.PROVIDERS:
         raise HTTPException(400, f"provider must be one of {config.PROVIDERS}")
-    if "llm_for" in changes and changes["llm_for"] not in ("all", "open"):
-        raise HTTPException(400, "llm_for must be all or open")
+    if "llm_for" in changes and changes["llm_for"] not in ("ai", "all", "open"):
+        raise HTTPException(400, "llm_for must be ai, all or open")
     st = store.put_settings(changes)
     if changes.get("provider") == "local":
         engine.warm_local()

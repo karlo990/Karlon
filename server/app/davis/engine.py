@@ -392,7 +392,19 @@ class Engine:
             plan_["inbound_id"] = latest_in["id"] if latest_in else None
             plan_["guest_text"] = " / ".join(texts)[:300]
 
-            if settings["mode"] == "live" and not force:
+            if settings["mode"] == "live" and not force and plan_.get("ai_failed"):
+                # AI-only: no fixed sentence goes to the guest. The actions run
+                # (houses, invoice…), the reply waits as a draft for staff.
+                reply_only = [a for a in plan_["actions"] if a["type"] == "reply"]
+                plan_["actions"] = [a for a in plan_["actions"] if a["type"] != "reply"] + [
+                    {"type": "alert_staff", "reason": f"Davis couldn't write a safe reply ({plan_['ai_failed']})"}]
+                done = await self.execute(conn, chat_id, plan_, session)
+                if reply_only:
+                    done["draft_id"] = store.add_draft(conn, chat_id, plan_["inbound_id"],
+                                                       {**plan_, "actions": reply_only})
+                status = "needs_staff"
+                self.metrics.counters["ai_failed"] += 1
+            elif settings["mode"] == "live" and not force:
                 done = await self.execute(conn, chat_id, plan_, session)
                 status = "sent"
                 if latest_in and done.get("replied") and not resume:
@@ -415,19 +427,25 @@ class Engine:
             conn.close()
 
     async def _phrase(self, ctx: dict, feats: dict, plan_: dict, cat: _Cat, settings: dict) -> dict:
-        """Let the model rewrite the persona's template reply in Davis's voice.
-        Its text is used only if it passes policy.check_reply; otherwise the
-        template goes out unchanged."""
+        """The model writes the reply. In "ai" mode (the default) it writes every
+        reply itself from the conversation and the plan's key points; a reply
+        that fails policy.check_reply is retried once with the reason, and if it
+        still fails no fixed sentence is sent: plan_["ai_failed"] is set and the
+        engine leaves the reply to staff. In "all"/"open" modes the persona's
+        line is the fallback."""
         reply = next((a for a in plan_["actions"] if a["type"] == "reply"), None)
         open_q = plan_.get("intent") == "open_question"
+        mode = settings.get("llm_for", config.LLM_FOR)
+        ai_only = mode == "ai"
         use_model = reply is not None and settings.get("provider", "rules") != "rules" and (
-            settings.get("llm_for", "open") == "all" or open_q)
-        if open_q and not plan_.get("note_terms"):
+            mode in ("all", "ai") or open_q)
+        if open_q and not plan_.get("note_terms") and not ai_only:
             use_model = False          # no team note covers the question: the team answers (no model wait)
         draft = reply["text"] if reply else None
         model_handoff = None
-        if use_model:
-            user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat())
+        feedback = ""
+        for attempt in range(2 if (use_model and ai_only) else (1 if use_model else 0)):
+            user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat(), feedback)
             out, info = await self.router.complete(settings, user)
             plan_["llm"] = {k: info.get(k) for k in ("provider", "model", "latency_ms", "cache_hit", "error",
                                                        "skipped", "prompt_tokens", "output_tokens",
@@ -436,18 +454,32 @@ class Engine:
                 self.metrics.llm_ms.append(info["latency_ms"])
             if out:
                 text = nlu.clip_words(str(out.get("reply") or "").strip(), config.MAX_WORDS)
-                problem = policy.check_reply(text, plan_["facts"], draft, keep_draft=not open_q)
-                if not problem and open_q and not out.get("handoff") and not any(
+                problem = policy.check_reply(text, plan_["facts"], draft, keep_draft=not open_q and not ai_only,
+                                             keep_numbers=ai_only and not open_q)
+                if not problem and ai_only:
+                    missed = [m for m in prompts.must_include(draft) if not prompts.covers(text, m)]
+                    if missed:
+                        problem = "dropped:" + missed[0]
+                if not problem and open_q and plan_.get("note_terms") and not out.get("handoff") and not any(
                         t in text.lower() for t in plan_.get("note_terms") or []):
                     problem = "answer_not_grounded_in_note"
                 if problem:
                     self.router.stats["rejected"] += 1
                     plan_["llm"]["rejected"] = problem
+                    feedback = problem
                 else:
                     reply["text"] = text
                     reply["by"] = "model"
+                    plan_["llm"].pop("rejected", None)
                 model_handoff = {"wants": bool(out.get("handoff")), "reason": str(out.get("handoff_reason") or "")[:120],
                                  "answered": reply.get("by") == "model"}
+                if reply.get("by") == "model":
+                    break
+            else:
+                break                                   # model down / skipped: no point retrying now
+        if ai_only and use_model and reply is not None and reply.get("by") != "model":
+            llm = plan_.get("llm") or {}
+            plan_["ai_failed"] = llm.get("rejected") or llm.get("error") or llm.get("skipped") or "model unavailable"
         return _resolve_maybe(plan_, model_handoff)
 
     @staticmethod

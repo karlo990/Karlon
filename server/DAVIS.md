@@ -34,7 +34,38 @@ change how Davis sounds:
   no other payment number can ever be sent. The invoice PDF prints the same details
   (`pc-bridge/invoice_worker.py`, `ECOCASH_NUMBER` / `ECOCASH_NAME`).
 
-## Where the model is used, and why only there
+## AI only (the default): the model writes every reply
+
+`DAVIS_LLM_FOR=ai`, shown in the dashboard as Settings → Model writes → "AI only".
+
+**How a reply is made:**
+- **Code decides what happens:** which houses to send, the invoice, the Terms, alerts. It also works out the
+  **key points** a message must get across, from the persona lines, FAQ, house notes and skills.
+- **The AI writes the message itself**, in its own words, reacting to what the guest said, with the whole
+  recent chat in view (guest, Davis and staff).
+
+**How it's checked.** Each AI reply passes a check before it's sent. It must keep every exact detail from the
+key points: the EcoCash number, KCER numbers, totals, times, dates, and the viewing and payment policies. It
+must not invent numbers, links or houses, or write as the guest.
+
+**If the check fails:**
+- The AI gets one retry, told what to fix.
+- If it fails again, **no fixed sentence is sent to the guest**. The houses, invoice and Terms still go out, a
+  "needs staff" alert appears, and the reply waits in Drafts so staff can send or edit it.
+- The same happens if the model is down.
+
+**Measured with the local 1.5B model on 2 CPUs** (Taku's real conversation, 15 messages):
+- 14 replies were written by the AI and sent, all correct; 1 was held for staff.
+- Each reply took 13–33 s.
+
+A larger model (hosted, a bigger CPU or a GPU) makes it faster and smarter with no code change: set
+`DAVIS_PROVIDER` / the model.
+
+The other modes keep the older behaviour:
+- `all`: the AI rewrites the fixed lines.
+- `open`: fixed lines, AI only for open questions.
+
+## Where the model is used in "open" mode, and why
 
 The booking itself is code: understanding the message, deciding the step, choosing houses and the exact
 reply. The persona's lines go out **instantly** and are always correct.

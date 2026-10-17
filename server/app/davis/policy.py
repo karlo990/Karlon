@@ -533,7 +533,8 @@ def _numbers(text: str) -> set[str]:
     return out
 
 
-def check_reply(text: str, facts: dict, draft: Optional[str] = None, keep_draft: bool = False) -> Optional[str]:
+def check_reply(text: str, facts: dict, draft: Optional[str] = None, keep_draft: bool = False,
+                keep_numbers: bool = False) -> Optional[str]:
     """Why a model-written reply can't be sent (None = fine). Guards against
     the classic failures of a small model: invented prices, dates or houses,
     writing as the guest, dropping what the draft had to say, links,
@@ -557,6 +558,10 @@ def check_reply(text: str, facts: dict, draft: Optional[str] = None, keep_draft:
                 return f"dropped:USD {raw}"
         if draft.rstrip().endswith("?") and "?" not in text:
             return "dropped:question"
+    if keep_numbers and draft:
+        missing = sorted(_numbers(draft) - _numbers(text))
+        if missing:
+            return "dropped:" + ",".join(missing[:3])           # e.g. the EcoCash number or the total
     if nlu.word_count(text) > config.MAX_WORDS:
         return "too_long"
     if re.search(r"https?://|www\.|airbnb", text, re.I):

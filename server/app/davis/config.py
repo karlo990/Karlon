@@ -80,8 +80,10 @@ HISTORY_MESSAGES = _int("DAVIS_HISTORY_MESSAGES", 24, 4)    # what Davis reads p
 # team's house notes); every booking step uses the persona's lines (instant,
 # exact). "all" = the model rewrites every reply too (slower; each rewrite
 # must still pass the guard). Changeable on the dashboard.
-LLM_FOR = os.environ.get("DAVIS_LLM_FOR", "open") if os.environ.get("DAVIS_LLM_FOR", "open") in ("open", "all") \
-    else "open"
+#   ai   = the model writes every reply itself (no fixed sentences reach guests;
+#          if it can't write a safe one, the reply waits for staff). Default.
+LLM_FOR = os.environ.get("DAVIS_LLM_FOR", "ai") if os.environ.get("DAVIS_LLM_FOR", "ai") in ("open", "all", "ai") \
+    else "ai"
 MODEL_HISTORY = _int("DAVIS_MODEL_HISTORY", 10, 2)          # of which the model sees the last N
 
 # ── process management ─────────────────────────────────────────────────────

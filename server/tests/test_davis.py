@@ -369,7 +369,7 @@ def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
     c = calls[0]
     assert c["schema"]["required"] == ["reply", "handoff"] and c["schema"]["additionalProperties"] is False
     assert persona.PERSONA["name"] in c["system"] and "KCER" in c["system"]
-    assert "DRAFT:" in c["user"] and "airbnb.com" not in c["user"]
+    assert "KEY POINTS:" in c["user"] and "airbnb.com" not in c["user"]
     assert _davis(db)[-1]["text"].startswith("Mhoro!") and r["plan"]["llm"]["provider"] == "local"
 
 
@@ -425,7 +425,7 @@ def test_open_question_uses_house_note_or_hands_over(dc, db, monkeypatch):
     _setup(dc, db)
     calls = _fake_local(monkeypatch, {"reply": "Yes, KCER 102 has wifi and a pool ✨ Shall I prepare your invoice?",
                                       "handoff": False})
-    dc.put("/api/davis/settings", json={"provider": "local"})                  # default: model for open questions
+    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "open"})    # model for open questions only
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
     _run(dc)
     assert calls == []                                                          # booking steps: persona lines, no model
@@ -448,7 +448,7 @@ def test_open_question_uses_house_note_or_hands_over(dc, db, monkeypatch):
 def test_model_answer_must_use_the_note(dc, db, monkeypatch):
     _setup(dc, db)
     _fake_local(monkeypatch, {"reply": "Yes, it's close to everything ✨ Shall I prepare your invoice?", "handoff": False})
-    dc.put("/api/davis/settings", json={"provider": "local"})
+    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "open"})
     dc.patch("/api/davis/catalogue", json={"listing_url": "https://www.airbnb.com/rooms/2", "note": "wifi, pool"})
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
     _run(dc)
@@ -648,6 +648,45 @@ def test_bulawayo_chat_dates_from_context_and_staff(dc, db):
     slots = r["plan"]["slots"]
     assert slots["check_in"].endswith("-11-21") and slots["check_out"].endswith("-11-22") and slots["guests"] == 15
     assert "Which dates" not in _davis(db)[-1]["text"]
+
+
+def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monkeypatch):
+    from app.davis import local_llm
+    _setup(dc, db)
+    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "ai"})
+    answers = iter([{"reply": "Mhoro Leon! Harare is a great choice. What dates are you thinking of, and how many "
+                              "of you are coming?", "handoff": False}])
+    calls = []
+
+    def gen(msgs, schema):
+        calls.append(msgs[-1]["content"])
+        return next(answers), {"model": "t.gguf"}
+    monkeypatch.setattr(local_llm.model, "generate", gen)
+    _guest(db, "Hi, I need a place in Harare")
+    r = _run(dc)
+    assert r["status"] == "sent" and _davis(db)[-1]["text"].startswith("Mhoro Leon! Harare is a great choice")
+    assert "KEY POINTS:" in calls[0]
+
+    # a reply that drops the payment number is retried, then left to staff: nothing canned is sent
+    bad = {"reply": "Please pay by EcoCash and send proof here.", "handoff": False}
+    monkeypatch.setattr(local_llm.model, "generate", lambda msgs, schema: (calls.append(msgs[-1]["content"]) or bad,
+                                                                          {"model": "t.gguf"}))
+    before = len(_davis(db))
+    _guest(db, "how do I pay?")
+    r = _run(dc)
+    assert r["status"] == "needs_staff" and len(_davis(db)) == before
+    assert "REJECTED (dropped:" in calls[-1]                                    # the retry was told why
+    s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
+    assert s["attention"] and "couldn't write a safe reply" in s["attention_reason"]
+    drafts = dc.get("/api/davis/drafts").json()
+    assert drafts and [a["type"] for a in drafts[0]["plan"]["actions"]] == ["reply"]   # staff can send/edit it
+
+    # model down: still no fixed sentence to the guest
+    def boom(msgs, schema):
+        raise RuntimeError("model file missing")
+    monkeypatch.setattr(local_llm.model, "generate", boom)
+    _guest(db, "hello?")
+    assert _run(dc)["status"] == "needs_staff" and len(_davis(db)) == before
 
 
 def test_persona_lines_fit_the_word_limit():

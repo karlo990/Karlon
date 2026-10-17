@@ -196,24 +196,24 @@ EXAMPLES = [
      "SENDING NOW:\n- KCER 251 · Avondale, Harare · 8 guests · 4 bedrooms · 11–14 Dec (3 nights) · USD 120/night\n"
      "- KCER 260 · Borrowdale, Harare · 6 guests · 3 bedrooms · 11–14 Dec (3 nights) · USD 150/night\n"
      "SYSTEM WILL: send the houses under SENDING NOW as cards with photos, right after your reply\n"
-     "DRAFT: Here are 2 homes in Harare for 11–14 Dec for 6 guests 🏡 Reply with the KCER number you like and "
-     "I'll prepare your invoice.\nWrite DAVIS's next WhatsApp message to the guest.",
-     '{"reply": "Here are 2 lovely homes in Harare for 11–14 Dec 🏡 Both sleep all 6 of you. Which KCER would '
-     'you like me to invoice?", "handoff": false}'),
+     "KEY POINTS: Here are 2 homes in Harare for 11–14 Dec for 6 guests 🏡 Reply with the KCER number you like "
+     "and I'll prepare your invoice.\nWrite DAVIS's next WhatsApp message to the guest.",
+     '{"reply": "Here are 2 lovely homes in Harare for 11–14 Dec 🏡 KCER 251 sleeps 8 and KCER 260 sleeps 6. '
+     'Which KCER would you like me to invoice?", "handoff": false}'),
     ("CHAT:\nGUEST: is there a pool at KCER 251?\n"
      "FACTS:\nSENT BEFORE:\n- KCER 251 · Avondale, Harare · 8 guests · 4 bedrooms · note: pool, wifi, solar backup\n"
      "SYSTEM WILL: hand the chat to a team member unless FACTS answer the question\n"
-     "DRAFT: Good question! Let me confirm with our team and come back to you shortly.\n"
-     "Write DAVIS's next WhatsApp message to the guest.",
+     "KEY POINTS: KCER 251 has pool, wifi, solar backup ✨ Anything else I can check, or shall I prepare your "
+     "invoice?\nWrite DAVIS's next WhatsApp message to the guest.",
      '{"reply": "Yes, KCER 251 has a pool, plus wifi and solar backup ✨ Shall I prepare your invoice?", '
      '"handoff": false}'),
     ("CHAT:\nGUEST: can we bring our dog?\n"
      "FACTS:\nSENT BEFORE:\n- KCER 251 · Avondale, Harare · 8 guests · 4 bedrooms · note: pool, wifi\n"
      "SYSTEM WILL: hand the chat to a team member unless FACTS answer the question\n"
-     "DRAFT: Good question! Let me confirm with our team and come back to you shortly.\n"
-     "Write DAVIS's next WhatsApp message to the guest.",
-     '{"reply": "Good question! Let me confirm pets with our team; they\'ll reply here shortly.", '
-     '"handoff": true}'),
+     "KEY POINTS: Sure, I'll check that for you and get back to you here shortly. Which KCER would you like me "
+     "to invoice?\nWrite DAVIS's next WhatsApp message to the guest.",
+     '{"reply": "Let me check on pets for you and get back to you here shortly 🙏 Meanwhile, which KCER would you '
+     'like me to invoice?", "handoff": true}'),
 ]
 
 
@@ -231,8 +231,9 @@ def system_prompt(max_words: int) -> str:
         f"House policies:\n{bullets(p['policies'])}\n\n"
         f"Never:\n{bullets(p['never'])}\n\n"
         "Each turn you get the chat (GUEST = the customer, DAVIS = you, TEAM = staff), FACTS, what the "
-        "system is about to do, and a DRAFT reply. You always write as DAVIS, to the guest, never as the guest. "
-        "Rewrite the DRAFT in your voice, saying the same things and keeping every number exactly. "
-        "If the guest asked something FACTS can't answer, say a team member will confirm and set handoff true.\n"
+        "system is about to do, and KEY POINTS: what this message must get across. You always write as DAVIS, "
+        "to the guest, never as the guest. Write the message yourself, in your own words, reacting to what the "
+        "guest actually said; cover the KEY POINTS and keep every number, KCER and payment detail exactly. "
+        "If the guest asked something FACTS can't answer, say you'll check and get back, and set handoff true.\n"
         'Answer with JSON only: {"reply": "...", "handoff": false}'
     )

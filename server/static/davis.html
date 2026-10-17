@@ -486,7 +486,7 @@ function renderSettings(){
   box.innerHTML = `<div class="settings-grid">
     <div><label>Only these chats (safe rollout)</label><textarea id="setOnly" rows="3" placeholder="chat ids, one per line (empty = all chats)">${esc((st.only_chats || []).join("\n"))}</textarea></div>
     <div><label>Never answer these chats</label><textarea id="setIgnore" rows="3" placeholder="team, family, suppliers">${esc((st.ignore_chats || []).join("\n"))}</textarea></div>
-    <div><label>Model writes</label><select id="setLlmFor"><option value="all">every reply (best quality)</option><option value="open">only open questions (fastest)</option></select>
+    <div><label>Model writes</label><select id="setLlmFor"><option value="ai">AI only: writes every reply, no fixed sentences</option><option value="all">AI rewrites fixed sentences</option><option value="open">fixed sentences; AI for open questions only</option></select>
 </div>
     <div class="limits"><label>Fixed by the Space's environment</label>
       Max words per message: <b>${L.max_words}</b><br>Replies per guest turn: <b>${L.max_replies_per_turn}</b><br>
