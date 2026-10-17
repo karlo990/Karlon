@@ -11,6 +11,7 @@ member speaking in the chat takes the floor: Davis steps back.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -98,9 +99,20 @@ def staff_spoke_recently(messages: list[dict], now: datetime, minutes: int) -> O
     return None
 
 
+def sender_key(sender: Optional[str]) -> str:
+    """One key per person however WhatsApp writes the name: "+263 78 655 7599"
+    and "+263786557599" are the same sender (a phone number keeps its last 9
+    digits, so 0786557599 matches too); names compare letters and digits only."""
+    s = (sender or "").strip().lower()
+    digits = re.sub(r"\D", "", s)
+    if digits and len(digits) >= 7 and not re.search(r"[a-z]", s):
+        return digits[-9:]
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
 def is_group(messages: list[dict]) -> bool:
-    senders = {(m.get("sender") or "").strip().lower() for m in messages
-               if m.get("direction") == "in" and (m.get("sender") or "").strip().lower() not in ("", "unknown")}
+    senders = {sender_key(m.get("sender")) for m in messages if m.get("direction") == "in"}
+    senders -= {"", "unknown"}
     return len(senders) > 1
 
 

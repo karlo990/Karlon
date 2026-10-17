@@ -122,6 +122,9 @@ def test_gate_reasons():
             m("out", None, 4, "You (WhatsApp)", "image"), m("in", "nice", 1)]
     assert gate.decide(ctx(echo), {})["respond"]
     assert gate.decide(ctx([m("in", "hi", 2, "Ann"), m("in", "hello", 1, "Bob")]), {})["reason"] == "group_chat"
+    # an unsaved number written two ways by WhatsApp is still one person (seen live)
+    assert gate.decide(ctx([m("in", "hi", 2, "+263786557599"), m("in", "hello", 1, "+263 78 655 7599")]), {})["respond"]
+    assert gate.sender_key("0786557599") == gate.sender_key("+263 78 655 7599")
     assert gate.decide(ctx([m("out", "Here you go.", 3, "Davis"), m("in", "thanks", 1)]), {"ack_only": True})["reason"] \
         == "acknowledgement_only"
     assert gate.decide(ctx([m("out", "Which dates?", 3, "Davis"), m("in", "ok", 1)]), {"ack_only": True})["respond"]
@@ -483,6 +486,14 @@ def test_ecocash_number_is_given_and_no_other(dc, db, monkeypatch):
     facts = r["plan"]["facts"]
     assert policy.check_reply("Pay by EcoCash 0771234567 please.", facts).startswith("number_not_in_facts")
     assert policy.check_reply("Pay by EcoCash 0780563561 (Karl Muzunze), then send proof here.", facts) is None
+
+
+def test_greeting_comes_before_the_payment_line(dc, db):
+    _setup(dc, db)
+    _guest(db, "Hi, what is your ecocash number?")
+    _run(dc)
+    text = _davis(db)[-1]["text"]
+    assert text.startswith("Hello Leon!") and "EcoCash 0780563561 (Karl Muzunze)" in text and _words(text) <= 40
 
 
 def test_persona_lines_fit_the_word_limit():

@@ -35,6 +35,8 @@ def _first_name(slots: dict, chat_name: str) -> str:
     if slots.get("full_name"):
         return slots["full_name"].split()[0]
     name = (chat_name or "").strip()
+    if name.lower() in ("guest", "unknown", "customer", "me", "you"):
+        return ""
     if re.fullmatch(r"[A-Za-z][A-Za-z'\-]+(?: [A-Za-z][A-Za-z'\-]+){0,2}", name):
         return name.split()[0].title()
     return ""
@@ -293,8 +295,8 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
             greet = "" if feats.get("bot_question") else L("greet", hi=hi)
         if stage == "present" and offers and not (feats.get("availability_query") or feats.get("greeting")):
             return _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix)
-        say(greet + L("ask_city_dates"),
-            "greet and ask which city and dates", "qualify")
+        reply(greet + prefix + L("ask_city_dates"),          # the greeting always comes first
+              "greet and ask which city and dates", "qualify")
         return done("qualify")
     if not slots.get("city"):
         say(L("ask_city"),
