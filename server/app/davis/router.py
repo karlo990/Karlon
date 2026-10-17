@@ -37,6 +37,7 @@ from ..models import serialize_message
 from ..routers import houses
 from . import catalogue, config, gate, nlu, policy, store
 from .engine import _Cat, engine
+from .local_llm import model as local_model
 
 router = APIRouter(tags=["davis"])
 
@@ -50,7 +51,6 @@ class SettingsIn(BaseModel):
     mode: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
-    effort: Optional[str] = None
     paused: Optional[bool] = None
     only_chats: Optional[list[str]] = None
     ignore_chats: Optional[list[str]] = None
@@ -125,7 +125,7 @@ def _status() -> dict:
                    "debounce_sec": config.DEBOUNCE_SEC, "fresh_minutes": config.FRESH_MINUTES,
                    "human_quiet_minutes": config.HUMAN_QUIET_MINUTES, "concurrency": config.CONCURRENCY,
                    "options_per_send": config.OPTIONS_PER_SEND, "images_per_option": config.IMAGES_PER_OPTION},
-        "anthropic_key": bool(config.ANTHROPIC_API_KEY), "admin_token_required": bool(config.ADMIN_TOKEN),
+        "local_model": local_model.status(), "admin_token_required": bool(config.ADMIN_TOKEN),
         "modes": config.MODES, "providers": config.PROVIDERS,
     }
 
@@ -142,13 +142,11 @@ async def put_settings(body: SettingsIn):
         raise HTTPException(400, f"mode must be one of {config.MODES}")
     if "provider" in changes and changes["provider"] not in config.PROVIDERS:
         raise HTTPException(400, f"provider must be one of {config.PROVIDERS}")
-    if changes.get("provider") == "anthropic" and not config.ANTHROPIC_API_KEY:
-        raise HTTPException(400, "set the ANTHROPIC_API_KEY secret on the Space first")
     if "llm_for" in changes and changes["llm_for"] not in ("all", "open"):
         raise HTTPException(400, "llm_for must be all or open")
-    if "effort" in changes and changes["effort"] not in ("low", "medium", "high"):
-        raise HTTPException(400, "effort must be low, medium or high")
     st = store.put_settings(changes)
+    if changes.get("provider") == "local":
+        engine.warm_local()
     await engine.emit(None, "settings", changes)
     return st
 

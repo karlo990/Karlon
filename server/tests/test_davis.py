@@ -1,6 +1,6 @@
 """Davis: message analysis, the answer-or-not gate, the booking flow on the
 real outbox (options with photos, invoice, Terms PDF), shadow drafts,
-live-price resume, and the Claude request it sends."""
+live-price resume, and the local model behind the guard."""
 import json
 import time
 import uuid
@@ -322,93 +322,156 @@ def test_bridge_sync_triggers_davis(dc, db):
 
 # ─────────────────────────── the model ───────────────────────────────────────
 
-class _Block:
-    def __init__(self, text):
-        self.type, self.text = "text", text
-
-
-class _Resp:
-    def __init__(self, payload, stop="end_turn"):
-        self.content = [_Block(json.dumps(payload))]
-        self.stop_reason, self.model = stop, "claude-opus-5-5"
-        self.usage = type("U", (), {"input_tokens": 900, "output_tokens": 60, "cache_read_input_tokens": 800,
-                                    "cache_creation_input_tokens": 0})()
-
-
-def _fake_claude(monkeypatch, payload):
-    from app.davis import config, llm
-    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "test-key")
+def _fake_local(monkeypatch, payload=None, error=None):
+    """Stand in for the llama.cpp model: record each prompt, answer payload."""
+    from app.davis import local_llm
     calls = []
 
-    class Messages:
-        async def create(self, **kw):
-            calls.append(kw)
-            return _Resp(payload)
-
-    def init(self, model, effort):
-        import anthropic
-        self._anthropic, self.model, self.effort = anthropic, model, effort
-        self.client = type("C", (), {"beta": type("B", (), {"messages": Messages()})()})()
-    monkeypatch.setattr(llm.AnthropicProvider, "__init__", init)
+    def generate(msgs, schema):
+        calls.append({"system": msgs[0]["content"], "user": msgs[-1]["content"], "schema": schema})
+        if error:
+            raise RuntimeError(error)
+        return payload, {"model": "test.gguf", "prompt_tokens": 300, "output_tokens": 30, "tokens_per_s": 9.0}
+    monkeypatch.setattr(local_llm.model, "generate", generate)
     return calls
 
 
-def _model_out(reply, **kw):
-    base = {"reply": reply, "full_name": "", "id_number": "", "city": "", "check_in": "", "check_out": "",
-            "guests": "", "handoff": False, "handoff_reason": ""}
-    base.update(kw)
-    return base
-
-
-def test_claude_request_shape_and_guarded_reply(dc, db, monkeypatch):
+def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
+    from app.davis import persona
     _setup(dc, db)
-    calls = _fake_claude(monkeypatch, _model_out("Lovely! Which dates would you like in Harare, and for how many?"))
-    dc.put("/api/davis/settings", json={"provider": "anthropic"})
+    calls = _fake_local(monkeypatch, {"reply": "Mhoro! Lovely, Harare! Which dates are you looking at, and for how many guests?",
+                                      "handoff": False})
+    assert dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"}).status_code == 200
     _guest(db, "Hi, I need a place in Harare")
     r = _run(dc)
-    kw = calls[0]
-    assert kw["model"] == "claude-opus-5-5" and kw["fallbacks"] == "default"
-    assert kw["betas"] == ["server-side-fallback-2026-07-01"]
-    assert kw["output_config"]["effort"] == "low"
-    assert kw["output_config"]["format"]["type"] == "json_schema"
-    assert kw["output_config"]["format"]["schema"]["additionalProperties"] is False
-    assert kw["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert "temperature" not in kw and "thinking" not in kw
-    assert "airbnb.com" not in kw["messages"][0]["content"]
-    assert _davis(db)[-1]["text"].startswith("Lovely!") and r["plan"]["llm"]["cache_read_tokens"] == 800
+    c = calls[0]
+    assert c["schema"]["required"] == ["reply", "handoff"] and c["schema"]["additionalProperties"] is False
+    assert persona.PERSONA["name"] in c["system"] and "KCER" in c["system"]
+    assert "DRAFT:" in c["user"] and "airbnb.com" not in c["user"]
+    assert _davis(db)[-1]["text"].startswith("Mhoro!") and r["plan"]["llm"]["provider"] == "local"
 
 
 def test_model_reply_with_invented_price_is_not_sent(dc, db, monkeypatch):
     _setup(dc, db)
-    _fake_claude(monkeypatch, _model_out("Great news, all homes are just USD 20 a night! Which one?"))
-    dc.put("/api/davis/settings", json={"provider": "anthropic"})
+    _fake_local(monkeypatch, {"reply": "Great news, all homes are just USD 20 a night! Which one?", "handoff": False})
+    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
     r = _run(dc)
-    assert r["plan"]["llm"]["rejected"].startswith("price_not_in_facts")
+    assert r["plan"]["llm"]["rejected"].startswith(("number_not_in_facts", "price_not_in_facts"))
     assert "USD 20" not in _davis(db)[0]["text"] and "KCER" in _davis(db)[0]["text"]
 
 
+def test_model_handoff_only_counts_on_open_questions(dc, db, monkeypatch):
+    _setup(dc, db)
+    _fake_local(monkeypatch, {"reply": "Hello! Which city and dates would you like?", "handoff": True})
+    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
+    _guest(db, "Hello")
+    _run(dc)
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]   # a greeting is not handed over
+
+
 def test_model_down_falls_back_and_breaker_opens(dc, db, monkeypatch):
-    from app.davis import config, llm
-    monkeypatch.setattr(config, "ANTHROPIC_API_KEY", "test-key")
-
-    class Boom:
-        async def create(self, **kw):
-            raise llm.LLMError("connection: refused")
-
-    def init(self, model, effort):
-        self.model, self.effort = model, effort
-        self.client = type("C", (), {"beta": type("B", (), {"messages": Boom()})()})()
-    monkeypatch.setattr(llm.AnthropicProvider, "__init__", init)
-    dc.put("/api/davis/settings", json={"provider": "anthropic"})
+    _fake_local(monkeypatch, error="model file missing")
+    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
     _setup(dc, db)
     for i in range(4):
         _guest(db, "Hi")
-        _run(dc, again="true") if i else _run(dc)
+        _run(dc)
+        assert "city" in _davis(db)[-1]["text"].lower()               # the persona's line still goes out
         db.execute("DELETE FROM messages WHERE sender LIKE 'Davis%'")
+        db.execute("UPDATE davis_sessions SET last_inbound_id=NULL")
         db.commit()
     st = dc.get("/api/davis/status").json()
-    assert st["llm"]["breakers"]["anthropic"]["open"] and st["llm"]["stats"]["breaker_skips"] >= 1
+    assert st["llm"]["breakers"]["local"]["open"] and st["llm"]["stats"]["breaker_skips"] >= 1
+    assert st["local_model"]["file"].endswith(".gguf")
+
+
+def test_guard_catches_small_model_mistakes():
+    from app.davis import policy
+    facts = {"slots": {"city": "harare"}, "sending_now": [{"ref": "KCER 101", "ref_no": 101, "usd_per_night": 140.0,
+                                                          "usd_total": 420.0, "nights": 3}]}
+    draft = "Here are 1 home in Harare 🏡 Reply with the KCER number you like and I'll prepare your invoice."
+    assert policy.check_reply("Hello Davis! I'd like to stay in Victoria Falls.", facts, draft) == "wrote_as_guest"
+    assert policy.check_reply("Lovely, from 15 to 19 October?", facts, draft).startswith("number_not_in_facts")
+    ok = "KCER 101 in Harare is USD 140 a night, USD 420 in total. Shall I invoice it?"
+    assert policy.check_reply(ok, facts, "Great choice: KCER 101, USD 420 total. Name and ID?", keep_draft=True) is None
+    assert policy.check_reply("Great choice! Send your name and ID?", facts,
+                              "Great choice: KCER 101, USD 420 total. Name and ID?", keep_draft=True) == "dropped:KCER 101"
+
+
+def test_open_question_uses_house_note_or_hands_over(dc, db, monkeypatch):
+    _setup(dc, db)
+    calls = _fake_local(monkeypatch, {"reply": "Yes, KCER 102 has wifi and a pool ✨ Shall I prepare your invoice?",
+                                      "handoff": False})
+    dc.put("/api/davis/settings", json={"provider": "local"})                  # default: model for open questions
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    assert calls == []                                                          # booking steps: persona lines, no model
+    _guest(db, "is there wifi?")
+    _run(dc)
+    assert calls == [] and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]   # no note: team
+    dc.post(f"/api/davis/sessions/{GUEST}/handoff", json={"active": False})
+    dc.patch("/api/davis/catalogue", json={"listing_url": "https://www.airbnb.com/rooms/2", "note": "wifi, pool"})
+    _guest(db, "does KCER 102 have wifi?")
+    r = _run(dc)
+    assert len(calls) == 1 and "note: wifi, pool" in calls[0]["user"]
+    assert _davis(db)[-1]["text"].startswith("Yes, KCER 102 has wifi")
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+
+    _guest(db, "is KCER 102 near the airport?")              # no note mentions it: never ask the model
+    _run(dc)
+    assert len(calls) == 1 and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+
+
+def test_model_answer_must_use_the_note(dc, db, monkeypatch):
+    _setup(dc, db)
+    _fake_local(monkeypatch, {"reply": "Yes, it's close to everything ✨ Shall I prepare your invoice?", "handoff": False})
+    dc.put("/api/davis/settings", json={"provider": "local"})
+    dc.patch("/api/davis/catalogue", json={"listing_url": "https://www.airbnb.com/rooms/2", "note": "wifi, pool"})
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "does KCER 102 have a pool for the kids?")
+    r = _run(dc)
+    assert r["plan"]["llm"]["rejected"] == "answer_not_grounded_in_note"
+    assert _davis(db)[-1]["text"].startswith("KCER 102 has wifi, pool")            # the note itself goes out
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]
+
+
+def test_question_while_collecting_details(dc, db):
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "KCER 102")
+    _run(dc)
+    _guest(db, "can we bring our dog?")
+    _run(dc)
+    assert "team" in _davis(db)[-1]["text"] and "name" not in _davis(db)[-1]["text"]
+
+
+def test_choice_and_name_in_one_burst_are_both_kept(dc, db):
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "how much is the second one?")
+    _run(dc)                                                   # "Shall I reserve it for you?"
+    _guest(db, "yes")
+    _guest(db, "Tendai Moyo")                                  # one turn: the choice and the name
+    r = _run(dc)
+    assert r["plan"]["stage"] == "details" and r["plan"]["slots"]["full_name"] == "Tendai Moyo"
+    _guest(db, "63-2345678 Q 12")
+    assert _run(dc)["plan"]["stage"] == "invoice"
+
+
+def test_persona_lines_fit_the_word_limit():
+    from app.davis import persona
+    sample = dict(hi=" Tendai", city="Victoria Falls", when="28 Dec–2 Jan", party=" for 12 guests", k=3,
+                  homes="homes", are="are", ref="KCER 1234", place="Mount Pleasant Heights, Harare",
+                  price=", USD 1,250.50 per night, USD 6,252.50 for 5 nights",
+                  summary="KCER 1234, 28 Dec–2 Jan, USD 6,252.50 total", money="USD 6,252.50",
+                  total_word=" total", start="28 Dec",
+                  notes="KCER 1234 has wifi, pool, solar backup; KCER 1235 has wifi, borehole")
+    for key in persona.LINES:
+        assert _words(persona.line(key, **sample)) <= 40, key
 
 
 # ─────────────────────────── dashboard API ───────────────────────────────────

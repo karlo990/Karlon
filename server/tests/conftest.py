@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -10,7 +11,10 @@ sys.path.insert(0, str(ROOT))
 
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
-    """Fresh app + empty SQLite DB per test."""
+    """Fresh app + empty SQLite DB per test. Davis uses its rules (no model
+    download or load in tests) unless a test says otherwise."""
+    monkeypatch.setenv("DAVIS_PROVIDER", os.environ.get("DAVIS_PROVIDER", "rules"))
+    monkeypatch.setenv("DAVIS_LOCAL_PRELOAD", "0")
     import app.config as config
     import app.database as database
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "karlon.db")

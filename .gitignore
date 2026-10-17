@@ -6,3 +6,6 @@
 /karlon-profile-pics.zip
 /karlon-fixes.zip
 /karlon-update.zip
+
+# Davis's local model file (downloaded at build/start, ~1 GB)
+server/models/

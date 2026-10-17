@@ -1,8 +1,8 @@
 """davis/llm.py — the model providers behind Davis's replies, with the
 plumbing that keeps a chat fast when a provider is slow or down:
 
-- one long-lived client per provider (its HTTP connection pool is reused,
-  no TLS handshake per message);
+- one long-lived model / client per provider (the local model stays loaded;
+  HTTP providers reuse their connection pool);
 - a hard timeout per call, then the rules template is sent instead
   (a late answer is worth less than a plain one: Dean & Barroso, "The Tail
   at Scale", 2013);
@@ -10,8 +10,8 @@ plumbing that keeps a chat fast when a provider is slow or down:
   is skipped for BREAKER_COOLDOWN_SEC, so a dead provider costs nothing;
 - a small response cache keyed on the exact prompt (a re-processed message
   never pays twice);
-- the system prompt is marked cacheable, so the API serves it from its
-  prompt cache after the first call.
+- the persona prompt never changes, so the local model reuses its
+  computed prefix (see local_llm.py).
 """
 
 from __future__ import annotations
@@ -70,56 +70,16 @@ def _parse_json(text: str) -> dict:
             raise LLMError(f"bad JSON from model: {e}")
 
 
-class AnthropicProvider:
-    name = "anthropic"
+class LocalProvider:
+    """The model inside this server (local_llm.py). Runs in a worker thread."""
+    name = "local"
 
-    def __init__(self, model: str, effort: str) -> None:
-        if not config.ANTHROPIC_API_KEY:
-            raise LLMError("ANTHROPIC_API_KEY is not set")
-        import anthropic
-        self._anthropic = anthropic
-        self.model, self.effort = model, effort
-        self.client = anthropic.AsyncAnthropic(
-            api_key=config.ANTHROPIC_API_KEY,
-            timeout=anthropic.Timeout(config.LLM_TIMEOUT_SEC, connect=5.0),
-            max_retries=1,
-        )
-
-    async def complete(self, system: str, user: str, schema: dict) -> tuple[dict, dict]:
-        a = self._anthropic
-        kwargs = dict(
-            model=self.model,
-            max_tokens=config.LLM_MAX_TOKENS,
-            system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-            messages=[{"role": "user", "content": user}],
-            output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
-        )
-        # Server-side fallback re-runs a declined request on another model in
-        # the same call. Not offered for Haiku models.
-        if not self.model.startswith("claude-haiku"):
-            kwargs.update(betas=["server-side-fallback-2026-07-01"], fallbacks="default")
+    async def complete(self, msgs: list[dict], schema: dict) -> tuple[dict, dict]:
+        from .local_llm import model
         try:
-            resp = await self.client.beta.messages.create(**kwargs)
-        except a.APITimeoutError as e:
-            raise LLMError(f"timeout: {e}")
-        except a.RateLimitError as e:
-            raise LLMError(f"rate limited: {e}")
-        except a.APIStatusError as e:
-            raise LLMError(f"API {e.status_code}: {str(e)[:200]}")
-        except a.APIConnectionError as e:
-            raise LLMError(f"connection: {e}")
-        if resp.stop_reason == "refusal":
-            raise LLMError("model declined")
-        if resp.stop_reason == "max_tokens":
-            raise LLMError("ran out of tokens")
-        text = next((b.text for b in resp.content if getattr(b, "type", "") == "text"), "")
-        u = resp.usage
-        meta = {"model": getattr(resp, "model", self.model),
-                "input_tokens": getattr(u, "input_tokens", None),
-                "output_tokens": getattr(u, "output_tokens", None),
-                "cache_read_tokens": getattr(u, "cache_read_input_tokens", None),
-                "cache_write_tokens": getattr(u, "cache_creation_input_tokens", None)}
-        return _parse_json(text), meta
+            return await asyncio.to_thread(model.generate, msgs, schema)
+        except Exception as e:
+            raise LLMError(f"local model: {type(e).__name__}: {e}"[:300])
 
 
 class _HTTPProvider:
@@ -147,10 +107,10 @@ class _HTTPProvider:
             raise LLMError(str(e)[:200])
 
     @staticmethod
-    def _messages(system: str, user: str, schema: dict) -> list[dict]:
+    def _messages(msgs: list[dict], schema: dict) -> list[dict]:
         keys = ", ".join(schema["properties"])
-        return [{"role": "system", "content": system + f"\nReturn only a JSON object with keys: {keys}."},
-                {"role": "user", "content": user}]
+        first = {**msgs[0], "content": msgs[0]["content"] + f"\nReturn only a JSON object with keys: {keys}."}
+        return [first] + msgs[1:]
 
 
 class WorkerProvider(_HTTPProvider):
@@ -163,9 +123,9 @@ class WorkerProvider(_HTTPProvider):
         super().__init__()
         self.url = config.WORKER_URL + "/api/jarvis/conscious"
 
-    async def complete(self, system: str, user: str, schema: dict) -> tuple[dict, dict]:
-        body = {"calls": [{"call_id": "davis", "messages": self._messages(system, user, schema),
-                           "options": {"temperature": 0.2, "num_predict": 220},
+    async def complete(self, msgs: list[dict], schema: dict) -> tuple[dict, dict]:
+        body = {"calls": [{"call_id": "davis", "messages": self._messages(msgs, schema),
+                           "options": {"temperature": 0.2, "num_predict": 120},
                            "deadline_sec": config.LLM_TIMEOUT_SEC,
                            "context_meta": {"role_label": "Davis"}}]}
         data = await self._post(self.url, body, {"X-API-Key": config.WORKER_KEY} if config.WORKER_KEY else {})
@@ -180,11 +140,11 @@ class OllamaProvider(_HTTPProvider):
 
     def __init__(self, model: str) -> None:
         super().__init__()
-        self.model = model if model and not model.startswith("claude") else config.OLLAMA_MODEL
+        self.model = model or config.OLLAMA_MODEL
 
-    async def complete(self, system: str, user: str, schema: dict) -> tuple[dict, dict]:
-        body = {"model": self.model, "messages": self._messages(system, user, schema), "stream": False,
-                "format": schema, "keep_alive": -1, "options": {"temperature": 0.2, "num_predict": 220}}
+    async def complete(self, msgs: list[dict], schema: dict) -> tuple[dict, dict]:
+        body = {"model": self.model, "messages": self._messages(msgs, schema), "stream": False,
+                "format": schema, "keep_alive": -1, "options": {"temperature": 0.2, "num_predict": 120}}
         data = await self._post(config.OLLAMA_URL + "/api/chat", body, {})
         return _parse_json((data.get("message") or {}).get("content", "")), {"model": self.model}
 
@@ -199,11 +159,11 @@ class Router:
         self._cache: OrderedDict[str, tuple[float, dict, dict]] = OrderedDict()
         self.stats = {"calls": 0, "errors": 0, "cache_hits": 0, "breaker_skips": 0, "rejected": 0}
 
-    def _provider(self, name: str, model: str, effort: str):
-        key = (name, model, effort)
+    def _provider(self, name: str, model: str):
+        key = (name, model)
         if key not in self._providers:
-            if name == "anthropic":
-                self._providers[key] = AnthropicProvider(model, effort)
+            if name == "local":
+                self._providers[key] = LocalProvider()
             elif name == "worker":
                 self._providers[key] = WorkerProvider()
             elif name == "ollama":
@@ -233,8 +193,8 @@ class Router:
         t0 = time.monotonic()
         self.stats["calls"] += 1
         try:
-            p = self._provider(name, settings.get("model") or config.MODEL, settings.get("effort") or config.EFFORT)
-            out, meta = await asyncio.wait_for(p.complete(prompts.SYSTEM, user, prompts.SCHEMA),
+            p = self._provider(name, settings.get("model") or config.OLLAMA_MODEL)
+            out, meta = await asyncio.wait_for(p.complete(prompts.messages(user), prompts.SCHEMA),
                                                timeout=config.LLM_TIMEOUT_SEC + 5)
         except (LLMError, asyncio.TimeoutError, Exception) as e:     # never let a provider break a chat
             br.fail()

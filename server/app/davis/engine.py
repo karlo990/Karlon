@@ -33,6 +33,7 @@ from ..database import get_db
 from ..models import HouseRefreshRequestIn, InvoiceCreateIn, serialize_message
 from ..ws_manager import manager
 from . import catalogue, config, gate, llm, nlu, policy, prompts, store
+from .persona import line as L
 
 
 def _pct(values, p: float) -> Optional[int]:
@@ -96,7 +97,17 @@ class Engine:
         finally:
             conn.close()
         self._sweeper = asyncio.create_task(self._sweep_loop())
-        print(f"[davis] started: {self.settings()}")
+        st = self.settings()
+        if st["provider"] == "local":
+            self.warm_local()
+        print(f"[davis] started: {st}")
+
+    def warm_local(self) -> None:
+        """Load the local model and its persona prefix in the background, so
+        the first guest doesn't wait for it."""
+        from .local_llm import model
+        if config.LOCAL_PRELOAD and model.state in ("not_loaded", "error"):
+            self._spawn(asyncio.to_thread(model.warm, prompts.messages("GUEST: Hi"), prompts.SCHEMA))
 
     async def stop(self) -> None:
         for t in [self._sweeper, *self.timers.values(), *self.tasks]:
@@ -321,8 +332,7 @@ class Engine:
             plan_ = policy.plan(ctx, feats, cat, trigger="refresh_done" if resume else "message")
             if trigger == "refresh_timeout" and not any(a["type"] == "send_options" for a in plan_["actions"]):
                 plan_["actions"] = [{"type": "handoff", "reason": "live prices did not arrive"},
-                                    {"type": "reply", "text": "Live prices are taking longer than usual. A member "
-                                     "of our team will send you options here shortly."}]
+                                    {"type": "reply", "text": L("prices_late")}]
                 plan_["stage"] = "qualify"
             plan_ = await self._phrase(ctx, feats, plan_, cat, settings)
             plan_["actions"] = self._cap(plan_["actions"], msgs)
@@ -352,40 +362,38 @@ class Engine:
             conn.close()
 
     async def _phrase(self, ctx: dict, feats: dict, plan_: dict, cat: _Cat, settings: dict) -> dict:
-        """Let the model rewrite the template reply (and fill slots the rules
-        missed). Its text is used only if it passes policy.check_reply."""
+        """Let the model rewrite the persona's template reply in Davis's voice.
+        Its text is used only if it passes policy.check_reply; otherwise the
+        template goes out unchanged."""
         reply = next((a for a in plan_["actions"] if a["type"] == "reply"), None)
+        open_q = plan_.get("intent") == "open_question"
         use_model = reply is not None and settings.get("provider", "rules") != "rules" and (
-            settings.get("llm_for", "all") == "all" or plan_.get("intent") == "open_question")
+            settings.get("llm_for", "open") == "all" or open_q)
+        if open_q and not plan_.get("note_terms"):
+            use_model = False          # no team note covers the question: the team answers (no model wait)
+        draft = reply["text"] if reply else None
         model_handoff = None
         if use_model:
-            hist = ctx["messages"][-config.HISTORY_MESSAGES:]
-            user = prompts.user_turn(ctx["chat_name"], hist, plan_, self._today().isoformat())
+            user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat())
             out, info = await self.router.complete(settings, user)
             plan_["llm"] = {k: info.get(k) for k in ("provider", "model", "latency_ms", "cache_hit", "error",
-                                                       "skipped", "cache_read_tokens", "input_tokens",
-                                                       "output_tokens") if info.get(k) is not None}
+                                                       "skipped", "prompt_tokens", "output_tokens",
+                                                       "tokens_per_s", "queued_s") if info.get(k) is not None}
             if info.get("latency_ms") and not info.get("cache_hit"):
                 self.metrics.llm_ms.append(info["latency_ms"])
             if out:
-                extra = _model_slots(out, plan_["slots"])
-                if extra:
-                    replanned = policy.plan(ctx, {**feats, **extra}, cat)
-                    if [a["type"] for a in replanned["actions"]] != [a["type"] for a in plan_["actions"]]:
-                        replanned["llm"] = {**plan_["llm"], "used": "template (model filled slots: "
-                                            + ", ".join(extra) + ")"}
-                        return _resolve_maybe(replanned, None)
-                    plan_["slots"] = replanned["slots"]
-                text = nlu.clip_words((out.get("reply") or "").strip(), config.MAX_WORDS)
-                problem = policy.check_reply(text, plan_["facts"])
+                text = nlu.clip_words(str(out.get("reply") or "").strip(), config.MAX_WORDS)
+                problem = policy.check_reply(text, plan_["facts"], draft, keep_draft=not open_q)
+                if not problem and open_q and not out.get("handoff") and not any(
+                        t in text.lower() for t in plan_.get("note_terms") or []):
+                    problem = "answer_not_grounded_in_note"
                 if problem:
                     self.router.stats["rejected"] += 1
                     plan_["llm"]["rejected"] = problem
                 else:
                     reply["text"] = text
                     reply["by"] = "model"
-                model_handoff = {"wants": bool(out.get("handoff")),
-                                 "reason": (out.get("handoff_reason") or "")[:120],
+                model_handoff = {"wants": bool(out.get("handoff")), "reason": str(out.get("handoff_reason") or "")[:120],
                                  "answered": reply.get("by") == "model"}
         return _resolve_maybe(plan_, model_handoff)
 
@@ -521,40 +529,12 @@ def _brief(a: dict) -> dict:
     return {k: v for k, v in a.items() if k != "options"}
 
 
-def _model_slots(out: dict, slots: dict) -> dict:
-    """Slots the model read that the rules missed, validated; only empty
-    slots are filled (the rules win where both have a value)."""
-    extra: dict = {}
-    if out.get("full_name") and not slots.get("full_name"):
-        name = nlu.name_like(out["full_name"])
-        if name:
-            extra["full_name"] = name
-    if out.get("id_number") and not slots.get("id_number"):
-        ident = nlu.parse_id(out["id_number"]) or nlu.long_number(out["id_number"])
-        if ident:
-            extra["id_number"] = ident
-    if out.get("city") and not slots.get("city"):
-        city = nlu.parse_city(out["city"].lower())
-        if city:
-            extra["city"] = city
-    for k in ("check_in", "check_out"):
-        v = (out.get(k) or "").strip()
-        if v and not slots.get(k):
-            try:
-                if datetime.fromisoformat(v).date() >= Engine._today():
-                    extra[k] = v[:10]
-            except ValueError:
-                pass
-    g = (out.get("guests") or "").strip()
-    if g.isdigit() and not slots.get("guests") and 1 <= int(g) <= 40:
-        extra["guests"] = int(g)
-    return extra
-
-
 def _resolve_maybe(plan_: dict, model: Optional[dict]) -> dict:
     """maybe_handoff marks a question the rules can't answer. It is dropped
     when the model answered it (reply accepted, no handoff asked); otherwise
-    the chat goes to staff. The model may also ask for a person on any turn."""
+    the chat goes to staff. The model's handoff flag counts only there: a
+    small model's opinion never takes a chat away from Davis by itself
+    (complaints and requests for a person are caught by the rules)."""
     acts = []
     for a in plan_["actions"]:
         if a["type"] == "maybe_handoff":
@@ -562,8 +542,6 @@ def _resolve_maybe(plan_: dict, model: Optional[dict]) -> dict:
                 acts.append({"type": "handoff", "reason": (model and model["reason"]) or a["reason"]})
             continue
         acts.append(a)
-    if model and model["wants"] and not any(a["type"] == "handoff" for a in acts):
-        acts.append({"type": "handoff", "reason": model["reason"] or "model asked for a person"})
     plan_["actions"] = acts
     return plan_
 

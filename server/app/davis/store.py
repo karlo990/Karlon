@@ -69,12 +69,11 @@ CREATE TABLE IF NOT EXISTS davis_catalogue (
 SETTING_DEFAULTS: dict[str, Any] = {
     "mode": config.MODE,
     "provider": config.PROVIDER,
-    "model": config.MODEL,
-    "effort": config.EFFORT,
+    "model": config.OLLAMA_MODEL,  # the model name for the ollama provider (local uses DAVIS_LOCAL_MODEL_*)
     "paused": False,              # everything stops, all chats
     "only_chats": [],             # non-empty = Davis answers only these chat ids (safe rollout)
     "ignore_chats": [],           # Davis never answers these (team, family, suppliers)
-    "llm_for": "all",             # all = model writes every reply; open = only open questions
+    "llm_for": config.LLM_FOR,    # open = model only answers open questions; all = rewrites every reply
 }
 
 
@@ -99,6 +98,8 @@ def get_settings(conn=None) -> dict:
                     out[r["key"]] = json.loads(r["value"])
                 except Exception:
                     pass
+        if out["provider"] not in config.PROVIDERS:      # e.g. a provider that was removed
+            out["provider"] = config.PROVIDER
         return out
     finally:
         if own:
