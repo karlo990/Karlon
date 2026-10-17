@@ -496,6 +496,17 @@ def test_greeting_comes_before_the_payment_line(dc, db):
     assert text.startswith("Hello Leon!") and "EcoCash 0780563561 (Karl Muzunze)" in text and _words(text) <= 40
 
 
+def test_ignore_list_from_space_variable_survives_restarts(davis_env, monkeypatch, client, db):
+    from app.davis import config
+    monkeypatch.setattr(config, "IGNORE_CHATS", [GUEST])
+    _setup(client, db)
+    _guest(db, "Hi")
+    r = client.post(f"/api/davis/sessions/{GUEST}/run").json()
+    assert r["reason"] == "ignored_chat" and _davis(db) == []
+    client.put("/api/davis/settings", json={"ignore_chats": ["wa-other"]})
+    assert set(client.get("/api/davis/status").json()["settings"]["ignore_chats"]) == {GUEST, "wa-other"}
+
+
 def test_persona_lines_fit_the_word_limit():
     from app.davis import persona
     sample = dict(hi=" Tendai", city="Victoria Falls", when="28 Dec–2 Jan", party=" for 12 guests", k=3,

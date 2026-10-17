@@ -71,8 +71,8 @@ SETTING_DEFAULTS: dict[str, Any] = {
     "provider": config.PROVIDER,
     "model": config.OLLAMA_MODEL,  # the model name for the ollama provider (local uses DAVIS_LOCAL_MODEL_*)
     "paused": False,              # everything stops, all chats
-    "only_chats": [],             # non-empty = Davis answers only these chat ids (safe rollout)
-    "ignore_chats": [],           # Davis never answers these (team, family, suppliers)
+    "only_chats": config.ONLY_CHATS,      # non-empty = Davis answers only these chat ids (safe rollout)
+    "ignore_chats": config.IGNORE_CHATS,  # Davis never answers these (team, family, suppliers)
     "llm_for": config.LLM_FOR,    # open = model only answers open questions; all = rewrites every reply
 }
 
@@ -98,6 +98,8 @@ def get_settings(conn=None) -> dict:
                     out[r["key"]] = json.loads(r["value"])
                 except Exception:
                     pass
+        # The Space variable always applies, on top of what the dashboard added.
+        out["ignore_chats"] = sorted(set(out.get("ignore_chats") or []) | set(config.IGNORE_CHATS))
         if out["provider"] not in config.PROVIDERS:      # e.g. a provider that was removed
             out["provider"] = config.PROVIDER
         return out

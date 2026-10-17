@@ -86,6 +86,11 @@ BREAKER_FAILURES = _int("DAVIS_BREAKER_FAILURES", 3, 1)
 BREAKER_COOLDOWN_SEC = _int("DAVIS_BREAKER_COOLDOWN_SEC", 60, 5)
 CACHE_TTL_SEC = _int("DAVIS_CACHE_TTL_SEC", 60, 0)
 
+# Chat lists that survive restarts (the dashboard's copies live in the DB,
+# which a Space rebuild wipes). Comma-separated chat ids, e.g. wa-b5ead6a2ae04.
+IGNORE_CHATS = [c.strip() for c in os.environ.get("DAVIS_IGNORE_CHATS", "").split(",") if c.strip()]
+ONLY_CHATS = [c.strip() for c in os.environ.get("DAVIS_ONLY_CHATS", "").split(",") if c.strip()]
+
 # Write endpoints (settings, approve, pause…) need this token when it is set.
 ADMIN_TOKEN = os.environ.get("DAVIS_ADMIN_TOKEN", "")
 
