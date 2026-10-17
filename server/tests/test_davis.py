@@ -468,7 +468,9 @@ def test_question_while_collecting_details(dc, db):
     _guest(db, "can we bring our dog?")
     _run(dc)
     text = _davis(db)[-1]["text"]
-    assert "team" in text and text.endswith("Please send your full name and ID number for the invoice.")
+    assert "I'll check that for you" in text and "team" not in text           # no "ask the team" excuse
+    assert text.endswith("Please send your full name and ID number for the invoice.")
+    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]   # the team is alerted quietly
 
 
 def test_choice_and_name_in_one_burst_are_both_kept(dc, db):
@@ -559,6 +561,71 @@ def test_a_failed_pass_is_retried_not_lost(dc, db, monkeypatch):
         dc.post(f"/api/davis/sessions/{GUEST}/run")
     monkeypatch.setattr(policy, "plan", real)
     assert _run(dc)["status"] == "sent"                       # the guest still gets an answer
+
+
+def test_skills_learned_from_team_replies_in_other_chats(dc, db):
+    from app.davis import skills
+    _setup(dc, db)
+    other = "wa-other"
+    db.execute("INSERT INTO chats (id, name, avatar_emoji, created_at) VALUES (?,?,?,?)", (other, "Nomsa Dube", "ND", "2026-10-01"))
+    now = datetime.now(timezone.utc)
+    rows = [("in", "Nomsa Dube", "Do you allow pets in the house?"),
+            ("out", "You (WhatsApp)", "Yes, small pets are welcome, just let us know before arrival."),
+            ("in", "Nomsa Dube", "Is there parking for two cars?"),
+            ("out", "You (WhatsApp)", "Hi Nomsa, yes there is space for 2 cars."),     # a digit and her name: not learned
+            ("in", "Nomsa Dube", "Can we have a braai outside?"),
+            ("out", "Davis", "Sure, I'll check that for you.")]                          # Davis's own words: not learned
+    for i, (d, who, text) in enumerate(rows):
+        db.execute("INSERT INTO messages (id, chat_id, sender, kind, text, created_at, direction) VALUES (?,?,?,?,?,?,?)",
+                   (f"o{i}", other, who, "text", text, (now - timedelta(hours=5) + timedelta(minutes=i)).isoformat(), d))
+    db.commit()
+    assert skills.learn(db) == 1
+    learned = dc.get("/api/davis/skills").json()
+    assert [k["answer"] for k in learned] == ["Yes, small pets are welcome, just let us know before arrival."]
+
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "are pets allowed in the house?")
+    r = _run(dc)
+    text = _davis(db)[-1]["text"]
+    assert text.startswith("Yes, small pets are welcome") and text.endswith("?") and r["plan"]["intent"] == "skill"
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
+    assert dc.get("/api/davis/skills").json()[0]["uses"] == 1
+    k = dc.post("/api/davis/skills", json={"question": "Is there a generator for power cuts?",
+                                           "answer": "Our homes have solar or generator backup for power cuts."}).json()
+    assert k["source"] == "manual"
+    dc.patch(f"/api/davis/skills/{k['id']}", json={"enabled": False})
+    _guest(db, "do you have a generator for power cuts?")
+    _run(dc)
+    assert "solar" not in _davis(db)[-1]["text"]                   # switched off: not used
+
+
+def test_business_faq_and_small_talk_need_no_staff(dc, db):
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "Can I confirm your Reg number")
+    _run(dc)
+    text = _davis(db)[-1]["text"]
+    assert "Reg. No. 15017/2023" in text and text.endswith("?") and "check" not in text
+    _guest(db, "Hi")
+    _guest(db, "How are yu")
+    _run(dc)
+    text = _davis(db)[-1]["text"]
+    assert text.startswith("I'm well, thank you Leon!") and "check" not in text
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
+
+
+def test_quoted_total_matches_the_invoice_with_service_fee(dc, db):
+    from app.davis import catalogue
+    assert catalogue.amount_due(128.5, 3) == 443.33                # 385.50 + 15% (57.83), as invoice_worker rounds
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "KCER 102")
+    _run(dc)
+    due = catalogue.amount_due(128.5, (CO - CI).days)
+    assert f"USD {due:,.2f}".replace(".00", "") in _davis(db)[-1]["text"] and "15% service fee" in _davis(db)[-1]["text"]
 
 
 def test_persona_lines_fit_the_word_limit():

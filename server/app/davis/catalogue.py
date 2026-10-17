@@ -135,7 +135,8 @@ def compact_card(listing: dict, option: int = 1, of: int = 1) -> str:
                      + (f" ({nights} night{'s' if nights != 1 else ''})" if nights else ""))
     usd, nights = listing.get("price_usd_per_night"), listing.get("nights")
     if usd:
-        lines.append(f"💵 USD {usd:,.2f}/night" + (f" · USD {usd * nights:,.2f} total" if nights else ""))
+        due = amount_due(usd, nights)
+        lines.append(f"💵 USD {usd:,.2f}/night" + (f" · USD {due:,.2f} {fee_label()}" if due else ""))
     elif listing.get("price_raw"):
         lines.append(f"💵 {listing['price_raw']}")
     if listing.get("rating"):
@@ -168,6 +169,19 @@ def fmt_range(ci: Optional[str], co: Optional[str]) -> str:
     return f"{_short(ci)}–{_short(co)}"
 
 
+def amount_due(rate: Optional[float], nights: Optional[int]) -> Optional[float]:
+    """What the invoice's Balance Due will say: nights × rate plus the service
+    fee, rounded exactly as invoice_worker.py rounds it."""
+    if not rate or not nights:
+        return None
+    subtotal = round(rate * nights, 2)
+    return round(subtotal + round(subtotal * config.SERVICE_FEE_PCT / 100, 2), 2)
+
+
+def fee_label() -> str:
+    return f"incl. {config.SERVICE_FEE_PCT:g}% service fee" if config.SERVICE_FEE_PCT else "total"
+
+
 def option_facts(listing: dict) -> dict:
     """The facts about one offered house Davis may quote (and nothing else)."""
     usd, nights = listing.get("price_usd_per_night"), listing.get("nights")
@@ -178,6 +192,7 @@ def option_facts(listing: dict) -> dict:
         "capacity": listing.get("capacity"), "rating": listing.get("rating"),
         "check_in": listing.get("check_in"), "check_out": listing.get("check_out"), "nights": nights,
         "usd_per_night": usd, "usd_total": round(usd * nights, 2) if usd and nights else None,
+        "usd_due": amount_due(usd, nights),
         "sent_at": listing.get("sent_at"),
     }
 
@@ -217,7 +232,7 @@ def resolve_choice(conn, feats: dict, offers: list[dict], slots: dict, stage: st
                                  (houses.offer_id_for(row["id"], slots["check_in"], slots["check_out"]),)).fetchone()
         d = option_facts(houses._row_to_listing(row, offer))
         if not offer:                      # no price for the guest's dates: don't quote the stale one
-            d.update(usd_per_night=None, usd_total=None, offer_id=None,
+            d.update(usd_per_night=None, usd_total=None, usd_due=None, offer_id=None,
                      check_in=slots.get("check_in"), check_out=slots.get("check_out"), nights=slots.get("nights"))
         return d
     no = feats.get("option_no")

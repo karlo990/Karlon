@@ -32,7 +32,7 @@ from ..config import DISPLAY_TZ_OFFSET_MINUTES
 from ..database import get_db
 from ..models import HouseRefreshRequestIn, InvoiceCreateIn, serialize_message
 from ..ws_manager import manager
-from . import catalogue, config, gate, llm, nlu, policy, prompts, store
+from . import catalogue, config, gate, llm, nlu, policy, prompts, skills, store
 from .persona import line as L
 
 
@@ -73,6 +73,9 @@ class _Cat:
     def resolve_choice(self, feats, offers, slots, stage):
         return catalogue.resolve_choice(self.conn, feats, offers, slots, stage)
 
+    def skill_answer(self, text: str):
+        return skills.match(self.conn, text)
+
 
 class Engine:
     def __init__(self) -> None:
@@ -86,6 +89,7 @@ class Engine:
         self.metrics = Metrics()
         self._places: tuple[float, dict] = (0.0, {})
         self._sweeper: Optional[asyncio.Task] = None
+        self._sweeps = 0
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
     async def start(self) -> None:
@@ -94,6 +98,9 @@ class Engine:
         conn = get_db()
         try:
             store.init(conn)
+            learned = skills.learn(conn)            # the team's past answers become skills
+            if learned:
+                print(f"[davis] learned {learned} skill(s) from the team's replies")
         finally:
             conn.close()
         self._sweeper = asyncio.create_task(self._sweep_loop())
@@ -220,6 +227,14 @@ class Engine:
                         self._schedule(r["chat_id"], 0)
                 for chat_id in stuck:
                     await self.process(chat_id, trigger="refresh_timeout")
+                self._sweeps += 1
+                if self._sweeps % max(1, 600 // config.SWEEP_SEC) == 0:   # every ~10 minutes
+                    conn = get_db()
+                    try:
+                        if skills.learn(conn):
+                            await self.emit(None, "skills", {"learned": True})
+                    finally:
+                        conn.close()
             except asyncio.CancelledError:
                 return
             except Exception as e:
@@ -490,6 +505,9 @@ class Engine:
                     # The team is told (dashboard); Davis keeps answering the guest.
                     patch["attention"], patch["attention_reason"] = True, a.get("reason") or "needs staff"
                     self.metrics.counters["alerts"] += 1
+                elif kind == "skill_used":
+                    skills.used(conn, a["id"])
+                    self.metrics.counters["skills_used"] += 1
                 elif kind == "opt_out":
                     patch["opted_out"] = True
                 elif kind == "opt_in":

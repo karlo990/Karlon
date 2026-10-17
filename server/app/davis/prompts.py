@@ -7,7 +7,7 @@ prompt token costs time."""
 from __future__ import annotations
 
 from . import config, persona
-from .catalogue import fmt_range
+from .catalogue import fee_label, fmt_range
 
 SYSTEM = persona.system_prompt(config.MAX_WORDS)
 
@@ -48,8 +48,8 @@ def house_line(o: dict) -> str:
         parts.append(when + (f" ({o['nights']} nights)" if o.get("nights") else ""))
     if o.get("usd_per_night"):
         parts.append(f"{_money(o['usd_per_night'])}/night")
-    if o.get("usd_total"):
-        parts.append(f"{_money(o['usd_total'])} total")
+    if o.get("usd_due"):
+        parts.append(f"{_money(o['usd_due'])} due {fee_label()}")
     if o.get("rating"):
         parts.append(f"rating {o['rating']}")
     if o.get("note"):

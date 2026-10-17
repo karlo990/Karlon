@@ -44,7 +44,7 @@ from ..config import STATIC_DIR
 from ..database import get_db
 from ..models import serialize_message
 from ..routers import houses
-from . import catalogue, config, gate, nlu, policy, store
+from . import catalogue, config, gate, nlu, policy, skills, store
 from .engine import _Cat, engine
 from .local_llm import model as local_model
 
@@ -147,6 +147,16 @@ class CatalogueFlagIn(BaseModel):
     hidden: Optional[bool] = None
     featured: Optional[bool] = None
     note: Optional[str] = None
+
+
+class SkillIn(BaseModel):
+    question: str
+    answer: str
+
+
+class SkillPatch(BaseModel):
+    enabled: Optional[bool] = None
+    answer: Optional[str] = None
 
 
 class PreviewIn(BaseModel):
@@ -435,6 +445,70 @@ async def patch_catalogue(body: CatalogueFlagIn):
     catalogue.clear_cache()
     await engine.emit(None, "catalogue", {k: row[k] for k in ("listing_url", "hidden", "featured", "note")})
     return row
+
+
+# ─────────────────────────── skills ──────────────────────────────────────────
+# Answers learned from the team's replies in chats (and added by hand): Davis
+# reuses them for similar questions instead of "I'll check" (skills.py).
+
+@api.get("/api/davis/skills")
+def get_skills():
+    conn = get_db()
+    try:
+        return skills.listing(conn)
+    finally:
+        conn.close()
+
+
+@api.post("/api/davis/skills")
+async def add_skill(body: SkillIn):
+    conn = get_db()
+    try:
+        row = skills.add(conn, body.question, body.answer)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        conn.close()
+    await engine.emit(None, "skills", {"added": row["question"][:80]})
+    return row
+
+
+@api.patch("/api/davis/skills/{skill_id}")
+def patch_skill(skill_id: int, body: SkillPatch):
+    conn = get_db()
+    try:
+        if not conn.execute("SELECT 1 FROM davis_skills WHERE id=?", (skill_id,)).fetchone():
+            raise HTTPException(404, "skill not found")
+        if body.enabled is not None:
+            conn.execute("UPDATE davis_skills SET enabled=?, updated_at=? WHERE id=?",
+                         (int(body.enabled), store.now_iso(), skill_id))
+        if body.answer is not None and body.answer.strip():
+            conn.execute("UPDATE davis_skills SET answer=?, updated_at=? WHERE id=?",
+                         (nlu.clip_words(body.answer.strip(), config.MAX_WORDS), store.now_iso(), skill_id))
+        conn.commit()
+        return dict(conn.execute("SELECT * FROM davis_skills WHERE id=?", (skill_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+@api.delete("/api/davis/skills/{skill_id}")
+def delete_skill(skill_id: int):
+    conn = get_db()
+    try:
+        conn.execute("DELETE FROM davis_skills WHERE id=?", (skill_id,))
+        conn.commit()
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+@api.post("/api/davis/skills/learn")
+def learn_skills():
+    conn = get_db()
+    try:
+        return {"learned": skills.learn(conn), "total": len(skills.listing(conn))}
+    finally:
+        conn.close()
 
 
 # ─────────────────────────── preview ─────────────────────────────────────────

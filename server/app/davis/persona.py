@@ -14,6 +14,8 @@ Keep every LINE under 40 words with its placeholders filled. Placeholders:
 """
 
 BRAND = "KarlCon Elite Retreats"
+COMPANY = "KARLCON Consultancy (Private) Limited, Reg. No. 15017/2023, Harare"   # as on the invoice
+WEBSITE = "karl-con-elite-retreats.vercel.app"
 
 # Where guests pay. Davis gives ONLY this number for EcoCash (the reply
 # guard rejects any other number), and the invoice PDF prints the same one
@@ -50,6 +52,9 @@ PERSONA = {
         "a complaint, a request for a person or a payment alerts the team, and Davis keeps helping meanwhile",
         "no viewings before a reservation; once payment is confirmed the guest gets the live location and host address",
         "check-in is from 2:00 PM, check-out by 10:00 AM",
+        f"the company is {COMPANY}; website {WEBSITE}",
+        "full payment is due within 48 hours of the invoice; the invoice adds the service fee, already in quoted totals",
+        "never answer a question with 'let me ask the team': answer from FACTS, or say you will check and come back",
         "payment is by EcoCash to the number in FACTS; payment confirms the booking",
         "every reply ends with the next step towards the booking",
     ],
@@ -115,8 +120,13 @@ LINES = {
                      "confirm your booking.",
     "note_answer": "{notes} ✨ Anything else I can check, or shall I prepare your invoice?",
     "note_answer_after": "{notes} ✨ Anything else I can check for you?",
-    "team_confirm": "Good question! I've asked our team to confirm that; they'll reply here shortly. {next}",
-    "team_confirm_soon": "Good question! I've asked our team to confirm that; they'll reply here shortly. {next}",
+    # A question nothing answers yet: no "let me ask the team" excuse. Davis
+    # promises to come back (the team is alerted silently on the dashboard).
+    "team_confirm": "Sure, I'll check that for you and get back to you here shortly. {next}",
+    "team_confirm_soon": "Sure, I'll check that for you and get back to you here shortly. {next}",
+    "well": "I'm well, thank you{hi}! ",
+    "great": "Great! ",
+    "pay_short": "Pay by {ecocash}, then send the proof of payment here and we'll confirm your booking.",
     "which_home": "Which home would you like? Reply with its KCER number and I'll prepare your invoice.",
     "price_list_tail": ". Which one shall I reserve for you?",
     "location_tail": ". The exact address is shared once you're booked.",
@@ -125,9 +135,56 @@ LINES = {
 }
 
 
+# The business's standing answers. Each: (name, patterns in the guest's text,
+# the answer). Davis gives the answer, then the next booking step. Add your
+# own here: they survive restarts, unlike skills added on the dashboard.
+FAQS = [
+    ("company", [r"\breg(?:istration)?\.? ?(?:no|number|num|#)", r"\bregistered\b", r"\bcompany (?:name|details|number|reg)",
+                 r"\b(?:are|is) (?:you|this|it|u) (?:a )?(?:legit|legal|real|genuine|registered|a real company)",
+                 r"\blegit\b", r"\bcertificate of incorporation\b"],
+     f"We're {COMPANY}."),
+    ("deadline", [r"how long (?:do|will) (?:i|we) have to pay", r"when (?:should|must|do|can) (?:i|we) pay",
+                  r"\bpay(?:ment)? deadline\b", r"\bby when\b.*\bpay"],
+     "Full payment is due within 48 hours of the invoice; after that the house is released."),
+    ("deposit", [r"\bdeposit\b", r"\bpart(?:ial)? payment\b", r"\bpay (?:half|part)\b", r"\binstal+ments?\b",
+                 r"\bpay (?:the )?(?:balance|rest) (?:on|at|when)"],
+     "Full payment confirms the booking and is due within 48 hours of the invoice."),
+    ("fee", [r"\bservice fee\b", r"\bwhy (?:is )?(?:the )?(?:it|price|total|amount|invoice) (?:so )?(?:more|higher|different|bigger)",
+             r"\bextra charges?\b", r"\bhidden (?:fees?|charges?)\b"],
+     "Our invoice adds a {fee}% service fee to the nightly total; the totals I quote already include it."),
+    ("website", [r"\bwebsite\b", r"\bweb ?site\b", r"\binstagram\b", r"\bfacebook\b", r"\bsocials?\b",
+                 r"\bonline\b.*\bsee (?:you|more)"],
+     f"You can see us at {WEBSITE}."),
+]
+SMALL_TALK = [r"how are (?:you|yu|u)\b", r"\bhow r (?:u|you)\b", r"\bhw r u\b", r"how(?:'s| is) it going",
+              r"how have you been", r"\bhow are things\b", r"\bmakadii\b", r"\bunjani\b"]
+
+
+def faq_answers(text: str) -> list[str]:
+    """The standing answers whose patterns appear in the guest's text."""
+    import re
+    t = " ".join((text or "").lower().split())
+    return [line_text(answer) for name, pats, answer in FAQS if any(re.search(p, t) for p in pats)]
+
+
+def is_small_talk(text: str) -> bool:
+    import re
+    t = " ".join((text or "").lower().split())
+    return any(re.search(p, t) for p in SMALL_TALK)
+
+
+def _fee() -> str:
+    from . import config                     # lazy: config imports this module
+    return f"{config.SERVICE_FEE_PCT:g}"
+
+
+def line_text(template: str, **values) -> str:
+    return template.format(brand=BRAND, ecocash=ECOCASH, fee=_fee(), **values)
+
+
 def line(key: str, **values) -> str:
-    """A LINE with its placeholders filled ({brand} always available)."""
-    return LINES[key].format(brand=BRAND, ecocash=ECOCASH, **values)
+    """A LINE with its placeholders filled ({brand}, {ecocash}, {fee} always available)."""
+    return line_text(LINES[key], **values)
 
 
 # Worked examples, given to the model as earlier chat turns (a small local

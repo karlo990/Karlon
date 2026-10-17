@@ -146,6 +146,12 @@ main{padding:16px 18px 40px;max-width:1680px;margin:0 auto}
 .toggles{display:flex;gap:6px}
 .toggles label{display:flex;align-items:center;gap:4px;font:12px var(--mono);color:var(--dim);cursor:pointer}
 .empty-note{padding:28px;text-align:center;color:var(--faint);font:13px var(--mono)}
+.skill{border:1px solid var(--line);background:var(--panel2);border-radius:10px;padding:10px;margin-bottom:8px}
+.skill.off{opacity:.45}
+.skill .q{color:var(--dim);font-size:12.5px;margin-bottom:4px}
+.skill .a{font-size:13.5px}
+.skill-add{display:grid;gap:6px;margin-bottom:12px}
+.skill-add input,.skill-add textarea{width:100%}
 .settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;padding:12px}
 .settings-grid label{display:block;font:500 11px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px}
 .settings-grid textarea,.settings-grid input,.settings-grid select{width:100%}
@@ -222,6 +228,7 @@ body.locked #lock{display:flex}
         <button data-tab="chat" class="on">CONVERSATION</button>
         <button data-tab="drafts">DRAFTS <span class="count" id="draftCount">0</span></button>
         <button data-tab="catalogue">CATALOGUE</button>
+        <button data-tab="skills">SKILLS</button>
         <button data-tab="settings">SETTINGS</button>
       </nav>
       <div id="tab-chat"></div>
@@ -235,6 +242,7 @@ body.locked #lock{display:flex}
         </div>
         <div class="cat-grid" id="catGrid"></div>
       </div>
+      <div id="tab-skills" hidden></div>
       <div id="tab-settings" hidden></div>
     </section>
 
@@ -447,6 +455,29 @@ function renderCatalogue(){
     : `<div class="empty-note">No houses here yet. The scraper fills this as it runs.</div>`;
 }
 
+/* ── skills tab ────────────────────────────────────────────────── */
+async function loadSkills(){ state.skills = await api("/api/davis/skills"); renderSkills(); }
+function renderSkills(){
+  const box = $("#tab-skills"), list = state.skills || [];
+  if (box.contains(document.activeElement) && document.activeElement.tagName !== "BUTTON") return;
+  box.innerHTML = `<div class="pb">
+    <p class="mono" style="color:var(--dim);font-size:12px;margin:0 0 10px">When a guest asks something no FAQ or house note answers, Davis reuses how your team answered a similar question in another chat. Learned answers never contain numbers, links or another guest's name.</p>
+    <div class="skill-add">
+      <input type="text" id="skQ" placeholder="Guest's question, e.g. Do you allow pets?">
+      <textarea id="skA" rows="2" placeholder="Davis's answer (max 40 words)"></textarea>
+      <div class="row" style="justify-content:space-between"><span class="chip" id="skW">0/40 words</span>
+        <div class="row"><button class="btn" data-sk="learn">Learn from chats now</button><button class="btn gold" data-sk="add">Add skill</button></div></div>
+    </div>
+    ${list.length ? list.map(k => `<div class="skill ${k.enabled ? "" : "off"}" data-skill="${k.id}">
+      <div class="q">Q: ${esc(k.question)}</div><div class="a">${esc(k.answer)}</div>
+      <div class="row" style="justify-content:space-between;margin-top:6px">
+        <div class="chips"><span class="chip ${k.source === "manual" ? "st" : "vio"}">${k.source}</span><span class="chip">used ${k.uses}×</span></div>
+        <div class="row"><button class="btn sm" data-sk="toggle">${k.enabled ? "Switch off" : "Switch on"}</button>
+        <button class="btn sm danger" data-sk="del">Delete</button></div></div></div>`).join("")
+      : `<div class="empty-note">No skills yet. They appear as your team answers guests' questions in WhatsApp, or add one above.</div>`}
+  </div>`;
+}
+
 /* ── settings tab ──────────────────────────────────────────────── */
 function renderSettings(){
   const s = state.status; if (!s) return;
@@ -525,10 +556,24 @@ $("#convList").addEventListener("click", e => { const c = e.target.closest(".con
   state.selected = c.dataset.id; renderSessions(); selectTab("chat"); loadDetail();
   const s = state.sessions.find(x => x.chat_id === state.selected); $("#tryChat").textContent = "in " + (s ? s.chat_name : "this chat"); });
 function selectTab(t){ state.tab = t; document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
-  ["chat","drafts","catalogue","settings"].forEach(k => $("#tab-" + k).hidden = k !== t);
+  ["chat","drafts","catalogue","skills","settings"].forEach(k => $("#tab-" + k).hidden = k !== t);
+  if (t === "skills") loadSkills();
   if (t === "drafts") renderDrafts(); if (t === "catalogue" && !state.cat) loadCatalogue(); if (t === "settings") renderSettings(); }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) selectTab(b.dataset.tab); });
 
+document.addEventListener("input", e => { if (e.target.id === "skA"){ const w = words(e.target.value);
+  $("#skW").textContent = `${w}/40 words`; $("#skW").className = "chip" + (w > 40 ? " err" : ""); } });
+document.addEventListener("click", async e => {
+  const b = e.target.closest("[data-sk]"); if (!b) return;
+  const card = b.closest("[data-skill]"), id = card && card.dataset.skill;
+  if (b.dataset.sk === "learn"){ const r = await api("/api/davis/skills/learn", {method: "POST"}); toast(`Learned ${r.learned} new · ${r.total} skills`); }
+  if (b.dataset.sk === "add"){ const q = $("#skQ").value.trim(), a = $("#skA").value.trim(); if (!q || !a) return toast("Fill in both", true);
+    await api("/api/davis/skills", {method: "POST", body: JSON.stringify({question: q, answer: a})}); toast("Skill added"); }
+  if (b.dataset.sk === "toggle"){ const k = state.skills.find(x => String(x.id) === id);
+    await api(`/api/davis/skills/${id}`, {method: "PATCH", body: JSON.stringify({enabled: !k.enabled})}); }
+  if (b.dataset.sk === "del" && confirm("Delete this skill?")) await api(`/api/davis/skills/${id}`, {method: "DELETE"});
+  document.activeElement.blur(); loadSkills();
+});
 document.addEventListener("input", e => { if (e.target.matches("[data-edit]")){ const c = e.target.closest(".draft").querySelector("[data-wc]");
   const w = words(e.target.value); c.textContent = `${w}/40 words`; c.className = "chip" + (w > 40 ? " err" : ""); } });
 document.addEventListener("click", async e => {

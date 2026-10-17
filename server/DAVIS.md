@@ -69,6 +69,29 @@ draft's KCERs, amounts and closing question, or the persona line goes out. A big
 - is written in the guest's voice;
 - drops the draft's KCER, amount or closing question (in "every reply" mode).
 
+## Answers without "let me ask the team"
+
+Davis answers questions in this order and never says "let me confirm with our team":
+
+1. **Business FAQ** (`persona.FAQS`, permanent):
+   - company and registration (KARLCON Consultancy (Private) Limited, Reg. No. 15017/2023)
+   - payment deadline (48 hours) and deposits (full payment confirms)
+   - the service fee, and the website
+   - viewings and check-in/out (in the persona lines)
+2. **House notes** written by the team on the dashboard (Catalogue).
+3. **Skills** (`skills.py`, dashboard → Skills): how the team answered similar questions in other chats.
+   - A guest's question followed by a team member's reply becomes a skill.
+   - It's kept only if the reply is 3–40 words, with no numbers, links or the guest's name.
+   - Davis reuses it when a new question shares at least two key words.
+   - Staff can add skills by hand, or switch off and delete any.
+   - Skills are relearned from the chats every 10 minutes and after each restart. Hand-added skills are lost on
+     restart, so put permanent ones in `persona.FAQS`.
+4. **Otherwise:** "Sure, I'll check that for you and get back to you here shortly", followed by the next booking
+   step. The team gets a silent "needs staff" alert.
+
+**Prices match the invoice.** Davis quotes the invoice's Balance Due: nights × rate plus the 15% service
+fee, rounded exactly as `invoice_worker.py` rounds it (`DAVIS_SERVICE_FEE_PCT`, default 15).
+
 ## The rules you asked for, and where they are enforced
 
 | Rule | Where |
@@ -217,7 +240,8 @@ app/davis/
   local_llm.py  the local model: llama.cpp, warm-up, CPU threads, JSON grammar
   llm.py        providers (local, Ollama, Conscious Worker), breaker, cache
   engine.py     debounce, admission, pipeline, outbox execution, metrics, live feed
-  store.py      tables: davis_settings, davis_sessions, davis_events, davis_drafts, davis_catalogue
+  skills.py     answers learned from the team's replies in chats (and added on the dashboard)
+  store.py      tables: davis_settings, davis_sessions, davis_events, davis_drafts, davis_catalogue, davis_skills
   router.py     /davis, /api/davis/ws, /api/davis/*
 static/davis.html  the dashboard
 tests/test_davis.py

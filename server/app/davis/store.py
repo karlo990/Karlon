@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS davis_drafts (
     decided_by  TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_davis_drafts_status ON davis_drafts(status, created_at DESC);
+CREATE TABLE IF NOT EXISTS davis_skills (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    qkey       TEXT NOT NULL UNIQUE,      -- the question's content words, sorted (dedup)
+    question   TEXT NOT NULL,
+    answer     TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'learned',   -- learned (team replies in chats) | manual (dashboard)
+    chat_id    TEXT,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    uses       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS davis_catalogue (
     listing_url TEXT PRIMARY KEY,
     hidden      INTEGER NOT NULL DEFAULT 0,

@@ -63,6 +63,9 @@ OLLAMA_MODEL = os.environ.get("DAVIS_OLLAMA_MODEL", "qwen2.5:3b-instruct")
 # ── conversation limits (the user's rules) ─────────────────────────────────
 MAX_WORDS = _int("DAVIS_MAX_WORDS", 40, 10)                 # per Davis message
 MAX_REPLIES_PER_TURN = _int("DAVIS_MAX_REPLIES_PER_TURN", 2, 1)  # then wait for the guest
+# The invoice adds this service fee (pc-bridge/invoice_worker.py,
+# INVOICE_SERVICE_FEE_PCT): Davis quotes the same balance the invoice shows.
+SERVICE_FEE_PCT = _float("DAVIS_SERVICE_FEE_PCT", 15.0)
 OPTIONS_PER_SEND = _int("DAVIS_OPTIONS_PER_SEND", 3, 1)
 IMAGES_PER_OPTION = _int("DAVIS_IMAGES_PER_OPTION", 3, 1)
 

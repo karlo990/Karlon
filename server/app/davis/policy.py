@@ -21,7 +21,8 @@ from __future__ import annotations
 import re
 from typing import Callable, Optional
 
-from . import config, nlu
+from . import config, nlu, persona
+from .catalogue import fee_label
 from .persona import line as L
 
 STAGES = ("new", "qualify", "searching", "present", "details", "invoice", "payment", "opted_out")
@@ -125,6 +126,15 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
                 if o.get("ref") not in seen:
                     seen.add(o.get("ref"))
                     said.append(f"{o['ref']} has {o['note'].strip().rstrip('.')}")
+            hit = None if said else (cat.skill_answer(" ".join(feats.get("texts") or []))
+                                     if hasattr(cat, "skill_answer") else None)
+            if hit:
+                # The team answered this kind of question before (a skill): reuse it.
+                actions[:] = [a for a in actions if a["type"] not in ("maybe_alert", "reply")]
+                actions.append({"type": "skill_used", "id": hit["id"]})
+                reply(prefix + hit["answer"].strip() + " " + nxt(stage_),
+                      "answer with the team's earlier answer", "skill")
+                out["skill"] = {k: hit.get(k) for k in ("id", "question", "score")}
             if said:
                 # A team note answers it: quote the note (exact), no handoff needed.
                 actions[:] = [a for a in actions if a["type"] not in ("maybe_alert", "reply")]
@@ -181,6 +191,21 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
         faq = True
     if feats.get("checkin_query"):
         prefix += L("checkin_times", next="").strip() + " "
+        faq = True
+    turn_text = " ".join(feats.get("texts") or [])
+    for answer in persona.faq_answers(turn_text):          # company, payment deadline, deposit, fee, website
+        if answer not in prefix:
+            prefix += answer + " "
+        faq = True
+    # Small talk ("Hi", "How are yu") is answered warmly, then the next step;
+    # it is never treated as a question for the team.
+    social = bool(feats.get("texts")) and all(
+        len(t.split()) <= 5 and (persona.is_small_talk(t) or nlu.extract(t).get("greeting")) for t in feats["texts"])
+    if any(persona.is_small_talk(t) for t in feats.get("texts") or []):
+        prefix = L("well", hi=hi) + prefix
+    elif feats.get("greeting") and stage not in ("new", "qualify"):
+        prefix = L("hello", hi=hi) + prefix
+    if social:
         faq = True
 
     def say(text: str, goal: str, intent: str) -> None:
@@ -251,8 +276,8 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
                 "ask the dates for the chosen house", "qualify")
             return done("details")
         summary = f"{choice['ref']}, {_when(choice.get('check_in'), choice.get('check_out'))}, " \
-                  f"{_money(choice.get('usd_total') or choice.get('usd_per_night'))}" \
-                  f"{' total' if choice.get('usd_total') else ' per night'}"
+                  f"{_money(choice.get('usd_due') or choice.get('usd_per_night'))}" \
+                  f"{' ' + fee_label() if choice.get('usd_due') else ' per night'}"
         name, ident = slots.get("full_name"), slots.get("id_number")
         gave_details = feats.get("id_number") or feats.get("name_like") or feats.get("full_name") \
             or feats.get("long_number")
@@ -307,7 +332,8 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
             say(L("team_confirm", next=L("next_pay")),
                 "answer the guest's question from the facts, or say the team will confirm", "open_question")
             return done("invoice")
-        say(L("after_invoice", hi=hi), "acknowledge; ask for proof of payment once paid", "invoice")
+        say(L("pay_short") if faq else L("after_invoice", hi=hi), "acknowledge; ask for proof of payment once paid",
+            "invoice")
         return done("invoice")
 
     # ── qualification and presenting houses ──────────────────────────────────
@@ -351,8 +377,8 @@ def _price_line(o: dict) -> str:
     if not o.get("usd_per_night"):
         return ""
     line = f"{_money(o['usd_per_night'])} per night"
-    if o.get("usd_total") and o.get("nights"):
-        line += f", {_money(o['usd_total'])} for {o['nights']} night{'s' if o['nights'] != 1 else ''}"
+    if o.get("usd_due") and o.get("nights"):
+        line += f", {_money(o['usd_due'])} for {o['nights']} night{'s' if o['nights'] != 1 else ''} {fee_label()}"
     return line
 
 
@@ -363,8 +389,8 @@ def _present(ctx, slots, cat, actions, say, done, out, resumed: bool) -> dict:
         fresh = cat.resolve_choice({"option_ref": choice.get("ref_no")}, [], slots, "searching")
         if fresh and fresh.get("usd_per_night"):
             out["choice"] = fresh
-            say(L("good_news", ref=fresh["ref"], when=when, money=_money(fresh.get("usd_total") or fresh["usd_per_night"]),
-                  total_word=" total" if fresh.get("usd_total") else " per night"),
+            say(L("good_news", ref=fresh["ref"], when=when, money=_money(fresh.get("usd_due") or fresh["usd_per_night"]),
+                  total_word=" " + fee_label() if fresh.get("usd_due") else " per night"),
                 "confirm price and ask name and ID", "collect_details")
             return done("details")
     options, status = cat.find_options(slots, True)
@@ -421,7 +447,14 @@ def _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix, faq=Fa
         say(L("next_pick") if offers else L("next_city_dates"), "answer, then ask which house they want",
             "payment_info" if feats.get("invoice_request") else "faq")
         return done("present" if offers else "qualify")
-    if feats.get("question") or not feats.get("ack_only"):
+    if not feats.get("question"):
+        # A statement, not a question ("Yes confirm please"): nothing for the team, just the next step.
+        agree = feats.get("affirm") or re.search(r"\b(?:confirm|yes|yeah|sure|ok(?:ay)?|cool|fine)\b",
+                                                 " ".join(feats.get("texts") or []).lower())
+        say((L("great") if agree else "") + (L("next_pick") if offers else L("next_city_dates")),
+            "ask which house they want", "present")
+        return done("present" if offers else "qualify")
+    if feats.get("question"):
         actions.append({"type": "maybe_alert", "reason": "question Davis has no facts for"})
         say(L("team_confirm_soon", next=L("next_pick") if offers else L("next_city_dates")),
             "answer the guest's question from the facts, or say the team will confirm", "open_question")
@@ -460,7 +493,7 @@ def _facts(slots: dict, choice: Optional[dict], offers: list[dict], actions: lis
     sending = next((a["options"] for a in actions if a["type"] == "send_options"), [])
     return {"slots": slots, "choice": choice, "offered_before": offers[:6],
             "sending_now": [{k: o.get(k) for k in ("ref", "place", "capacity", "check_in", "check_out", "nights",
-                                                     "usd_per_night", "usd_total", "rating", "note")
+                                                     "usd_per_night", "usd_total", "usd_due", "rating", "note")
                              if o.get(k) is not None} for o in sending]}
 
 
@@ -469,7 +502,7 @@ def allowed_amounts(facts: dict) -> set[float]:
     pool = list(facts.get("offered_before") or []) + list(facts.get("sending_now") or [])
     pool += [facts[k] for k in ("choice", "asked_about") if facts.get(k)]
     for o in pool:
-        for k in ("usd_per_night", "usd_total"):
+        for k in ("usd_per_night", "usd_total", "usd_due"):
             if o.get(k):
                 vals.add(round(float(o[k]), 2))
     if (facts.get("slots") or {}).get("budget_usd"):
