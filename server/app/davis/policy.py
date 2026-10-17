@@ -54,13 +54,17 @@ def _when(ci: Optional[str], co: Optional[str]) -> str:
     return fmt_range(ci, co)
 
 
-def turn_features(texts: list[str], today, places: dict, has_image: bool = False) -> dict:
+def turn_features(texts: list[str], today, places: dict, has_image: bool = False,
+                  context: Optional[list[str]] = None) -> dict:
     """Features of the guest's whole turn (several quick messages read as
-    one): booleans OR-ed, slots newest-wins, plus ack_only."""
+    one): booleans OR-ed, slots newest-wins, plus ack_only. context = the
+    recent conversation (guest and staff), for the month a bare "21 to 22"
+    refers to."""
     agg: dict = {"texts": texts, "has_image": has_image}
     acks = []
+    month = nlu.last_month(list(context or []) + list(texts))
     for t in texts:
-        f = nlu.extract(t, today, places)
+        f = nlu.extract(t, today, places, month)
         acks.append(bool(f.get("ack")) or f.get("empty"))
         if any(f.get(k) for k in ("greeting", "thanks", "affirm", "negative", "question")):
             f.pop("name_like", None)          # "Yes please" is not a name; only a plain message can be

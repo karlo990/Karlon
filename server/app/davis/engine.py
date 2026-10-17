@@ -341,13 +341,24 @@ class Engine:
             today, places = self._today(), self._places_map(conn)
             guest_turn = self._guest_turn(msgs, resume)
             texts = [m["text"] for m in guest_turn if m.get("kind", "text") == "text" and m.get("text")]
+            recent = [m for m in msgs[-14:] if m.get("kind", "text") == "text" and m.get("text")
+                      and not gate.is_davis(m.get("sender"))]
+            context = [m["text"] for m in recent]
             feats = policy.turn_features(texts, today, places,
-                                         has_image=any(m.get("kind") == "image" for m in guest_turn))
+                                         has_image=any(m.get("kind") == "image" for m in guest_turn), context=context)
             if not session.get("slots"):
                 turn_ids = {m["id"] for m in guest_turn}
                 history = [m["text"] for m in msgs if m.get("direction") == "in" and m["id"] not in turn_ids
                            and m.get("kind", "text") == "text" and m.get("text")]
                 session["slots"] = policy.seed_slots(history, today, places)
+            # Dates the team already agreed in the chat ("let me use 21 to 22") count too.
+            month = nlu.last_month(context)
+            for m in recent:
+                if m.get("direction") == "out":
+                    f = nlu.extract(m["text"], today, places, month)
+                    if f.get("check_in") and f.get("check_out") and not feats.get("check_in"):
+                        session["slots"] = nlu.merge_slots(session.get("slots") or {},
+                                                           {"check_in": f["check_in"], "check_out": f["check_out"]})
 
             decision = gate.decide(ctx, feats, resume=resume)
             latest_in = msgs[gate.latest_inbound_index(msgs)] if gate.latest_inbound_index(msgs) is not None else None

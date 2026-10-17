@@ -628,6 +628,28 @@ def test_quoted_total_matches_the_invoice_with_service_fee(dc, db):
     assert f"USD {due:,.2f}".replace(".00", "") in _davis(db)[-1]["text"] and "15% service fee" in _davis(db)[-1]["text"]
 
 
+def test_bulawayo_chat_dates_from_context_and_staff(dc, db):
+    """Live chat: the guest stated a check-out date (no space before the
+    month), staff confirmed "21 to 22", the guest said 15 guests; Davis must
+    not answer with check-in times or ask for dates again."""
+    _setup(dc, db, houses=False)
+    _guest(db, "Hi, a place in Bulawayo please")
+    _run(dc)
+    _guest(db, "check out time 10:00am 22November")
+    r = _run(dc)
+    assert "Check-in is from" not in _davis(db)[-1]["text"]
+    assert r["plan"]["slots"]["check_out"].endswith("-11-22")
+    db.execute("INSERT INTO messages (id, chat_id, sender, kind, text, created_at, direction, wa_status) "
+               "VALUES ('s1', ?, 'You (WhatsApp)', 'text', 'Let me use the ones you sent i.e 21 to 22', ?, 'out', NULL)",
+               (GUEST, datetime.now(timezone.utc).isoformat()))
+    db.commit()
+    _guest(db, "15guests..")
+    r = _run(dc)
+    slots = r["plan"]["slots"]
+    assert slots["check_in"].endswith("-11-21") and slots["check_out"].endswith("-11-22") and slots["guests"] == 15
+    assert "Which dates" not in _davis(db)[-1]["text"]
+
+
 def test_persona_lines_fit_the_word_limit():
     from app.davis import persona
     sample = dict(hi=" Tendai", city="Victoria Falls", when="28 Dec–2 Jan", party=" for 12 guests", k=3,

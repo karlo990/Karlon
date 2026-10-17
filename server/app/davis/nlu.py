@@ -110,10 +110,22 @@ def _mk(day: int, month: int, year: Optional[int], today: date) -> Optional[date
         return None
 
 
-def parse_dates(text: str, today: date) -> dict:
+def last_month(texts: list[str]) -> Optional[int]:
+    """The month most recently named in these messages ("…22 November" → 11),
+    so a later "21 to 22" can be read as 21–22 November."""
+    month = None
+    for t in texts:
+        for m in re.finditer(_MON + r"(?![a-z])", (t or "").lower()):
+            month = MONTHS[m.group(1)[:3]]
+    return month
+
+
+def parse_dates(text: str, today: date, month_hint: Optional[int] = None) -> dict:
     """check_in / check_out / nights from free text. Day-first for numeric
     dates (Zimbabwe writes 11/12 for 11 December). A check-out that would
-    fall before the check-in rolls into the next year ("11 Dec till 8 Jan")."""
+    fall before the check-in rolls into the next year ("11 Dec till 8 Jan").
+    A day range with no month ("21 to 22") uses month_hint, the month the
+    conversation last named. A single date after "check out" is the check-out."""
     t = " " + text.lower().replace(",", " ") + " "
     found: list[tuple[int, date]] = []
     taken: list[tuple[int, int]] = []
@@ -163,11 +175,11 @@ def parse_dates(text: str, today: date) -> dict:
         if 1 <= mon <= 12:
             add(m.start(), _mk(day, mon, int(yr) if yr else None, today), m.span())
     # 11th December, 11 of dec
-    for m in re.finditer(r"(?<!\d)(\d{1,2})" + _ORD + r"\s+(?:of\s+)?" + _MON + r"(?:\s+(\d{4}))?(?![a-z])", t):
+    for m in re.finditer(r"(?<!\d)(\d{1,2})" + _ORD + r"\s*(?:of\s+)?" + _MON + r"(?:\s+(\d{4}))?(?![a-z])", t):
         add(m.start(), _mk(int(m.group(1)), MONTHS[m.group(2)[:3]], int(m.group(3)) if m.group(3) else None,
                            today), m.span())
     # December 11th
-    for m in re.finditer(_MON + r"\s+(\d{1,2})" + _ORD + r"(?:\s+(\d{4}))?(?!\d)", t):
+    for m in re.finditer(_MON + r"\s*(\d{1,2})" + _ORD + r"(?:\s+(\d{4}))?(?!\d)", t):
         add(m.start(), _mk(int(m.group(2)), MONTHS[m.group(1)[:3]], int(m.group(3)) if m.group(3) else None,
                            today), m.span())
     # today / tonight / tomorrow / weekend
@@ -183,9 +195,22 @@ def parse_dates(text: str, today: date) -> dict:
         found += [(m.start(), fri), (m.start() + 1, fri + timedelta(days=2))]
         taken.append(m.span())
 
+    # "21 to 22" with the month named earlier in the chat
+    if month_hint and not found:
+        m = re.search(r"(?<![\d:/.$])(\d{1,2})" + _ORD + r"\s*(?:-|–|to|till|until)\s*(\d{1,2})" + _ORD
+                      + r"(?![\d:/.%]|\s*(?:am|pm|h\b|hrs|nights?|days?|people|guests?|pax|bed|usd|dollars|\$))", t)
+        if m:
+            a = _mk(int(m.group(1)), month_hint, None, today)
+            b = _mk(int(m.group(2)), month_hint, a.year if a else None, today) if a else None
+            if a and b and b > a:
+                found += [(m.start(), a), (m.start() + 1, b)]
+
     found.sort()
     dates = [d for _, d in found]
     out: dict = {}
+    if len(dates) == 1 and re.search(r"check[- ]?out|leav(?:e|ing)|depart", t) \
+            and not re.search(r"check[- ]?in|arriv", t):
+        return {"check_out": dates[0].isoformat()}            # "check out … 22 November"
     nights = None
     m = re.search(r"(?<![a-z\d])" + _NUM + r"\s*(?:nights?|nyts?|days?)\b", t)
     if m:
@@ -350,7 +375,8 @@ def parse_option(t: str) -> dict:
 
 # ─────────────────────────── intents ─────────────────────────────────────────
 
-def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = None) -> dict:
+def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = None,
+            month_hint: Optional[int] = None) -> dict:
     """All features of one message. Pure function: same text, same result."""
     today = today or date.today()
     raw = (raw or "").strip()
@@ -406,14 +432,16 @@ def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = Non
                                 "view(?:ing)? the (?:place|house|home|property)", "viewings?", "come (?:and|to) see",
                                 "visit the (?:place|house|home|property)", "inspect(?:ion)?", "physical(?:ly)? (?:see|check)",
                                 "check (?:it|the place|the house) out(?: first)?", "can i come (?:over|through|and see)")
-    f["checkin_query"] = _has(t, "check[- ]?in time", "check[- ]?out time", "what time (?:is|do|can) (?:we |i )?"
+    f["checkin_query_raw"] = _has(t, "check[- ]?in time", "check[- ]?out time", "what time (?:is|do|can) (?:we |i )?"
                               "(?:check|arrive|come|leave)", "when (?:can|do) (?:we|i) (?:check in|arrive|come in|leave)",
                               "early check[- ]?in", "late check[- ]?out")
     f["location_query"] = _has(t, "where (?:is|are) (?:it|they|the house|this)", "location", "address", "directions",
                                "pin", "how far")
     f["question"] = "?" in t or bool(re.match(r"(what|where|when|how|can|could|is|are|do|does|will|would|which|who)\b", t))
+    # Asking about check-in times, not stating their own ("check out time 10:00am 22November").
+    f["checkin_query"] = f.pop("checkin_query_raw") and (f["question"] or bool(re.search(r"\bwhat time\b", t)))
 
-    f.update(parse_dates(t, today))
+    f.update(parse_dates(t, today, month_hint))
     guests = parse_guests(t)
     if guests and 1 <= guests <= 40:
         f["guests"] = guests
