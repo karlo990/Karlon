@@ -39,6 +39,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+from .. import davis
 from ..database import get_db
 from ..models import ChatSnapshotIn
 from ..wa_clean import (
@@ -238,6 +239,8 @@ async def sync_chat(chat_id: str, body: ChatSnapshotIn,
     if report["inserted"] or report["updated"] or report["pruned"] or report["aliases_merged"] \
             or report["timestamps_normalized"]:
         await manager.broadcast(chat_id, {"type": "refresh", "data": {"sync": True}})
+    if report["inserted"]:
+        davis.notify_inbound(chat_id)
     return report
 
 

@@ -36,7 +36,7 @@ def _token() -> str:
 
 
 def _gated(path: str) -> bool:
-    return path == "/" or path.startswith("/chat/")
+    return path == "/" or path.startswith("/chat/") or path == "/davis"
 
 
 def _cookie_ok(scope) -> bool:

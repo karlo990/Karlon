@@ -289,4 +289,6 @@ def init_db() -> None:
     conn.commit()
     # Run column migrations on existing databases
     _migrate(conn)
+    from .davis import store as davis_store     # Davis's own tables
+    davis_store.init(conn)
     conn.close()

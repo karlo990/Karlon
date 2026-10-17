@@ -2,6 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31
 python-multipart>=0.0.9
+anthropic==1.15.0     # Davis (app/davis/llm.py): Claude API replies
 
 # NOTE: playwright and python-docx were removed from this file. Neither is
 # imported anywhere under app/ — grep confirms zero `import playwright` or

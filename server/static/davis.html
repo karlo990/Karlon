@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Davis · KarlCon Elite Retreats</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  color-scheme: dark;
+  --bg:#050608; --panel:#0a0c11; --panel2:#0e1118; --line:#1a1f2b; --line2:#252b3a;
+  --text:#e8eaf0; --dim:#8a92a6; --faint:#5a6275;
+  --gold:#d4af37; --gold2:#f0d47a; --gold-faint:rgba(212,175,55,.12); --gold-hair:rgba(212,175,55,.25);
+  --ok:#3ecf8e; --warn:#f5a524; --err:#ff5c7a; --blue:#2f8fff; --violet:#a78bfa;
+  --mono:'JetBrains Mono',ui-monospace,monospace; --sans:Inter,system-ui,-apple-system,Segoe UI,sans-serif;
+  --r:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 var(--sans)}
+button,input,select,textarea{font:inherit;color:inherit}
+a{color:var(--gold2)}
+.mono{font-family:var(--mono)}
+/* ── top bar ── */
+header{position:sticky;top:0;z-index:20;display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;
+  padding:12px 18px;background:rgba(5,6,8,.92);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:36px;height:36px;border-radius:9px;display:grid;place-items:center;font:700 16px var(--mono);
+  color:#111;background:linear-gradient(135deg,var(--gold2),var(--gold))}
+.brand h1{margin:0;font:600 16px var(--sans);letter-spacing:.3px}
+.brand small{display:block;color:var(--dim);font-size:12px}
+.controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.seg{display:inline-flex;border:1px solid var(--line2);border-radius:999px;overflow:hidden}
+.seg button{background:none;border:0;padding:6px 14px;cursor:pointer;color:var(--dim);font:600 12px var(--mono);letter-spacing:.5px}
+.seg button.on[data-mode=off]{background:#2a2f3b;color:var(--text)}
+.seg button.on[data-mode=shadow]{background:var(--violet);color:#120d24}
+.seg button.on[data-mode=live]{background:var(--ok);color:#04130c}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;border:1px solid var(--line2);
+  font:500 12px var(--mono);color:var(--dim);background:var(--panel)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.dot.ok{background:var(--ok);box-shadow:0 0 8px var(--ok)} .dot.err{background:var(--err)} .dot.warn{background:var(--warn)}
+select,input[type=text],input[type=password],textarea{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:6px 10px;outline:none}
+select:focus,input:focus,textarea:focus{border-color:var(--gold)}
+.btn{background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:6px 12px;cursor:pointer;font-weight:600;font-size:13px}
+.btn:hover{border-color:var(--gold-hair)}
+.btn.gold{background:var(--gold);border-color:var(--gold);color:#16130a}
+.btn.gold:hover{background:var(--gold2)}
+.btn.danger{color:var(--err)}
+.btn.sm{padding:3px 9px;font-size:12px}
+.btn:disabled{opacity:.45;cursor:default}
+main{padding:16px 18px 40px;max-width:1680px;margin:0 auto}
+/* ── KPIs ── */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:12px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px 14px;position:relative;overflow:hidden}
+.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:linear-gradient(90deg,var(--gold),transparent)}
+.kpi label{display:block;color:var(--dim);font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.8px}
+.kpi b{display:block;font:600 22px var(--mono);margin-top:4px}
+.kpi span{color:var(--faint);font:12px var(--mono)}
+/* ── funnel ── */
+.funnel{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap}
+.stage{flex:1;min-width:92px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px}
+.stage label{display:block;font:500 10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.8px}
+.stage b{font:600 18px var(--mono)}
+.stage .bar{height:3px;border-radius:2px;background:var(--line2);margin-top:6px;overflow:hidden}
+.stage .bar i{display:block;height:100%;background:var(--gold)}
+.stage.hand b{color:var(--warn)}
+/* ── layout ── */
+.grid{display:grid;grid-template-columns:320px minmax(0,1fr) 360px;gap:12px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line)}
+.ph h2{margin:0;font:600 12px var(--mono);text-transform:uppercase;letter-spacing:1px;color:var(--gold2)}
+.pb{padding:10px 12px}
+.scroll{max-height:calc(100vh - 330px);min-height:320px;overflow:auto}
+/* conversations */
+.conv{display:flex;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer}
+.conv:hover{background:var(--panel2)} .conv.sel{background:var(--gold-faint);box-shadow:inset 3px 0 0 var(--gold)}
+.av{flex:0 0 36px;height:36px;border-radius:50%;background:var(--line2);display:grid;place-items:center;font:600 13px var(--mono);overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover}
+.conv .meta{min-width:0;flex:1}
+.conv .top{display:flex;justify-content:space-between;gap:6px}
+.conv .name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.conv .when{color:var(--faint);font:11px var(--mono);white-space:nowrap}
+.conv .last{color:var(--dim);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.chip{font:500 10.5px var(--mono);padding:2px 7px;border-radius:999px;border:1px solid var(--line2);color:var(--dim);white-space:nowrap}
+.chip.st{border-color:var(--gold-hair);color:var(--gold2)}
+.chip.warn{border-color:rgba(245,165,36,.4);color:var(--warn)} .chip.err{border-color:rgba(255,92,122,.4);color:var(--err)}
+.chip.vio{border-color:rgba(167,139,250,.45);color:var(--violet)} .chip.ok{border-color:rgba(62,207,142,.4);color:var(--ok)}
+/* tabs */
+.tabs{display:flex;gap:2px;padding:6px 6px 0;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:8px 12px;cursor:pointer;color:var(--dim);font:600 12px var(--mono);letter-spacing:.5px;white-space:nowrap}
+.tabs button.on{color:var(--gold2);border-bottom-color:var(--gold)}
+.tabs .count{display:inline-block;min-width:18px;padding:0 5px;margin-left:4px;border-radius:9px;background:var(--violet);color:#120d24;font-size:10.5px;text-align:center}
+/* chat */
+.thread{display:flex;flex-direction:column;gap:6px;padding:12px;background:
+  radial-gradient(circle at 20% 0,rgba(212,175,55,.04),transparent 40%),var(--bg)}
+.msg{max-width:78%;padding:7px 10px;border-radius:10px;white-space:pre-wrap;word-wrap:break-word;font-size:13.5px;position:relative}
+.msg small{display:block;margin-top:3px;font:10.5px var(--mono);color:var(--faint)}
+.msg.in{align-self:flex-start;background:var(--panel2);border:1px solid var(--line)}
+.msg.davis{align-self:flex-end;background:rgba(212,175,55,.14);border:1px solid var(--gold-hair)}
+.msg.cat{align-self:flex-end;background:rgba(212,175,55,.07);border:1px dashed var(--gold-hair)}
+.msg.staff{align-self:flex-end;background:#16202e;border:1px solid #22324a}
+.msg.doc{align-self:flex-end;background:#1a1530;border:1px solid rgba(167,139,250,.35)}
+.msg img{max-width:160px;border-radius:6px;display:block}
+.imgs{display:flex;gap:4px;align-self:flex-end;flex-wrap:wrap;justify-content:flex-end;max-width:78%}
+.imgs img{width:64px;height:64px;object-fit:cover;border-radius:6px;border:1px solid var(--line2)}
+.wc{position:absolute;top:-8px;right:8px;font:600 9.5px var(--mono);background:var(--bg);border:1px solid var(--gold-hair);color:var(--gold2);border-radius:6px;padding:0 4px}
+.wc.over{border-color:var(--err);color:var(--err)}
+.frame{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px}
+.slot{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.slot label{display:block;font:500 10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+.slot div{font:500 13px var(--mono);word-break:break-word}
+.slot.empty div{color:var(--faint)}
+.row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.sec{padding:10px 12px;border-top:1px solid var(--line)}
+.sec h3{margin:0 0 8px;font:600 11px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.8px}
+/* drafts */
+.draft{border:1px solid rgba(167,139,250,.35);background:rgba(167,139,250,.06);border-radius:10px;padding:10px;margin-bottom:10px}
+.draft .guest{color:var(--dim);font-size:12.5px;margin-bottom:6px}
+.draft textarea{width:100%;min-height:64px;resize:vertical}
+.draft .acts{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+/* feed */
+.ev{padding:7px 12px;border-bottom:1px solid var(--line);font:12px/1.4 var(--mono)}
+.ev .k{display:inline-block;min-width:66px;font-weight:600}
+.ev .t{color:var(--faint);float:right}
+.ev .d{color:var(--dim);margin-top:2px;white-space:pre-wrap;word-break:break-word}
+.k.inbound{color:var(--blue)} .k.plan{color:var(--gold2)} .k.skip{color:var(--faint)} .k.error{color:var(--err)}
+.k.handoff,.k.draft_sent{color:var(--warn)} .k.settings,.k.catalogue{color:var(--violet)}
+.ev.new{animation:flash 1.2s ease-out}
+@keyframes flash{from{background:var(--gold-faint)}to{background:transparent}}
+/* try */
+.try textarea{width:100%;min-height:58px;resize:vertical}
+.out{margin-top:8px;font:12px/1.5 var(--mono);color:var(--dim);white-space:pre-wrap;word-break:break-word}
+.out .reply{color:var(--text);background:rgba(212,175,55,.12);border:1px solid var(--gold-hair);border-radius:8px;padding:8px;margin:6px 0;font:13px/1.45 var(--sans)}
+/* catalogue */
+.cat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;padding:12px}
+.house{background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.house.hidden{opacity:.45}
+.house.featured{border-color:var(--gold)}
+.house .img{height:120px;background:var(--line) center/cover no-repeat;position:relative}
+.house .img .ref{position:absolute;left:8px;top:8px;background:rgba(5,6,8,.85);border:1px solid var(--gold-hair);color:var(--gold2);font:600 12px var(--mono);border-radius:6px;padding:2px 7px}
+.house .body{padding:8px 10px;display:flex;flex-direction:column;gap:4px;flex:1}
+.house .place{font-weight:600}
+.house .small{color:var(--dim);font-size:12px}
+.house input{width:100%;font-size:12px;padding:4px 8px}
+.toggles{display:flex;gap:6px}
+.toggles label{display:flex;align-items:center;gap:4px;font:12px var(--mono);color:var(--dim);cursor:pointer}
+.empty-note{padding:28px;text-align:center;color:var(--faint);font:13px var(--mono)}
+.settings-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;padding:12px}
+.settings-grid label{display:block;font:500 11px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px}
+.settings-grid textarea,.settings-grid input,.settings-grid select{width:100%}
+.limits{font:12px/1.8 var(--mono);color:var(--dim)}
+.limits b{color:var(--text)}
+.toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--gold-hair);
+  border-radius:10px;padding:9px 16px;font:13px var(--sans);z-index:50;display:none;max-width:calc(100% - 32px)}
+.toast.err{border-color:var(--err);color:var(--err)}
+@media (max-width:1250px){.grid{grid-template-columns:280px minmax(0,1fr)}.grid>.feedcol{grid-column:1 / -1}}
+@media (max-width:780px){
+  header{padding:10px 16px;position:static} main{padding:12px 16px 32px}
+  .grid{grid-template-columns:1fr} .scroll{max-height:none;min-height:0}
+  .convlist{max-height:340px!important} .msg,.imgs{max-width:92%}
+  .controls{width:100%} .controls select,.controls input{flex:1 1 150px;min-width:0;width:auto!important}
+}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="logo">D</div>
+    <div><h1>Davis</h1><small>KarlCon Elite Retreats · reception &amp; booking assistant</small></div>
+  </div>
+  <div class="controls">
+    <div class="seg" id="modeSeg" role="group" aria-label="Mode">
+      <button data-mode="off">OFF</button><button data-mode="shadow">SHADOW</button><button data-mode="live">LIVE</button>
+    </div>
+    <select id="provider" title="Who writes the replies"></select>
+    <input type="text" id="model" title="Model" style="width:170px" placeholder="model">
+    <button class="btn" id="pauseBtn">Pause all</button>
+    <span class="pill" title="Live feed"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
+    <button class="btn sm" id="tokenBtn" title="Admin token for changes">🔑</button>
+  </div>
+</header>
+
+<main>
+  <section class="kpis" id="kpis"></section>
+  <section class="funnel" id="funnel"></section>
+
+  <div class="grid">
+    <!-- conversations -->
+    <section class="panel">
+      <div class="ph"><h2>Conversations</h2><span class="chip" id="convCount">0</span></div>
+      <div class="pb" style="padding-bottom:6px"><input type="text" id="convSearch" placeholder="Search name, stage, text…" style="width:100%"></div>
+      <div class="scroll convlist" id="convList"></div>
+    </section>
+
+    <!-- center -->
+    <section class="panel">
+      <nav class="tabs" id="tabs">
+        <button data-tab="chat" class="on">CONVERSATION</button>
+        <button data-tab="drafts">DRAFTS <span class="count" id="draftCount">0</span></button>
+        <button data-tab="catalogue">CATALOGUE</button>
+        <button data-tab="settings">SETTINGS</button>
+      </nav>
+      <div id="tab-chat"></div>
+      <div id="tab-drafts" hidden></div>
+      <div id="tab-catalogue" hidden>
+        <div class="pb row" style="border-bottom:1px solid var(--line)">
+          <select id="catCity"></select>
+          <input type="text" id="catSearch" placeholder="KCER, area…" style="flex:1;min-width:120px">
+          <label class="chip"><input type="checkbox" id="catHidden"> show hidden</label>
+          <span class="chip" id="catCount"></span>
+        </div>
+        <div class="cat-grid" id="catGrid"></div>
+      </div>
+      <div id="tab-settings" hidden></div>
+    </section>
+
+    <!-- right -->
+    <section class="feedcol" style="display:flex;flex-direction:column;gap:12px">
+      <div class="panel try">
+        <div class="ph"><h2>Try Davis</h2><span class="chip">nothing is sent</span></div>
+        <div class="pb">
+          <textarea id="tryText" placeholder="e.g. Hi, a house in Borrowdale 11–14 Dec for 4 people, budget $150 a night"></textarea>
+          <div class="row" style="margin-top:6px;justify-content:space-between">
+            <span class="chip" id="tryChat">as a new guest</span>
+            <button class="btn gold" id="tryBtn">Preview reply</button>
+          </div>
+          <div class="out" id="tryOut"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="ph"><h2>Live feed</h2><button class="btn sm" id="feedClear">clear</button></div>
+        <div class="scroll" id="feed" style="max-height:520px"></div>
+      </div>
+    </section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const words = s => (String(s || "").trim().match(/\S+/g) || []).length;
+const STAGES = ["new","qualify","searching","present","details","invoice","payment"];
+const STAGE_LABEL = {new:"New",qualify:"Qualify",searching:"Live prices",present:"Options sent",details:"Details",invoice:"Invoiced",payment:"Paid?",opted_out:"Opted out"};
+let state = {status:null, sessions:[], selected:null, detail:null, drafts:[], cat:null, tab:"chat"};
+
+function store(k, v){ try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+function toast(msg, err){ const t = $("#toast"); t.textContent = msg; t.className = "toast" + (err ? " err" : ""); t.style.display = "block";
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = "none", 3200); }
+function ago(ts){ if (!ts) return ""; const d = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (d < 60) return Math.max(0, Math.round(d)) + "s"; if (d < 3600) return Math.round(d/60) + "m";
+  if (d < 86400) return Math.round(d/3600) + "h"; return Math.round(d/86400) + "d"; }
+function hhmm(ts){ try { return new Date(ts).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"}); } catch (e) { return ""; } }
+
+async function api(path, opts = {}){
+  const headers = {"Content-Type": "application/json"};
+  const tok = store("davis_token"); if (tok) headers["X-Davis-Token"] = tok;
+  const r = await fetch(path, {...opts, headers: {...headers, ...(opts.headers || {})}});
+  if (r.status === 401){ toast("Admin token needed: tap 🔑", true); throw new Error("401"); }
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok){ toast(body.detail || ("Error " + r.status), true); throw new Error(body.detail || r.status); }
+  return body;
+}
+
+/* ── status / KPIs ─────────────────────────────────────────────── */
+function renderStatus(){
+  const s = state.status; if (!s) return;
+  const st = s.settings, m = s.metrics, c = m.counters || {};
+  document.querySelectorAll("#modeSeg button").forEach(b => b.classList.toggle("on", b.dataset.mode === st.mode));
+  const prov = $("#provider");
+  if (!prov.options.length) s.providers.forEach(p => prov.add(new Option(p === "anthropic" ? "Claude API" :
+    p === "worker" ? "Conscious Worker" : p === "ollama" ? "Ollama" : "Rules only", p)));
+  if (document.activeElement !== prov) prov.value = st.provider;
+  if (document.activeElement !== $("#model")) $("#model").value = st.model;
+  $("#pauseBtn").textContent = st.paused ? "Resume all" : "Pause all";
+  $("#pauseBtn").classList.toggle("danger", !!st.paused);
+  $("#tokenBtn").style.display = s.admin_token_required ? "" : "none";
+  const br = (s.llm.breakers || {})[st.provider];
+  const lat = (o, unit) => o && o.p50 != null ? `${o.p50}${unit} <span>p95 ${o.p95}${unit}</span>` : `— <span>no data</span>`;
+  const kp = [
+    ["Mode", `<span style="color:${st.mode==="live"?"var(--ok)":st.mode==="shadow"?"var(--violet)":"var(--dim)"}">${esc(st.mode.toUpperCase())}</span>${st.paused?' <span>paused</span>':""}`],
+    ["Guest turns", c.turns || 0], ["Replies sent", c.replies || 0],
+    ["Drafts waiting", s.drafts_pending], ["Houses sent", c.options_sent || 0],
+    ["Invoices", c.invoices || 0], ["Handoffs", c.handoffs || 0],
+    ["Speed to lead", lat(m.speed_to_lead_s, "s")], ["Pipeline", lat(m.pipeline_ms, "ms")],
+    ["Model", lat(m.llm_ms, "ms")],
+    ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : (s.llm.stats.errors||0) + " err · " + (s.llm.stats.cache_hits||0) + " cached"}</span>`],
+  ];
+  $("#kpis").innerHTML = kp.map(([l, v]) => `<div class="kpi"><label>${l}</label><b>${v}</b></div>`).join("");
+  const f = s.funnel, top = Math.max(1, ...STAGES.map(k => f[k] || 0));
+  $("#funnel").innerHTML = STAGES.map(k => `<div class="stage"><label>${STAGE_LABEL[k]}</label><b>${f[k]||0}</b>
+    <div class="bar"><i style="width:${Math.round(100*(f[k]||0)/top)}%"></i></div></div>`).join("")
+    + `<div class="stage hand"><label>With staff</label><b>${f.handoff||0}</b><div class="bar"><i style="width:0"></i></div></div>`;
+  $("#draftCount").textContent = s.drafts_pending; $("#draftCount").style.display = s.drafts_pending ? "" : "none";
+  if (state.tab === "settings") renderSettings();
+}
+
+/* ── conversations ─────────────────────────────────────────────── */
+function initials(n){ return (String(n || "?").replace(/[^A-Za-z ]/g, "").trim().split(/\s+/).map(w => w[0]).join("").slice(0, 2) || "?").toUpperCase(); }
+function renderSessions(){
+  const q = $("#convSearch").value.trim().toLowerCase();
+  const list = state.sessions.filter(s => !q || [s.chat_name, s.stage, s.last_text, s.chat_id].join(" ").toLowerCase().includes(q));
+  $("#convCount").textContent = list.length;
+  $("#convList").innerHTML = list.length ? list.map(s => {
+    const flags = [];
+    if (s.handoff) flags.push(`<span class="chip warn">⚑ staff</span>`);
+    if (s.paused) flags.push(`<span class="chip err">paused</span>`);
+    if (s.opted_out) flags.push(`<span class="chip err">opted out</span>`);
+    if (s.drafts) flags.push(`<span class="chip vio">${s.drafts} draft</span>`);
+    if (s.last_direction === "in") flags.push(`<span class="chip ok">guest waiting</span>`);
+    const pic = s.profile_pic_url ? `<img src="${esc(s.profile_pic_url)}" alt="">` : esc(initials(s.chat_name));
+    return `<div class="conv ${s.chat_id === state.selected ? "sel" : ""}" data-id="${esc(s.chat_id)}">
+      <div class="av">${pic}</div><div class="meta">
+      <div class="top"><span class="name">${esc(s.chat_name || s.chat_id)}</span><span class="when">${ago(s.last_at)}</span></div>
+      <div class="last">${s.last_direction === "out" ? "↳ " : ""}${esc(s.last_text)}</div>
+      <div class="chips"><span class="chip st">${esc(STAGE_LABEL[s.stage] || s.stage)}</span>${flags.join("")}</div></div></div>`;
+  }).join("") : `<div class="empty-note">No conversations yet.<br>Davis starts a session when a guest writes.</div>`;
+}
+
+/* ── conversation detail ───────────────────────────────────────── */
+function bubble(m){
+  const sender = m.sender || "", t = esc(m.text || "");
+  const time = `<small>${esc(sender)} · ${hhmm(m.created_at)}${m.wa_status ? " · " + esc(m.wa_status) : ""}</small>`;
+  if (m.kind === "image") return {img: m.media_url, out: m.direction === "out"};
+  if (m.direction === "in") return `<div class="msg in">${t}${time}</div>`;
+  if (m.kind === "document") return `<div class="msg doc">📄 ${t}${time}</div>`;
+  if (sender === "Davis"){ const w = words(m.text);
+    return `<div class="msg davis"><span class="wc ${w > 40 ? "over" : ""}">${w}w</span>${t}${time}</div>`; }
+  if (sender.startsWith("Davis")) return `<div class="msg cat">${t}${time}</div>`;
+  return `<div class="msg staff">${t}${time}</div>`;
+}
+function renderThread(msgs){
+  const out = []; let imgs = null;
+  for (const m of msgs){
+    const b = bubble(m);
+    if (typeof b === "object"){ if (!imgs){ imgs = {out: b.out, list: []}; } imgs.list.push(b.img); continue; }
+    if (imgs){ out.push(`<div class="imgs" style="${imgs.out ? "" : "align-self:flex-start"}">${imgs.list.map(u => `<img src="${esc(u)}" alt="" loading="lazy">`).join("")}</div>`); imgs = null; }
+    out.push(b);
+  }
+  if (imgs) out.push(`<div class="imgs">${imgs.list.map(u => `<img src="${esc(u)}" alt="" loading="lazy">`).join("")}</div>`);
+  return out.join("");
+}
+function draftCard(d){
+  const plan = d.plan || {}, reply = (plan.actions || []).find(a => a.type === "reply");
+  const acts = (plan.actions || []).filter(a => a.type !== "reply").map(a => {
+    if (a.type === "send_options") return `<span class="chip st">send ${a.options.length} houses: ${a.options.map(o => esc(o.ref)).join(", ")}</span>`;
+    if (a.type === "create_invoice") return `<span class="chip st">invoice ${esc(a.invoice.property_name)} · ${esc(a.invoice.guest_name)}</span>`;
+    if (a.type === "handoff") return `<span class="chip warn">hand to staff: ${esc(a.reason)}</span>`;
+    return `<span class="chip">${esc(a.type.replace(/_/g, " "))}</span>`;
+  }).join("");
+  return `<div class="draft" data-draft="${d.id}">
+    <div class="guest">${d.chat_name ? `<b>${esc(d.chat_name)}</b> · ` : ""}guest: “${esc(plan.guest_text || "")}” <span class="chip">${ago(d.created_at)} ago</span>
+      ${plan.llm && plan.llm.rejected ? `<span class="chip err">model reply rejected: ${esc(plan.llm.rejected)}</span>` : ""}</div>
+    <textarea data-edit>${esc(reply ? reply.text : "")}</textarea>
+    <div class="row" style="justify-content:space-between"><div class="acts">${acts}<span class="chip">${esc(STAGE_LABEL[plan.stage] || plan.stage || "")}</span></div>
+    <span class="chip" data-wc>${words(reply ? reply.text : "")}/40 words</span></div>
+    <div class="row"><button class="btn gold" data-approve>Approve &amp; send</button><button class="btn danger" data-discard>Discard</button></div></div>`;
+}
+const SLOTS = [["city","City"],["check_in","Check-in"],["check_out","Check-out"],["nights","Nights"],["guests","Guests"],
+  ["budget_usd","Budget USD"],["full_name","Full name"],["id_number","ID / passport"]];
+function renderDetail(){
+  const box = $("#tab-chat"), d = state.detail;
+  if (!d){ box.innerHTML = `<div class="empty-note">Pick a conversation to see what Davis knows and plans.</div>`; return; }
+  const s = d.session, slots = s.slots || {};
+  const pending = (d.drafts || []).filter(x => x.status === "pending");
+  box.innerHTML = `
+    <div class="ph"><div class="row"><div class="av">${esc(initials(d.chat.name))}</div>
+      <div><b>${esc(d.chat.name)}</b><div class="chips"><span class="chip st">${esc(STAGE_LABEL[s.stage] || s.stage)}</span>
+      ${s.handoff ? `<span class="chip warn">⚑ ${esc(s.handoff_reason || "with staff")}</span>` : ""}
+      ${s.paused ? `<span class="chip err">paused</span>` : ""}${s.opted_out ? `<span class="chip err">opted out</span>` : ""}
+      ${s.refresh_job_id ? `<span class="chip vio">live prices job #${s.refresh_job_id}</span>` : ""}</div></div></div>
+      <div class="row">
+        <button class="btn sm" data-act="run">Run now</button>
+        <button class="btn sm" data-act="pause">${s.paused ? "Resume" : "Pause"}</button>
+        <button class="btn sm" data-act="handoff">${s.handoff ? "Give back to Davis" : "Take over"}</button>
+        <button class="btn sm danger" data-act="reset">Reset</button>
+      </div></div>
+    ${pending.length ? `<div class="sec"><h3>Waiting for approval</h3>${pending.map(draftCard).join("")}</div>` : ""}
+    <div class="thread scroll" id="thread" style="max-height:440px">${renderThread(d.messages)}</div>
+    <div class="sec"><h3>Booking frame (session memory)</h3><div class="frame">${SLOTS.map(([k, l]) =>
+      `<div class="slot ${slots[k] == null || slots[k] === "" ? "empty" : ""}"><label>${l}</label><div>${esc(slots[k] ?? "—")}</div></div>`).join("")}
+      <div class="slot ${s.choice ? "" : "empty"}"><label>Chosen house</label><div>${s.choice ? esc(s.choice.ref + " · " + (s.choice.place || "")) : "—"}</div></div>
+      <div class="slot ${s.invoice_id ? "" : "empty"}"><label>Invoice</label><div>${s.invoice_id ? "created" : "—"}</div></div></div></div>
+    ${d.offers.length ? `<div class="sec"><h3>Houses sent to this guest</h3><div class="row">${d.offers.map(o =>
+      `<span class="chip st">#${o.option_no || "?"} ${esc(o.ref)} · ${esc(o.place || "")}${o.usd_per_night ? " · USD " + o.usd_per_night : ""}</span>`).join("")}</div></div>` : ""}
+    <div class="sec"><h3>Davis's decisions</h3>${(d.events || []).slice(0, 14).map(evRow).join("") || `<div class="empty-note">No events yet.</div>`}</div>`;
+  const th = $("#thread"); if (th) th.scrollTop = th.scrollHeight;
+}
+
+/* ── drafts tab ────────────────────────────────────────────────── */
+function renderDrafts(){
+  $("#tab-drafts").innerHTML = state.drafts.length ? `<div class="pb">${state.drafts.map(draftCard).join("")}</div>`
+    : `<div class="empty-note">No drafts waiting.${state.status && state.status.settings.mode === "shadow" ? "" : "<br>Drafts appear in SHADOW mode: Davis writes, you approve."}</div>`;
+}
+
+/* ── catalogue tab ─────────────────────────────────────────────── */
+async function loadCatalogue(){
+  const city = $("#catCity").value || "all";
+  state.cat = await api(`/api/davis/catalogue?city=${encodeURIComponent(city)}&limit=300`);
+  const sel = $("#catCity");
+  if (sel.options.length <= 1){ sel.innerHTML = `<option value="all">All cities</option>` + state.cat.cities.map(c => `<option value="${esc(c)}">${esc(c[0].toUpperCase() + c.slice(1))}</option>`).join(""); sel.value = city; }
+  renderCatalogue();
+}
+function renderCatalogue(){
+  if (!state.cat) return;
+  const q = $("#catSearch").value.trim().toLowerCase(), showHidden = $("#catHidden").checked;
+  const list = state.cat.houses.filter(h => (showHidden || !h.hidden) && (!q || [h.ref, h.place, h.capacity].join(" ").toLowerCase().includes(q)));
+  $("#catCount").textContent = `${list.length} houses`;
+  $("#catGrid").innerHTML = list.length ? list.map(h => `
+    <div class="house ${h.hidden ? "hidden" : ""} ${h.featured ? "featured" : ""}" data-url="${esc(h.url)}">
+      <div class="img" style="${h.image ? `background-image:url('${esc(h.image).replace(/'/g, "%27")}')` : ""}"><span class="ref">${esc(h.ref)}</span></div>
+      <div class="body"><div class="place">${esc(h.place)}</div>
+        <div class="small">${esc(h.capacity || "size unknown")}${h.rating ? " · ⭐ " + esc(h.rating) : ""}</div>
+        <div class="small mono">${h.usd_per_night ? "USD " + h.usd_per_night + "/night (last seen)" : "no price yet"}</div>
+        <div class="small mono">${h.offers} dated offer${h.offers === 1 ? "" : "s"}${h.next_check_in ? " · from " + esc(h.next_check_in) : ""} · sent to ${h.sent_to_chats}</div>
+        <input type="text" data-note placeholder="Team note Davis may quote (wifi, pool…)" value="${esc(h.note || "")}">
+        <div class="toggles"><label><input type="checkbox" data-flag="featured" ${h.featured ? "checked" : ""}> featured</label>
+        <label><input type="checkbox" data-flag="hidden" ${h.hidden ? "checked" : ""}> hidden</label></div></div></div>`).join("")
+    : `<div class="empty-note">No houses here yet. The scraper fills this as it runs.</div>`;
+}
+
+/* ── settings tab ──────────────────────────────────────────────── */
+function renderSettings(){
+  const s = state.status; if (!s) return;
+  const st = s.settings, L = s.limits, box = $("#tab-settings");
+  if (box.contains(document.activeElement)) return;
+  box.innerHTML = `<div class="settings-grid">
+    <div><label>Only these chats (safe rollout)</label><textarea id="setOnly" rows="3" placeholder="chat ids, one per line (empty = all chats)">${esc((st.only_chats || []).join("\n"))}</textarea></div>
+    <div><label>Never answer these chats</label><textarea id="setIgnore" rows="3" placeholder="team, family, suppliers">${esc((st.ignore_chats || []).join("\n"))}</textarea></div>
+    <div><label>Model writes</label><select id="setLlmFor"><option value="all">every reply (best quality)</option><option value="open">only open questions (fastest)</option></select>
+      <label style="margin-top:10px">Effort</label><select id="setEffort"><option>low</option><option>medium</option><option>high</option></select></div>
+    <div class="limits"><label>Fixed by the Space's environment</label>
+      Max words per message: <b>${L.max_words}</b><br>Replies per guest turn: <b>${L.max_replies_per_turn}</b><br>
+      Wait for typing to stop: <b>${L.debounce_sec}s</b><br>Ignore messages older than: <b>${L.fresh_minutes} min</b><br>
+      Step back after staff reply: <b>${L.human_quiet_minutes} min</b><br>Conversations at once: <b>${L.concurrency}</b><br>
+      Houses per send: <b>${L.options_per_send}</b> × <b>${L.images_per_option}</b> photos<br>
+      Claude API key: <b>${s.anthropic_key ? "set" : "missing"}</b></div>
+  </div><div class="pb"><button class="btn gold" id="saveSettings">Save settings</button></div>`;
+  $("#setLlmFor").value = st.llm_for; $("#setEffort").value = st.effort;
+}
+
+/* ── feed ──────────────────────────────────────────────────────── */
+function evText(e){
+  const d = e.detail || {};
+  if (e.kind === "inbound") return `“${d.text || ""}”` + (d.features ? "  " + Object.keys(d.features).filter(k => k !== "ack_only" && k !== "has_image").slice(0, 8).join(" ") : "");
+  if (e.kind === "plan") return `${d.status} · ${d.stage} · ${(d.actions || []).map(a => a.type === "reply" ? `reply(${a.by}): ${a.text}` : a.type).join(" | ")}${d.llm && d.llm.latency_ms ? `  [${d.llm.provider} ${d.llm.latency_ms}ms${d.llm.rejected ? " rejected:" + d.llm.rejected : ""}${d.llm.error ? " err:" + d.llm.error : ""}]` : ""}`;
+  if (e.kind === "skip") return `${d.reason}${d.text ? " · “" + d.text + "”" : ""}`;
+  return typeof d === "string" ? d : JSON.stringify(d);
+}
+function evRow(e, fresh){
+  const who = e.chat_id ? (state.sessions.find(s => s.chat_id === e.chat_id) || {}).chat_name || e.chat_id : "system";
+  return `<div class="ev ${fresh ? "new" : ""}"><span class="k ${esc(e.kind)}">${esc(e.kind)}</span> ${esc(who)}
+    <span class="t">${hhmm(e.ts)}${e.latency_ms != null ? " · " + e.latency_ms + "ms" : ""}</span><div class="d">${esc(evText(e)).slice(0, 600)}</div></div>`;
+}
+function pushFeed(e, fresh){
+  const f = $("#feed"); f.insertAdjacentHTML("afterbegin", evRow(e, fresh));
+  while (f.children.length > 200) f.lastChild.remove();
+}
+
+/* ── loading ───────────────────────────────────────────────────── */
+async function loadStatus(){ state.status = await api("/api/davis/status"); renderStatus(); }
+async function loadSessions(){ state.sessions = await api("/api/davis/sessions"); renderSessions(); }
+async function loadDrafts(){ state.drafts = await api("/api/davis/drafts"); if (state.tab === "drafts") renderDrafts(); }
+async function loadDetail(){ if (!state.selected) return renderDetail();
+  if ($("#tab-chat").contains(document.activeElement) && document.activeElement.tagName === "TEXTAREA") return;
+  state.detail = await api(`/api/davis/sessions/${encodeURIComponent(state.selected)}`); renderDetail(); }
+async function refreshAll(){ try { await Promise.all([loadStatus(), loadSessions(), loadDrafts(), loadDetail()]); } catch (e) {} }
+let pend = null;
+function soon(){ clearTimeout(pend); pend = setTimeout(refreshAll, 400); }
+
+/* ── live socket ───────────────────────────────────────────────── */
+function connect(){
+  const ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/davis/ws");
+  ws.onopen = () => { $("#wsDot").className = "dot ok"; $("#wsText").textContent = "live"; ws._ping = setInterval(() => { try { ws.send("ping"); } catch (e) {} }, 25000); };
+  ws.onmessage = ev => { const m = JSON.parse(ev.data);
+    if (m.type === "hello"){ state.status = m.data; renderStatus(); return; }
+    if (m.type === "event"){ pushFeed(m.data, true); soon(); } };
+  ws.onclose = () => { clearInterval(ws._ping); $("#wsDot").className = "dot err"; $("#wsText").textContent = "reconnecting"; setTimeout(connect, 2500); };
+}
+
+/* ── events ────────────────────────────────────────────────────── */
+$("#modeSeg").addEventListener("click", async e => { const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.mode === "live" && !confirm("Go LIVE? Davis will reply to guests on WhatsApp by itself.")) return;
+  await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({mode: b.dataset.mode})}); toast("Mode: " + b.dataset.mode.toUpperCase()); loadStatus(); });
+$("#provider").addEventListener("change", async e => { try { await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({provider: e.target.value})}); toast("Provider saved"); } catch (x) {} loadStatus(); });
+$("#model").addEventListener("change", async e => { await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({model: e.target.value.trim()})}); toast("Model saved"); loadStatus(); });
+$("#pauseBtn").addEventListener("click", async () => { const p = !state.status.settings.paused;
+  await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({paused: p})}); toast(p ? "Davis paused for every chat" : "Davis resumed"); loadStatus(); });
+$("#tokenBtn").addEventListener("click", () => { const t = prompt("Davis admin token (DAVIS_ADMIN_TOKEN):", store("davis_token") || ""); if (t !== null) { store("davis_token", t.trim()); toast("Token saved on this device"); } });
+$("#convSearch").addEventListener("input", renderSessions);
+$("#convList").addEventListener("click", e => { const c = e.target.closest(".conv"); if (!c) return;
+  state.selected = c.dataset.id; renderSessions(); selectTab("chat"); loadDetail();
+  const s = state.sessions.find(x => x.chat_id === state.selected); $("#tryChat").textContent = "in " + (s ? s.chat_name : "this chat"); });
+function selectTab(t){ state.tab = t; document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  ["chat","drafts","catalogue","settings"].forEach(k => $("#tab-" + k).hidden = k !== t);
+  if (t === "drafts") renderDrafts(); if (t === "catalogue" && !state.cat) loadCatalogue(); if (t === "settings") renderSettings(); }
+$("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) selectTab(b.dataset.tab); });
+
+document.addEventListener("input", e => { if (e.target.matches("[data-edit]")){ const c = e.target.closest(".draft").querySelector("[data-wc]");
+  const w = words(e.target.value); c.textContent = `${w}/40 words`; c.className = "chip" + (w > 40 ? " err" : ""); } });
+document.addEventListener("click", async e => {
+  const dEl = e.target.closest(".draft");
+  if (dEl && e.target.matches("[data-approve]")){ const id = dEl.dataset.draft, text = dEl.querySelector("[data-edit]").value;
+    try { await api(`/api/davis/drafts/${id}/approve`, {method: "POST", body: JSON.stringify({text})}); toast("Sent to WhatsApp outbox"); }
+    catch (x) { if (String(x.message).includes("wrote again") && confirm("The guest wrote again since this draft. Send it anyway?"))
+      { await api(`/api/davis/drafts/${id}/approve`, {method: "POST", body: JSON.stringify({text, force: true})}); toast("Sent"); } }
+    refreshAll(); return; }
+  if (dEl && e.target.matches("[data-discard]")){ await api(`/api/davis/drafts/${dEl.dataset.draft}/discard`, {method: "POST"}); toast("Discarded"); refreshAll(); return; }
+  const act = e.target.closest("[data-act]");
+  if (act && state.detail){ const id = encodeURIComponent(state.selected), s = state.detail.session;
+    if (act.dataset.act === "run"){ const r = await api(`/api/davis/sessions/${id}/run?again=true`, {method: "POST"}); toast(r.status === "skipped" ? "Davis would stay quiet: " + r.reason : "Davis " + r.status); }
+    if (act.dataset.act === "pause") await api(`/api/davis/sessions/${id}/pause`, {method: "POST", body: JSON.stringify({paused: !s.paused})});
+    if (act.dataset.act === "handoff") await api(`/api/davis/sessions/${id}/handoff`, {method: "POST", body: JSON.stringify({active: !s.handoff})});
+    if (act.dataset.act === "reset" && confirm("Forget what Davis knows about this booking?")) await api(`/api/davis/sessions/${id}/reset`, {method: "POST"});
+    refreshAll(); return; }
+  if (e.target.id === "saveSettings"){ const lines = id => $(id).value.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
+    await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({only_chats: lines("#setOnly"), ignore_chats: lines("#setIgnore"),
+      llm_for: $("#setLlmFor").value, effort: $("#setEffort").value})}); toast("Settings saved"); document.activeElement.blur(); loadStatus(); }
+});
+$("#catGrid").addEventListener("change", async e => { const h = e.target.closest(".house"); if (!h) return;
+  const body = {listing_url: h.dataset.url};
+  if (e.target.dataset.flag) body[e.target.dataset.flag] = e.target.checked;
+  else if (e.target.matches("[data-note]")) body.note = e.target.value;
+  else return;
+  try { await api("/api/davis/catalogue", {method: "PATCH", body: JSON.stringify(body)}); toast("Saved");
+    const x = state.cat.houses.find(y => y.url === h.dataset.url); Object.assign(x, body); renderCatalogue(); } catch (x) {} });
+$("#catCity").addEventListener("change", loadCatalogue);
+$("#catSearch").addEventListener("input", renderCatalogue);
+$("#catHidden").addEventListener("change", renderCatalogue);
+$("#feedClear").addEventListener("click", () => $("#feed").innerHTML = "");
+$("#tryBtn").addEventListener("click", async () => {
+  const text = $("#tryText").value.trim(); if (!text) return;
+  $("#tryOut").textContent = "thinking…";
+  try { const r = await api("/api/davis/preview", {method: "POST", body: JSON.stringify({text, chat_id: state.selected})});
+    const reply = (r.actions.find(a => a.type === "reply") || {}).text || "(no reply)";
+    $("#tryOut").innerHTML = `<div class="reply">${esc(reply)}</div>` +
+      esc(`${words(reply)}/${r.words_limit} words · stage ${r.stage} · ${r.intent || ""} · ${r.ms}ms\n`) +
+      esc("actions: " + r.actions.map(a => a.type === "send_options" ? `send ${a.refs.join(", ")}` : a.type).join(", ") + "\n") +
+      esc("features: " + Object.entries(r.features).filter(([k]) => k !== "words").map(([k, v]) => v === true ? k : `${k}=${v}`).join("  ") + "\n") +
+      (r.llm ? esc(`model: ${r.llm.provider} ${r.llm.latency_ms ?? ""}ms ${r.llm.rejected ? "· rejected " + r.llm.rejected : ""}${r.llm.error ? "· " + r.llm.error : ""}\n`) : "") +
+      (r.template && r.template !== reply ? esc("template: " + r.template) : "");
+  } catch (x) { $("#tryOut").textContent = ""; }
+});
+$("#tryText").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#tryBtn").click(); });
+
+(async () => { await refreshAll(); renderDetail();
+  try { (await api("/api/davis/events?limit=60")).reverse().forEach(e => pushFeed(e, false)); } catch (e) {}
+  connect(); setInterval(refreshAll, 8000); })();
+</script>
+</body>
+</html>
