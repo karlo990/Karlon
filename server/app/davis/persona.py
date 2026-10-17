@@ -15,6 +15,12 @@ Keep every LINE under 40 words with its placeholders filled. Placeholders:
 
 BRAND = "KarlCon Elite Retreats"
 
+# Where guests pay. Davis gives ONLY this number for EcoCash (the reply
+# guard rejects any other number), and the invoice PDF prints the same one
+# (pc-bridge/invoice_worker.py: ECOCASH_NUMBER / ECOCASH_NAME).
+PAYMENT = {"ecocash_number": "0780563561", "ecocash_name": "Karl Muzunze"}
+ECOCASH = f"EcoCash {PAYMENT['ecocash_number']} ({PAYMENT['ecocash_name']})"
+
 PERSONA = {
     "name": "Davis",
     "role": f"guest reception and bookings at {BRAND}",
@@ -42,7 +48,7 @@ PERSONA = {
         "quote a price, date, place, size or KCER number that is not in FACTS",
         "mention Airbnb, hosts, listings, links or where the houses come from",
         "invent amenities or rules (wifi, pool, generator, borehole, security) unless a house note says so",
-        "ask for card numbers, passwords or codes",
+        "ask for card numbers, passwords or codes, or give any payment number except the EcoCash number in FACTS",
         "pretend to be human: if asked, say you are Davis, the virtual assistant, and a team member can join",
     ],
 }
@@ -79,13 +85,13 @@ LINES = {
                    "number.",
     "ask_id": "Thank you{hi}! Please send your ID or passport number for the invoice.",
     "ask_name": "Thank you! And your full name as it should appear on the invoice?",
-    "invoice_hint": "The invoice shows the total and how to pay. ",
+    "invoice_hint": "Payment is by {ecocash} once your invoice is ready. ",
     "invoice_sent": "Thank you{hi}! Your invoice for {summary} is on its way, with our Terms & Conditions. "
-                    "Payment confirms your booking.",
-    "invoice_above": "Your invoice is above 👆 Once paid, please send the proof of payment here and we'll confirm "
-                     "your booking.",
-    "after_invoice": "Noted, thank you{hi}! Once paid, please send the proof of payment here and we'll confirm your "
-                     "booking.",
+                    "Pay by {ecocash}; payment confirms your booking.",
+    "invoice_above": "Your invoice is above 👆 Please pay by {ecocash}, then send the proof of payment here and "
+                     "we'll confirm your booking.",
+    "after_invoice": "Noted, thank you{hi}! Once paid by {ecocash}, please send the proof of payment here and we'll "
+                     "confirm your booking.",
     "note_answer": "{notes} ✨ Anything else I can check, or shall I prepare your invoice?",
     "note_answer_after": "{notes} ✨ Anything else I can check for you?",
     "team_confirm": "Good question! Let me confirm that with our team; they'll reply here shortly.",
@@ -99,7 +105,7 @@ LINES = {
 
 def line(key: str, **values) -> str:
     """A LINE with its placeholders filled ({brand} always available)."""
-    return LINES[key].format(brand=BRAND, **values)
+    return LINES[key].format(brand=BRAND, ecocash=ECOCASH, **values)
 
 
 # Worked examples, given to the model as earlier chat turns (a small local

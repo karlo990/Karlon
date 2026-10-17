@@ -159,6 +159,8 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
     if feats.get("bot_question"):
         hello = L("hello", hi=hi) if stage == "new" or feats.get("greeting") else ""
         prefix = hello + L("bot")
+    if feats.get("invoice_request") and stage not in ("invoice", "payment"):
+        prefix += L("invoice_hint")              # "how do I pay?" before the invoice: EcoCash details
     if feats.get("terms_request") and not s.get("terms_sent_at"):
         actions.append({"type": "send_terms"})
         prefix += L("terms_attached")
@@ -242,7 +244,7 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
             say(L("team_confirm_soon"), "answer the guest's question from FACTS, or say the team will confirm",
                 "open_question")
             return done(stage)
-        if (not name or not ident) and (feats.get("invoice_request") or feats.get("price_query")):
+        if (not name or not ident) and feats.get("price_query") and L("invoice_hint") not in prefix:
             prefix += L("invoice_hint")
         if not name and not ident:
             say(L("ask_name_id", summary=summary), "confirm the choice and ask full name and ID number",
@@ -374,6 +376,9 @@ def _open_or_nudge(ctx, feats, slots, offers, say, actions, done, prefix) -> dic
             say("; ".join(parts) + L("location_tail"),
                 "say where the houses are", "location")
             return done("present")
+    if feats.get("invoice_request"):              # "how do I pay?": the EcoCash line is in prefix
+        say(L("which_home"), "give the EcoCash details; ask which house they want", "payment_info")
+        return done("present")
     if feats.get("question") or not feats.get("ack_only"):
         actions.append({"type": "maybe_handoff", "reason": "question Davis has no facts for"})
         say(L("team_confirm_soon"),

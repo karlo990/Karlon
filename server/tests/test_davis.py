@@ -462,6 +462,29 @@ def test_choice_and_name_in_one_burst_are_both_kept(dc, db):
     assert _run(dc)["plan"]["stage"] == "invoice"
 
 
+def test_ecocash_number_is_given_and_no_other(dc, db, monkeypatch):
+    from app.davis import policy
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "what is your ecocash number?")
+    _run(dc)
+    assert "EcoCash 0780563561 (Karl Muzunze)" in _davis(db)[-1]["text"]
+    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["handoff"]      # not a payment claim
+    for t in ("KCER 102", "Leon Moyo 63-1234567 X 42"):
+        _guest(db, t)
+        r = _run(dc)
+    sent = [m["text"] for m in _davis(db) if m["sender"] == "Davis"]
+    assert r["plan"]["stage"] == "invoice" and "EcoCash 0780563561 (Karl Muzunze)" in sent[-1]
+    _guest(db, "where do I pay?")
+    _run(dc)
+    assert "0780563561" in _davis(db)[-1]["text"]
+    # a model reply giving any other number is never sent
+    facts = r["plan"]["facts"]
+    assert policy.check_reply("Pay by EcoCash 0771234567 please.", facts).startswith("number_not_in_facts")
+    assert policy.check_reply("Pay by EcoCash 0780563561 (Karl Muzunze), then send proof here.", facts) is None
+
+
 def test_persona_lines_fit_the_word_limit():
     from app.davis import persona
     sample = dict(hi=" Tendai", city="Victoria Falls", when="28 Dec–2 Jan", party=" for 12 guests", k=3,

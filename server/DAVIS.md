@@ -29,6 +29,10 @@ change how Davis sounds:
   the choice, asking for name and ID, invoice sent, payment, handoff, and so on. Each one is under 40 words
   (a test checks this).
 - `EXAMPLES` are worked examples shown to the model.
+- `PAYMENT` holds the EcoCash details: **0780563561 (Karl Muzunze)**. Davis gives them when a guest asks
+  how to pay, with the invoice, and after it. The guard blocks any reply containing a different number, so
+  no other payment number can ever be sent. The invoice PDF prints the same details
+  (`pc-bridge/invoice_worker.py`, `ECOCASH_NUMBER` / `ECOCASH_NAME`).
 
 ## Where the model is used, and why only there
 

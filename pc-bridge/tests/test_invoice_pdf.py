@@ -13,7 +13,7 @@ def test_html_invoice_has_every_field_and_escapes_input():
     page = iw.build_invoice_html(INVOICE)
     for text in ("Ahmed &lt;Test&gt;", "P1234567", "Harare", "KCER 101", "5 Oct 2026", "8 Oct 2026",
                  "140.67", "USD 422.01", "Service Fee (15%)", "USD 63.30", "Balance Due", "USD 485.31",
-                 "PAYMENT DUE", "BILLED FROM", "2:00 PM", "10:00 AM"):
+                 "PAYMENT DUE", "BILLED FROM", "2:00 PM", "10:00 AM", "EcoCash — 0780563561 (Karl Muzunze)"):
         assert text in page, text
     assert "<Test>" not in page
 

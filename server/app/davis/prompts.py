@@ -65,7 +65,8 @@ def facts_text(facts: dict, focus: bool = False) -> str:
              if s.get(k) not in (None, "")]
     if s.get("id_number"):
         frame.append("id=provided")
-    out = ["BOOKING: " + (", ".join(frame) or "nothing yet")]
+    out = ["BOOKING: " + (", ".join(frame) or "nothing yet"),
+           f"PAYMENT: {persona.ECOCASH} (the only payment number you may give)"]
     if facts.get("choice"):
         out.append("CHOSEN: " + house_line(facts["choice"]))
     if facts.get("asked_about"):

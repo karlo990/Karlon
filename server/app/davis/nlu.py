@@ -384,12 +384,13 @@ def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = Non
                           "disappointed", "cheat(?:ed)?", "police", "lawyer", "money back", "not happy", "rude",
                           "unacceptable", "disgusting", "useless", "rip ?off")
     f["payment_claim"] = _has(t, "paid", "payment (?:done|made|sent)", "(?:sent|transferred) (?:the )?(?:money|funds|payment)",
-                              "proof of payment", "pop", "ecocash(?:ed)?", "swiped", "deposit(?:ed| made)",
+                              "proof of payment", "pop", "ecocashed", "(?:sent|paid|transferred)(?: it| the money)? (?:via|on|by|through) ecocash", "swiped", "deposit(?:ed| made)",
                               "here is the proof", "i have paid", "made the payment", "bank transfer done")
     f["terms_request"] = _has(t, "terms", "t ?& ?c'?s?", "t'?s and c'?s", "conditions", "cancellation", "policy",
                               "policies", "house rules", "rules")
     f["invoice_request"] = _has(t, "invoice", "quotation", "quote", "bill me", "how (?:do|can) i pay", "banking details",
-                                "bank details", "payment details", "how to pay", "where do i pay", "pay now")
+                                "bank details", "payment details", "how to pay", "where do i pay", "pay now",
+                                "ecocash number", "ecocash details", "which number", "what number")
     f["price_query"] = _has(t, "how much", "price", "prices", "pricing", "cost", "costs", "rate", "rates", "charges?",
                             "per night", "fee", "fees", "affordable", "cheap(?:est)?")
     f["availability_query"] = _has(t, "available", "availability", "vacan(?:t|cy)", "accommodation", "place to stay",

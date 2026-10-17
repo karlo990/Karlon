@@ -221,9 +221,12 @@ COMPANY_LINES = ["KARLCON CONSULTANCY", "(PRIVATE) LIMITED", "Reg. No. 15017/202
 COMPANY_SITE = "karl-con-elite-retreats.vercel.app"
 CHECK_IN_TIME, CHECK_OUT_TIME = "2:00 PM", "10:00 AM"
 SERVICE_FEE_PCT = float(os.environ.get("INVOICE_SERVICE_FEE_PCT", "15"))
+# Every EcoCash payment goes to this number (override with env if it changes).
+ECOCASH_NUMBER = os.environ.get("INVOICE_ECOCASH_NUMBER", "0780563561")
+ECOCASH_NAME = os.environ.get("INVOICE_ECOCASH_NAME", "Karl Muzunze")
 PAYMENT_METHODS = [
     "ZAR / USD Cash (in-person or mobile transfer)",
-    "EcoCash — USD Merchant Wallet (code shared via WhatsApp)",
+    f"EcoCash — {ECOCASH_NUMBER} ({ECOCASH_NAME})",
     "ZIPIT / Innbucks (USD equivalent)",
     "Bank Transfer — FBC / CBZ (USD)",
 ]
