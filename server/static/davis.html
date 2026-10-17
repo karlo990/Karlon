@@ -151,6 +151,19 @@ main{padding:16px 18px 40px;max-width:1680px;margin:0 auto}
 .settings-grid textarea,.settings-grid input,.settings-grid select{width:100%}
 .limits{font:12px/1.8 var(--mono);color:var(--dim)}
 .limits b{color:var(--text)}
+/* lock screen: the dashboard stays blurred until the Karlon password is entered */
+body.locked header, body.locked main{filter:blur(14px) saturate(.6);pointer-events:none;user-select:none}
+#lock{position:fixed;inset:0;z-index:60;display:none;align-items:center;justify-content:center;padding:16px;
+  background:rgba(5,6,8,.55)}
+body.locked #lock{display:flex}
+#lock form{width:min(360px,100%);background:var(--panel);border:1px solid var(--gold-hair);border-radius:16px;padding:26px 24px;
+  box-shadow:0 20px 60px rgba(0,0,0,.6);text-align:center}
+#lock .logo{margin:0 auto 12px;width:48px;height:48px;font-size:20px}
+#lock h2{margin:0 0 4px;font:600 18px var(--sans)}
+#lock p{margin:0 0 16px;color:var(--dim);font-size:13px}
+#lock input{width:100%;padding:11px 12px;font-size:15px;text-align:center}
+#lock button{width:100%;margin-top:12px;padding:10px}
+#lock .err{color:var(--err);font-size:12.5px;min-height:18px;margin-top:8px}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--gold-hair);
   border-radius:10px;padding:9px 16px;font:13px var(--sans);z-index:50;display:none;max-width:calc(100% - 32px)}
 .toast.err{border-color:var(--err);color:var(--err)}
@@ -163,7 +176,17 @@ main{padding:16px 18px 40px;max-width:1680px;margin:0 auto}
 }
 </style>
 </head>
-<body>
+<body class="locked">
+<div id="lock" role="dialog" aria-modal="true" aria-labelledby="lockTitle">
+  <form id="lockForm" autocomplete="on">
+    <div class="logo">D</div>
+    <h2 id="lockTitle">Davis is locked</h2>
+    <p id="lockMsg">Enter the Karlon password to open the dashboard.</p>
+    <input type="password" id="lockPw" name="password" autocomplete="current-password" placeholder="Karlon password" required>
+    <button class="btn gold" type="submit" id="lockBtn">Unlock</button>
+    <div class="err" id="lockErr"></div>
+  </form>
+</div>
 <header>
   <div class="brand">
     <div class="logo">D</div>
@@ -177,7 +200,7 @@ main{padding:16px 18px 40px;max-width:1680px;margin:0 auto}
     <input type="text" id="model" title="Model name for the Ollama provider" style="width:170px" placeholder="ollama model">
     <button class="btn" id="pauseBtn">Pause all</button>
     <span class="pill" title="Live feed"><span class="dot" id="wsDot"></span><span id="wsText">connecting</span></span>
-    <button class="btn sm" id="tokenBtn" title="Admin token for changes">🔑</button>
+    <button class="btn sm" id="lockNow" title="Lock the dashboard on this device">🔒 Lock</button>
   </div>
 </header>
 
@@ -256,9 +279,8 @@ function hhmm(ts){ try { return new Date(ts).toLocaleTimeString([], {hour:"2-dig
 
 async function api(path, opts = {}){
   const headers = {"Content-Type": "application/json"};
-  const tok = store("davis_token"); if (tok) headers["X-Davis-Token"] = tok;
-  const r = await fetch(path, {...opts, headers: {...headers, ...(opts.headers || {})}});
-  if (r.status === 401){ toast("Admin token needed: tap 🔑", true); throw new Error("401"); }
+  const r = await fetch(path, {...opts, credentials: "same-origin", headers: {...headers, ...(opts.headers || {})}});
+  if (r.status === 401 || r.status === 403){ showLock(r.status === 403); throw new Error("locked"); }
   const body = await r.json().catch(() => ({}));
   if (!r.ok){ toast(body.detail || ("Error " + r.status), true); throw new Error(body.detail || r.status); }
   return body;
@@ -277,7 +299,6 @@ function renderStatus(){
   $("#model").style.display = st.provider === "ollama" ? "" : "none";
   $("#pauseBtn").textContent = st.paused ? "Resume all" : "Pause all";
   $("#pauseBtn").classList.toggle("danger", !!st.paused);
-  $("#tokenBtn").style.display = s.admin_token_required ? "" : "none";
   const br = (s.llm.breakers || {})[st.provider];
   const lat = (o, unit) => o && o.p50 != null ? `${o.p50}${unit} <span>p95 ${o.p95}${unit}</span>` : `— <span>no data</span>`;
   const kp = [
@@ -484,7 +505,9 @@ function connect(){
   ws.onmessage = ev => { const m = JSON.parse(ev.data);
     if (m.type === "hello"){ state.status = m.data; renderStatus(); return; }
     if (m.type === "event"){ pushFeed(m.data, true); soon(); } };
-  ws.onclose = () => { clearInterval(ws._ping); $("#wsDot").className = "dot err"; $("#wsText").textContent = "reconnecting"; setTimeout(connect, 2500); };
+  ws.onclose = () => { clearInterval(ws._ping); $("#wsDot").className = "dot err";
+    $("#wsText").textContent = unlocked ? "reconnecting" : "locked"; if (unlocked) setTimeout(connect, 2500); };
+  live = ws;
 }
 
 /* ── events ────────────────────────────────────────────────────── */
@@ -495,7 +518,8 @@ $("#provider").addEventListener("change", async e => { try { await api("/api/dav
 $("#model").addEventListener("change", async e => { await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({model: e.target.value.trim()})}); toast("Model saved"); loadStatus(); });
 $("#pauseBtn").addEventListener("click", async () => { const p = !state.status.settings.paused;
   await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({paused: p})}); toast(p ? "Davis paused for every chat" : "Davis resumed"); loadStatus(); });
-$("#tokenBtn").addEventListener("click", () => { const t = prompt("Davis admin token (DAVIS_ADMIN_TOKEN):", store("davis_token") || ""); if (t !== null) { store("davis_token", t.trim()); toast("Token saved on this device"); } });
+$("#lockNow").addEventListener("click", async () => { await fetch("/api/davis/lock", {method: "POST", credentials: "same-origin"});
+  location.reload(); });
 $("#convSearch").addEventListener("input", renderSessions);
 $("#convList").addEventListener("click", e => { const c = e.target.closest(".conv"); if (!c) return;
   state.selected = c.dataset.id; renderSessions(); selectTab("chat"); loadDetail();
@@ -553,9 +577,40 @@ $("#tryBtn").addEventListener("click", async () => {
 });
 $("#tryText").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("#tryBtn").click(); });
 
-(async () => { await refreshAll(); renderDetail();
+/* ── lock ──────────────────────────────────────────────────────── */
+let unlocked = false, live = null, timer = null;
+function showLock(notConfigured){
+  unlocked = false; document.body.classList.add("locked");
+  clearInterval(timer); if (live) { try { live.close(); } catch (e) {} }
+  state = {status: null, sessions: [], selected: null, detail: null, drafts: [], cat: null, tab: state.tab};
+  $("#feed").innerHTML = ""; $("#convList").innerHTML = ""; $("#tab-chat").innerHTML = "";
+  if (notConfigured){
+    $("#lockMsg").textContent = "No password is set. Add the KARLON_PASSWORD secret on the Hugging Face Space, then reload.";
+    $("#lockPw").style.display = $("#lockBtn").style.display = "none";
+  } else { setTimeout(() => $("#lockPw").focus(), 50); }
+}
+async function start(){
+  unlocked = true; document.body.classList.remove("locked");
+  await refreshAll(); renderDetail();
   try { (await api("/api/davis/events?limit=60")).reverse().forEach(e => pushFeed(e, false)); } catch (e) {}
-  connect(); setInterval(refreshAll, 8000); })();
+  connect(); timer = setInterval(refreshAll, 8000);
+}
+$("#lockForm").addEventListener("submit", async e => {
+  e.preventDefault(); $("#lockErr").textContent = ""; $("#lockBtn").disabled = true;
+  try {
+    const r = await fetch("/api/davis/unlock", {method: "POST", credentials: "same-origin",
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify({password: $("#lockPw").value})});
+    if (r.ok){ $("#lockPw").value = ""; await start(); }
+    else if (r.status === 403) showLock(true);
+    else $("#lockErr").textContent = "Wrong password, try again.";
+  } finally { $("#lockBtn").disabled = false; }
+});
+(async () => {
+  try {
+    const s = await (await fetch("/api/davis/lock-state", {credentials: "same-origin"})).json();
+    if (s.unlocked) await start(); else showLock(!s.configured);
+  } catch (e) { showLock(false); }
+})();
 </script>
 </body>
 </html>

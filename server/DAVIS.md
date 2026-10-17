@@ -158,7 +158,7 @@ Space variables and secrets (Settings → Variables and secrets):
 | Name | Value |
 |---|---|
 | `DAVIS_MODE` | `shadow` to start; switch to live on the dashboard |
-| `DAVIS_ADMIN_TOKEN` | any long random string; the dashboard asks for it (🔑) before changes |
+| `KARLON_PASSWORD` (secret) | the password for the Karlon web page and the Davis dashboard. **Required:** without it the Davis dashboard stays locked |
 
 Optional:
 
@@ -180,7 +180,9 @@ For Ollama elsewhere: `DAVIS_PROVIDER=ollama`, `DAVIS_OLLAMA_URL`, `DAVIS_OLLAMA
 
 The model needs about 2 GB of RAM; the free CPU Space has 16 GB.
 
-Open `https://<space>/davis` (same password as the web dashboard). Settings shows the local model's state
+Open `https://<space>/davis`. The page stays blurred behind a lock screen until the Karlon password is
+entered. The server checks the password on every Davis data call and on the live feed, so the blur is only the
+visible part of the lock. 🔒 Lock (top right) locks it again on that device. Settings shows the local model's state
 (loading / ready / error), its load time and the last reply's speed.
 
 **Rollout:**

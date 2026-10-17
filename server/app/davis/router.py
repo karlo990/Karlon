@@ -19,7 +19,10 @@ GET  /api/davis/catalogue                    houses per city with Davis's flags
 PATCH /api/davis/catalogue                   {listing_url, hidden?, featured?, note?}
 POST /api/davis/preview                      {text, chat_id?} → what Davis would do (nothing sent)
 
-Writes need the DAVIS_ADMIN_TOKEN (X-Davis-Token header) when one is set.
+GET  /api/davis/lock-state · POST /api/davis/unlock {password} · POST /api/davis/lock
+Everything under /api/davis/* (and the feed) needs the Karlon password
+(KARLON_PASSWORD; DAVIS_ADMIN_TOKEN also works): the unlock cookie, or the
+X-Davis-Token header for scripts.
 """
 
 from __future__ import annotations
@@ -28,10 +31,15 @@ import time
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+import asyncio
+import hashlib
+import hmac
+
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from .. import auth
 from ..config import STATIC_DIR
 from ..database import get_db
 from ..models import serialize_message
@@ -40,12 +48,78 @@ from . import catalogue, config, gate, nlu, policy, store
 from .engine import _Cat, engine
 from .local_llm import model as local_model
 
-router = APIRouter(tags=["davis"])
+router = APIRouter(tags=["davis"])            # the page and the lock itself: open
 
 
-def admin(x_davis_token: Optional[str] = Header(default=None)) -> None:
-    if config.ADMIN_TOKEN and x_davis_token != config.ADMIN_TOKEN:
-        raise HTTPException(401, "Davis admin token required (X-Davis-Token)")
+# ─────────────────────────── the lock ────────────────────────────────────────
+# Everything about guests (conversations, drafts, settings, the live feed) is
+# behind the Karlon password: the KARLON_PASSWORD Space secret (DAVIS_ADMIN_TOKEN
+# also works). The page shows a blurred lock screen until it is entered; the
+# server checks every /api/davis/* call and the feed, so the blur is not the
+# protection, the server is. Without a password set, the dashboard stays locked.
+
+LOCK_COOKIE = "davis_unlock"
+LOCK_MAX_AGE = 30 * 24 * 3600
+
+
+def _secrets() -> list[str]:
+    return [p for p in (auth.PASSWORD, config.ADMIN_TOKEN) if p]
+
+
+def _lock_token() -> str:
+    key = "|".join(_secrets()).encode()
+    return hmac.new(key, b"davis-dashboard-v1", hashlib.sha256).hexdigest()
+
+
+def _unlocked(cookie_header: str = "", token: Optional[str] = None) -> bool:
+    if not _secrets():
+        return False
+    if token and any(hmac.compare_digest(token.encode(), p.encode()) for p in _secrets()):
+        return True
+    if hmac.compare_digest(auth.cookie_value(cookie_header, LOCK_COOKIE), _lock_token()):
+        return True
+    return auth.karlon_cookie_ok(cookie_header)
+
+
+def require_unlocked(request: Request, x_davis_token: Optional[str] = Header(default=None)) -> None:
+    if not _secrets():
+        raise HTTPException(403, "lock_not_configured: set the KARLON_PASSWORD secret on the Space")
+    if not _unlocked(request.headers.get("cookie", ""), x_davis_token):
+        raise HTTPException(401, "locked: enter the Karlon password")
+
+
+api = APIRouter(tags=["davis"], dependencies=[Depends(require_unlocked)])   # everything else: locked
+
+
+class UnlockIn(BaseModel):
+    password: str
+
+
+@router.get("/api/davis/lock-state")
+def lock_state(request: Request, x_davis_token: Optional[str] = Header(default=None)):
+    return {"configured": bool(_secrets()),
+            "unlocked": _unlocked(request.headers.get("cookie", ""), x_davis_token)}
+
+
+@router.post("/api/davis/unlock")
+async def unlock(body: UnlockIn):
+    if not _secrets():
+        raise HTTPException(403, "lock_not_configured: set the KARLON_PASSWORD secret on the Space")
+    if not any(hmac.compare_digest(body.password.encode(), p.encode()) for p in _secrets()):
+        await asyncio.sleep(1.5)                          # slows down guessing
+        raise HTTPException(401, "wrong password")
+    resp = JSONResponse({"ok": True})
+    resp.headers.append("set-cookie", f"{LOCK_COOKIE}={_lock_token()}; Max-Age={LOCK_MAX_AGE}; Path=/; HttpOnly; "
+                                      "Secure; SameSite=None; Partitioned")
+    return resp
+
+
+@router.post("/api/davis/lock")
+def lock():
+    resp = JSONResponse({"ok": True})
+    resp.headers.append("set-cookie", f"{LOCK_COOKIE}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=None; "
+                                      "Partitioned")
+    return resp
 
 
 class SettingsIn(BaseModel):
@@ -89,6 +163,9 @@ def dashboard():
 
 @router.websocket("/api/davis/ws")      # not /ws/davis: /ws/{chat_id} would catch it
 async def feed(ws: WebSocket):
+    if not _unlocked(ws.headers.get("cookie", ""), ws.query_params.get("token")):
+        await ws.close(code=4401)                          # locked: no guest data over the feed
+        return
     await ws.accept()
     engine.listeners.add(ws)
     try:
@@ -127,17 +204,17 @@ def _status() -> dict:
                    "debounce_sec": config.DEBOUNCE_SEC, "fresh_minutes": config.FRESH_MINUTES,
                    "human_quiet_minutes": config.HUMAN_QUIET_MINUTES, "concurrency": config.CONCURRENCY,
                    "options_per_send": config.OPTIONS_PER_SEND, "images_per_option": config.IMAGES_PER_OPTION},
-        "local_model": local_model.status(), "admin_token_required": bool(config.ADMIN_TOKEN),
+        "local_model": local_model.status(), "lock_configured": bool(_secrets()),
         "modes": config.MODES, "providers": config.PROVIDERS,
     }
 
 
-@router.get("/api/davis/status")
+@api.get("/api/davis/status")
 def status():
     return _status()
 
 
-@router.put("/api/davis/settings", dependencies=[Depends(admin)])
+@api.put("/api/davis/settings")
 async def put_settings(body: SettingsIn):
     changes = body.model_dump(exclude_none=True)
     if "mode" in changes and changes["mode"] not in config.MODES:
@@ -155,7 +232,7 @@ async def put_settings(body: SettingsIn):
 
 # ─────────────────────────── sessions ────────────────────────────────────────
 
-@router.get("/api/davis/sessions")
+@api.get("/api/davis/sessions")
 def sessions(limit: int = 100):
     conn = get_db()
     try:
@@ -180,7 +257,7 @@ def sessions(limit: int = 100):
         conn.close()
 
 
-@router.get("/api/davis/sessions/{chat_id}")
+@api.get("/api/davis/sessions/{chat_id}")
 def session_detail(chat_id: str):
     conn = get_db()
     try:
@@ -206,7 +283,7 @@ def _need_session(conn, chat_id: str) -> None:
     store.get_session(conn, chat_id)
 
 
-@router.post("/api/davis/sessions/{chat_id}/pause", dependencies=[Depends(admin)])
+@api.post("/api/davis/sessions/{chat_id}/pause")
 async def pause(chat_id: str, body: FlagIn):
     conn = get_db()
     try:
@@ -218,7 +295,7 @@ async def pause(chat_id: str, body: FlagIn):
     return {"ok": True, "paused": bool(body.paused)}
 
 
-@router.post("/api/davis/sessions/{chat_id}/handoff", dependencies=[Depends(admin)])
+@api.post("/api/davis/sessions/{chat_id}/handoff")
 async def handoff(chat_id: str, body: FlagIn):
     conn = get_db()
     try:
@@ -231,7 +308,7 @@ async def handoff(chat_id: str, body: FlagIn):
     return {"ok": True, "handoff": bool(body.active)}
 
 
-@router.post("/api/davis/sessions/{chat_id}/attention", dependencies=[Depends(admin)])
+@api.post("/api/davis/sessions/{chat_id}/attention")
 async def attention(chat_id: str, body: FlagIn):
     conn = get_db()
     try:
@@ -244,7 +321,7 @@ async def attention(chat_id: str, body: FlagIn):
     return {"ok": True, "attention": bool(body.active)}
 
 
-@router.post("/api/davis/sessions/{chat_id}/reset", dependencies=[Depends(admin)])
+@api.post("/api/davis/sessions/{chat_id}/reset")
 async def reset(chat_id: str):
     conn = get_db()
     try:
@@ -258,7 +335,7 @@ async def reset(chat_id: str):
     return {"ok": True}
 
 
-@router.post("/api/davis/sessions/{chat_id}/run", dependencies=[Depends(admin)])
+@api.post("/api/davis/sessions/{chat_id}/run")
 async def run_now(chat_id: str, trigger: str = Query("message", pattern="^(message|refresh_done)$"),
                   again: bool = False):
     """Process the chat now, without waiting for the debounce. In shadow mode
@@ -277,7 +354,7 @@ async def run_now(chat_id: str, trigger: str = Query("message", pattern="^(messa
 
 # ─────────────────────────── events + drafts ─────────────────────────────────
 
-@router.get("/api/davis/events")
+@api.get("/api/davis/events")
 def get_events(limit: int = 100, chat_id: Optional[str] = None):
     conn = get_db()
     try:
@@ -286,7 +363,7 @@ def get_events(limit: int = 100, chat_id: Optional[str] = None):
         conn.close()
 
 
-@router.get("/api/davis/drafts")
+@api.get("/api/davis/drafts")
 def get_drafts(status_: Optional[str] = Query("pending", alias="status")):
     conn = get_db()
     try:
@@ -295,12 +372,12 @@ def get_drafts(status_: Optional[str] = Query("pending", alias="status")):
         conn.close()
 
 
-@router.post("/api/davis/drafts/{draft_id}/approve", dependencies=[Depends(admin)])
+@api.post("/api/davis/drafts/{draft_id}/approve")
 async def approve(draft_id: int, body: ApproveIn):
     return await engine.approve(draft_id, body.text, body.force)
 
 
-@router.post("/api/davis/drafts/{draft_id}/discard", dependencies=[Depends(admin)])
+@api.post("/api/davis/drafts/{draft_id}/discard")
 async def discard(draft_id: int):
     conn = get_db()
     try:
@@ -314,7 +391,7 @@ async def discard(draft_id: int):
 
 # ─────────────────────────── catalogue ───────────────────────────────────────
 
-@router.get("/api/davis/catalogue")
+@api.get("/api/davis/catalogue")
 def get_catalogue(city: str = "all", limit: int = 120):
     rows = houses.available_listings(location=city, limit=max(1, min(limit, houses.MAX_AVAILABLE_LIMIT)),
                                      sort="ref", check_in=None, check_out=None, chat_id=None)
@@ -345,7 +422,7 @@ def get_catalogue(city: str = "all", limit: int = 120):
     return {"cities": cities, "houses": out}
 
 
-@router.patch("/api/davis/catalogue", dependencies=[Depends(admin)])
+@api.patch("/api/davis/catalogue")
 async def patch_catalogue(body: CatalogueFlagIn):
     conn = get_db()
     try:
@@ -362,7 +439,7 @@ async def patch_catalogue(body: CatalogueFlagIn):
 
 # ─────────────────────────── preview ─────────────────────────────────────────
 
-@router.post("/api/davis/preview")
+@api.post("/api/davis/preview")
 async def preview(body: PreviewIn):
     """What Davis would make of a message: features, the plan and the reply
     (template and, if a model is configured, the model's version). Nothing

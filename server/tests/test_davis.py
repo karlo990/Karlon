@@ -30,7 +30,11 @@ def davis_env(monkeypatch):
 
 
 @pytest.fixture()
-def dc(davis_env, client):
+def dc(davis_env, client, monkeypatch):
+    """The test client, unlocked with the Karlon password (the dashboard's lock)."""
+    import app.auth as auth
+    monkeypatch.setattr(auth, "PASSWORD", "test-pass")
+    client.headers["X-Davis-Token"] = "test-pass"
     return client
 
 
@@ -512,7 +516,8 @@ def test_greeting_comes_before_the_payment_line(dc, db):
     assert text.startswith("Hello Leon!") and "EcoCash 0780563561 (Karl Muzunze)" in text and _words(text) <= 40
 
 
-def test_ignore_list_from_space_variable_survives_restarts(davis_env, monkeypatch, client, db):
+def test_ignore_list_from_space_variable_survives_restarts(dc, monkeypatch, db):
+    client = dc
     from app.davis import config
     monkeypatch.setattr(config, "IGNORE_CHATS", [GUEST])
     _setup(client, db)
@@ -581,10 +586,36 @@ def test_preview_status_and_admin_token(dc, db, monkeypatch):
     page = dc.get("/davis")
     assert page.status_code == 200 and "/api/davis/ws" in page.text
 
-    from app.davis import config
-    monkeypatch.setattr(config, "ADMIN_TOKEN", "s3cret")
-    assert dc.put("/api/davis/settings", json={"mode": "off"}).status_code == 401
-    assert dc.put("/api/davis/settings", json={"mode": "off"}, headers={"X-Davis-Token": "s3cret"}).status_code == 200
+    assert dc.put("/api/davis/settings", json={"mode": "off"}).status_code == 200
     _guest(db, "Hi")
-    r = dc.post(f"/api/davis/sessions/{GUEST}/run", headers={"X-Davis-Token": "s3cret"}).json()
+    r = dc.post(f"/api/davis/sessions/{GUEST}/run").json()
     assert r["status"] == "drafted" and _davis(db) == []          # mode off: "run now" only drafts
+
+
+def test_dashboard_is_locked_by_the_karlon_password(dc, db, monkeypatch):
+    import app.auth as auth
+    _setup(dc, db)
+    del dc.headers["X-Davis-Token"]
+    page = dc.get("/davis")
+    assert page.status_code == 200 and 'class="locked"' in page.text and "Davis is locked" in page.text
+    for path in ("/api/davis/status", "/api/davis/sessions", "/api/davis/drafts", "/api/davis/events",
+                 f"/api/davis/sessions/{GUEST}", "/api/davis/catalogue"):
+        assert dc.get(path).status_code == 401, path                 # no guest data without the password
+    assert dc.put("/api/davis/settings", json={"mode": "off"}).status_code == 401
+    assert dc.post("/api/davis/preview", json={"text": "hi"}).status_code == 401
+    assert dc.get("/api/davis/lock-state").json() == {"configured": True, "unlocked": False}
+    assert dc.post("/api/davis/unlock", json={"password": "nope"}).status_code == 401
+    ok = dc.post("/api/davis/unlock", json={"password": "test-pass"})
+    assert ok.status_code == 200 and "davis_unlock=" in ok.headers["set-cookie"] and "HttpOnly" in ok.headers["set-cookie"]
+    cookie = ok.headers["set-cookie"].split(";")[0]
+    assert dc.get("/api/davis/status", headers={"cookie": cookie}).status_code == 200
+    assert dc.get("/api/davis/status", headers={"cookie": "davis_unlock=forged"}).status_code == 401
+    with pytest.raises(Exception):                                   # the live feed refuses too
+        with dc.websocket_connect("/api/davis/ws") as ws:
+            ws.receive_json()
+    with dc.websocket_connect("/api/davis/ws", headers={"cookie": cookie}) as ws:
+        assert ws.receive_json()["type"] == "hello"
+    assert dc.get("/api/chats").status_code == 200                   # the app and bridge APIs stay open
+    monkeypatch.setattr(auth, "PASSWORD", "")                         # no password set: stays locked
+    assert dc.get("/api/davis/status").status_code == 403
+    assert dc.get("/api/davis/lock-state").json()["configured"] is False

@@ -51,7 +51,8 @@ app.include_router(reservations.router)
 app.include_router(house_refresh.router)
 app.include_router(customer_replies.router)   # POST /api/reply/{chat_id}
 app.include_router(chat_view.router)
-app.include_router(davis_router.router)       # /davis, /api/davis/ws, /api/davis/*
+app.include_router(davis_router.router)       # /davis page + its lock (open)
+app.include_router(davis_router.api)          # /api/davis/* (behind the Karlon password)
 
 @app.get("/api/health")
 def health(): return {"status": "ok", "service": "karlon"}
