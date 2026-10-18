@@ -1,21 +1,27 @@
 <#
 .SYNOPSIS
   Makes Karlon (WhatsApp bridge, invoice worker, Airbnb scraper) an always-on
-  part of Windows: starts at boot and at logon, survives Wi-Fi drops, sleep,
-  a closed lid and crashes, and keeps its browsers and memory clean.
+  part of Windows: starts by itself, survives Wi-Fi drops, sleep, a closed lid
+  and crashes, and keeps its browsers and memory clean.
 
 .DESCRIPTION
+  WhatsApp Web and Airbnb only work in a real, visible browser window (not
+  headless, not on the hidden pre-logon desktop). So Karlon always runs on
+  your own desktop, and -AutoLogon makes Windows sign you in by itself after
+  a power-on or restart (then locks the screen), so the desktop - and Karlon
+  with it - is there even when nobody is at the laptop.
+
   What it sets up (everything is undone by uninstall_karlon.ps1):
 
   Task Scheduler, folder \Karlon\
-    "Karlon Logon"  runs on your desktop when you log on (browser windows
-                    visible, so a WhatsApp QR code can be scanned).
-    "Karlon Boot"   runs at power-on before anyone logs on, hidden. When you
-                    log on, the Logon task takes over so you can see it.
-    Both: restart 1 min after any crash (999 times), no time limit, run on
-    battery, start missed runs, re-check every 5 minutes, and
-    start again when the network (re)connects or the PC wakes from sleep.
-    Only one copy ever runs (karlon_supervisor.py holds a lock).
+    "Karlon"       starts at sign-in, on your desktop (browser windows
+                   visible; a WhatsApp QR code can be scanned). Restarted
+                   1 min after any crash (999 times), no time limit, runs on
+                   battery, re-checked every 5 minutes, started again when
+                   the network (re)connects or the PC wakes from sleep.
+                   Only one copy ever runs (karlon_supervisor.py holds a lock).
+    "Karlon Lock"  with -AutoLogon: locks the screen right after an automatic
+                   sign-in at power-on (Karlon keeps running behind the lock).
 
   Power plan (current plan, values saved first)
     Closing the lid: do nothing (plugged in and on battery).
@@ -24,24 +30,23 @@
     Wi-Fi adapter: maximum performance; Windows may not switch it off.
 
   Registry
-    HKCU\Software\Karlon             install folder, Python, mode.
-    HKCU\...\CurrentVersion\Run      "Karlon" fallback start at logon.
-    HKLM ...\Session Manager\Power   HiberbootEnabled=0 (Fast Startup off:
-                                     a real boot, so the Boot task runs).
+    HKCU\Software\Karlon             install folder, Python.
+    HKCU\...\CurrentVersion\Run      "Karlon" fallback start at sign-in.
+    HKLM ...\Session Manager\Power   HiberbootEnabled=0 (Fast Startup off).
     HKLM ...\WindowsUpdate\AU        NoAutoRebootWithLoggedOnUsers=1.
-
-.PARAMETER Mode
-  Both (default), Logon (only when you're logged on, visible) or Boot (only
-  the hidden boot task).
+    HKLM ...\Winlogon                with -AutoLogon: automatic sign-in; the
+                                     password is kept encrypted by Windows
+                                     (LSA secret), never in a file.
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1
+  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -KeepAwakeOnBattery -KarlonUrl https://davincii-code-karlcon.hf.space
+  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon -KeepAwakeOnBattery
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Both', 'Logon', 'Boot')] [string]$Mode = 'Both',
+    [switch]$AutoLogon,
+    [switch]$NoLockAfterAutoLogon,
     [string]$Python,
     [string]$KarlonUrl,
     [switch]$KeepAwakeOnBattery,
@@ -77,11 +82,13 @@ function Say($text, $color = 'Gray') { Write-Host $text -ForegroundColor $color 
 function Ok($text) { Write-Host "  [ok] $text" -ForegroundColor Green }
 function Warn($text) { Write-Host "  [!]  $text" -ForegroundColor Yellow }
 
+. (Join-Path $PSScriptRoot 'karlon_lsa.ps1')     # [KarlonLsa]::Set - the auto sign-in password store
+
 try {
     if (-not (Test-Path (Join-Path $Here 'karlon_supervisor.py'))) {
         throw "karlon_supervisor.py isn't next to this script ($Here). Run it from the pc-bridge folder."
     }
-    Say "`nKarlon always-on install  ($Mode)  -  folder $Here" 'Cyan'
+    Say "`nKarlon always-on install  -  folder $Here" 'Cyan'
 
     # -- Python --------------------------------------------------------------
     if (-not $Python) {
@@ -97,7 +104,7 @@ try {
     $Python  = (Resolve-Path $Python).Path
     $PythonW = Join-Path (Split-Path $Python) 'pythonw.exe'
     if (-not (Test-Path $PythonW)) { $PythonW = $Python }
-    if ($Python -match 'WindowsApps') { Warn 'This is the Microsoft Store Python; the boot task may not be able to start it. python.org Python is recommended.' }
+    if ($Python -match 'WindowsApps') { Warn 'This is the Microsoft Store Python; python.org Python is recommended for scheduled tasks.' }
     Ok "Python: $Python"
 
     if (-not $SkipPip) {
@@ -130,11 +137,17 @@ try {
     }
     $HiberbootKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power'
     $AUKey        = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
+    $WinlogonKey  = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+    $PwLessKey    = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device'
     if (-not (Test-Path $BackupFile)) {
         $backup = [ordered]@{ Saved = (Get-Date).ToString('s'); Power = [ordered]@{}; Adapters = @() }
         foreach ($k in $PowerKeys.Keys) { $pk = $PowerKeys[$k]; $backup.Power[$k] = Get-PowerIndex $pk[0] $pk[1] }
         $backup.HiberbootEnabled = Get-RegValue $HiberbootKey 'HiberbootEnabled'
         $backup.NoAutoReboot     = Get-RegValue $AUKey 'NoAutoRebootWithLoggedOnUsers'
+        $backup.AutoAdminLogon   = Get-RegValue $WinlogonKey 'AutoAdminLogon'
+        $backup.DefaultUserName  = Get-RegValue $WinlogonKey 'DefaultUserName'
+        $backup.DefaultDomainName = Get-RegValue $WinlogonKey 'DefaultDomainName'
+        $backup.PasswordLess     = Get-RegValue $PwLessKey 'DevicePasswordLessBuildVersion'
         try {
             $backup.Adapters = @(Get-NetAdapter -Physical -ErrorAction Stop | ForEach-Object {
                 $pm = Get-NetAdapterPowerManagement -Name $_.Name -ErrorAction SilentlyContinue
@@ -168,12 +181,32 @@ try {
 
         New-Item -Path $HiberbootKey -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $HiberbootKey -Name 'HiberbootEnabled' -Value 0 -Type DWord
-        Ok 'Fast Startup off (every power-on is a real boot, so the Boot task always runs)'
+        Ok 'Fast Startup off (every power-on is a clean start)'
     }
     if (-not $NoUpdateRebootBlock) {
         New-Item -Path $AUKey -Force | Out-Null
         Set-ItemProperty -Path $AUKey -Name 'NoAutoRebootWithLoggedOnUsers' -Value 1 -Type DWord
-        Ok 'Windows Update will not restart the PC by itself while you are logged on'
+        Ok 'Windows Update will not restart the PC by itself while you are signed in'
+    }
+
+    # -- automatic sign-in: the desktop the browsers need, after any restart --
+    if ($AutoLogon) {
+        Say "  Automatic sign-in: enter the password you use to sign in to Windows as $env:USERNAME"
+        Say '  (for a Microsoft account, that account''s password - not the PIN).'
+        $cred = Get-Credential -UserName $User -Message 'Windows password for automatic sign-in (stored encrypted by Windows)'
+        if (-not $cred) { throw 'automatic sign-in cancelled - run again with -AutoLogon to set it up' }
+        [KarlonLsa]::Set('DefaultPassword', $cred.GetNetworkCredential().Password)
+        Set-ItemProperty -Path $WinlogonKey -Name 'AutoAdminLogon' -Value '1'
+        Set-ItemProperty -Path $WinlogonKey -Name 'DefaultUserName' -Value $env:USERNAME
+        Set-ItemProperty -Path $WinlogonKey -Name 'DefaultDomainName' -Value $env:USERDOMAIN
+        Remove-ItemProperty -Path $WinlogonKey -Name 'DefaultPassword' -ErrorAction SilentlyContinue   # never in plain text
+        Remove-ItemProperty -Path $WinlogonKey -Name 'AutoLogonCount' -ErrorAction SilentlyContinue    # not "N times only"
+        if (Test-Path $PwLessKey) {
+            # "Only allow Windows Hello sign-in" blocks password sign-in, so automatic sign-in too.
+            Set-ItemProperty -Path $PwLessKey -Name 'DevicePasswordLessBuildVersion' -Value 0 -Type DWord
+        }
+        $cred = $null
+        Ok 'automatic sign-in after power-on/restart (password kept encrypted by Windows)'
     }
 
     # -- registry: install record + Run fallback ------------------------------
@@ -182,19 +215,15 @@ try {
     Set-ItemProperty -Path $RegKey -Name 'InstallDir' -Value $Here
     Set-ItemProperty -Path $RegKey -Name 'Python'     -Value $Python
     Set-ItemProperty -Path $RegKey -Name 'PythonW'    -Value $PythonW
-    Set-ItemProperty -Path $RegKey -Name 'Mode'       -Value $Mode
     Set-ItemProperty -Path $RegKey -Name 'StateDir'   -Value $StateDir
+    Set-ItemProperty -Path $RegKey -Name 'AutoLogon'  -Value ([int][bool]$AutoLogon)
     Set-ItemProperty -Path $RegKey -Name 'Installed'  -Value (Get-Date).ToString('s')
     $Supervisor = Join-Path $Here 'karlon_supervisor.py'
-    $RunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    if ($Mode -ne 'Boot') {
-        # If the Task Scheduler is ever off, this still starts Karlon at logon;
-        # when both start, the lock lets only one run.
-        Set-ItemProperty -Path $RunKey -Name 'Karlon' -Value "`"$PythonW`" `"$Supervisor`" --service --takeover"
-        Ok 'registry Run entry added (fallback start at logon)'
-    } else {
-        Remove-ItemProperty -Path $RunKey -Name 'Karlon' -ErrorAction SilentlyContinue
-    }
+    # If the Task Scheduler is ever off, this still starts Karlon at sign-in;
+    # when both start, the lock lets only one run.
+    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'Karlon' `
+        -Value "`"$PythonW`" `"$Supervisor`" --service --takeover"
+    Ok 'registry Run entry added (fallback start at sign-in)'
 
     # -- scheduled tasks ------------------------------------------------------
     function New-EventTrigger([string]$Log, [string]$Filter) {
@@ -212,59 +241,72 @@ try {
         $t.Repetition = (New-ScheduledTaskTrigger -Once -At '00:00' -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Hours 24)).Repetition
         return $t
     }
-    $common = @(
-        (New-Every5MinTrigger),
-        (New-EventTrigger 'Microsoft-Windows-NetworkProfile/Operational' 'EventID=10000'),
-        (New-EventTrigger 'System' "Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1")
-    )
     # Waking a sleeping PC every 5 minutes only makes sense when it may never
     # sleep anyway: with -KeepAwakeOnBattery. Plugged in, it never sleeps.
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
         -DontStopOnIdleEnd -WakeToRun:$KeepAwakeOnBattery -MultipleInstances IgnoreNew -Priority 5 `
         -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+    # Interactive = only ever on the signed-in desktop, where the browser
+    # windows are real and visible. Never "run whether signed in or not".
+    $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
 
-    function Register-Karlon([string]$Name, [string]$Arguments, $Triggers, $Principal, [string]$Description) {
-        $action = New-ScheduledTaskAction -Execute $PythonW -Argument $Arguments -WorkingDirectory $Here
-        Register-ScheduledTask -TaskName $Name -TaskPath $TaskPath -Action $action -Trigger $Triggers -Settings $settings `
-            -Principal $Principal -Description $Description -Force | Out-Null
-        Ok "scheduled task $TaskPath$Name"
-    }
-    $quoted = "`"$Supervisor`""
-    foreach ($old in @('Karlon Logon', 'Karlon Boot')) {
+    foreach ($old in @('Karlon', 'Karlon Logon', 'Karlon Boot', 'Karlon Lock')) {
         Unregister-ScheduledTask -TaskName $old -TaskPath $TaskPath -Confirm:$false -ErrorAction SilentlyContinue
     }
-    if ($Mode -ne 'Boot') {
-        $p = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
-        Register-Karlon 'Karlon Logon' "$quoted --service --takeover" (@(New-ScheduledTaskTrigger -AtLogOn -User $User) + $common) $p `
-            'Karlon on your desktop: WhatsApp bridge, invoices, Airbnb scraper. Takes over from the boot copy at logon.'
-    }
-    if ($Mode -ne 'Logon') {
-        $p = New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Highest
-        Register-Karlon 'Karlon Boot' "$quoted --service" (@(New-ScheduledTaskTrigger -AtStartup) + $common) $p `
-            'Karlon from power-on, before anyone logs on (hidden). Hands over to Karlon Logon when you log on.'
+    $triggers = @(
+        (New-ScheduledTaskTrigger -AtLogOn -User $User),
+        (New-Every5MinTrigger),
+        (New-EventTrigger 'Microsoft-Windows-NetworkProfile/Operational' 'EventID=10000'),
+        (New-EventTrigger 'System' "Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1")
+    )
+    $action = New-ScheduledTaskAction -Execute $PythonW -Argument "`"$Supervisor`" --service --takeover" -WorkingDirectory $Here
+    Register-ScheduledTask -TaskName 'Karlon' -TaskPath $TaskPath -Action $action -Trigger $triggers -Settings $settings `
+        -Principal $principal -Force `
+        -Description 'Karlon on your desktop: WhatsApp bridge, invoices, Airbnb scraper (visible browsers).' | Out-Null
+    Ok "scheduled task $($TaskPath)Karlon"
+
+    if ($AutoLogon -and -not $NoLockAfterAutoLogon) {
+        # Lock only a sign-in that happened by itself right after power-on
+        # (within 10 min of boot); signing in yourself later is left alone.
+        $lockCmd = '$up = (Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime; ' +
+                   'if ($up.TotalMinutes -lt 10) { & rundll32.exe ''user32.dll,LockWorkStation'' }'
+        $lockAction = New-ScheduledTaskAction -Execute 'powershell.exe' `
+            -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"$lockCmd`""
+        $lockTrigger = New-ScheduledTaskTrigger -AtLogOn -User $User
+        $lockTrigger.Delay = 'PT40S'           # the browsers open first
+        $lockSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+        Register-ScheduledTask -TaskName 'Karlon Lock' -TaskPath $TaskPath -Action $lockAction -Trigger $lockTrigger `
+            -Settings $lockSettings -Principal (New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive) -Force `
+            -Description 'Locks the screen after an automatic sign-in at power-on; Karlon keeps running behind the lock.' | Out-Null
+        Ok "scheduled task $($TaskPath)Karlon Lock (screen locks 40 s after an automatic sign-in)"
     }
 
     # -- start now ------------------------------------------------------------
     if (-not $NoStart) {
-        $first = if ($Mode -eq 'Boot') { 'Karlon Boot' } else { 'Karlon Logon' }
-        Start-ScheduledTask -TaskPath $TaskPath -TaskName $first
+        Start-ScheduledTask -TaskPath $TaskPath -TaskName 'Karlon'
         Start-Sleep -Seconds 8
         $beat = Join-Path $StateDir 'supervisor.json'
         if (Test-Path $beat) {
             $b = Get-Content $beat -Raw | ConvertFrom-Json
-            Ok "running: supervisor pid $($b.pid), mode $($b.mode), Windows session $($b.session)"
+            Ok "running: supervisor pid $($b.pid), Windows session $($b.session)"
         } else {
             Warn 'started, but no heartbeat yet - check in a minute with .\karlon_status.ps1'
         }
     }
 
-    Say "`nDone. Karlon now starts by itself at power-on and logon, and comes back after crashes, Wi-Fi drops and sleep." 'Cyan'
+    if ($AutoLogon) {
+        Say "`nDone. After any power-on or restart Windows signs you in by itself, locks the screen, and Karlon starts on your desktop." 'Cyan'
+    } else {
+        Say "`nDone. Karlon starts when you sign in. To have it start after a power-on or restart with nobody there," 'Cyan'
+        Say '  run the installer again with -AutoLogon.' 'Cyan'
+    }
+    Say '  It comes back by itself after crashes, Wi-Fi drops, sleep and with the lid closed.'
     Say '  See what it is doing:   .\karlon_status.ps1          (live log: .\karlon_status.ps1 -Follow)'
     Say '  Restart its processes:  .\karlon_status.ps1 -Restart'
     Say '  Pause / resume:         .\karlon_status.ps1 -Pause   /  -Resume'
     Say '  Remove everything:      .\uninstall_karlon.ps1'
     Say '  The first time, scan the WhatsApp QR code in the browser window that opens.'
-    Say "  Karlon's power request shows in:  powercfg /requests"
 }
 catch {
     Write-Host "`nInstall failed: $($_.Exception.Message)" -ForegroundColor Red

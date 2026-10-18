@@ -12,13 +12,13 @@ this single window, and restarts any one of them on its own if it exits
 unexpectedly — a scraper login timeout should never take down WhatsApp
 sync or invoice generation.
 
-Always-on behaviour (install_karlon.ps1 starts this with --service at boot
-and at logon):
+Always-on behaviour (install_karlon.ps1 starts this with --service at
+sign-in, on the desktop: WhatsApp Web and Airbnb need a visible browser):
 
 * One instance per PC (an OS file lock). A second start exits at once,
   unless the running one stopped answering (heartbeat older than 3 min) —
-  then it's killed and replaced. --takeover moves a hidden instance started
-  at boot onto the desktop of the user who just logged on.
+  then it's killed and replaced. --takeover replaces an instance running on
+  another Windows session (one with no desktop never runs the browsers).
 * Each process runs with its browsers in a Windows job object: a restart,
   or the supervisor dying, kills the whole tree. No orphan chrome.exe.
 * Waits for the network before starting anything, never crash-loops while
@@ -108,6 +108,7 @@ class ManagedProcess:
     after_outage: bool = False    # restart once the network is back after an outage
     profile_dir: str = ""         # browser profile cleaned before each start
     clean_stop: bool = False      # understands KARLON_CHILD_STOP_FILE (closes its browser itself)
+    needs_desktop: bool = False   # a visible browser window: WhatsApp Web and Airbnb don't work headless
     proc: subprocess.Popen | None = None
     job: care.JobObject | None = None
     last_restart: float = 0.0
@@ -214,12 +215,12 @@ class ManagedProcess:
 ALL_PROCESSES: dict[str, ManagedProcess] = {
     "wa":      ManagedProcess(key="wa", script="wa_bridge.py", max_mb=KARLON_WA_MAX_MB,
                               silent_limit_sec=1800, after_outage=True,
-                              profile_dir=_wa_session_dir(), clean_stop=True),
+                              profile_dir=_wa_session_dir(), clean_stop=True, needs_desktop=True),
     "invoice": ManagedProcess(key="invoice", script="invoice_worker.py", max_mb=KARLON_INVOICE_MAX_MB),
     "scraper": ManagedProcess(
         key="scraper", script="airbnb_parallel_system.py",
         env={"KARLON_SCRAPER_NONINTERACTIVE": "1"},
-        max_mb=KARLON_SCRAPER_MAX_MB, silent_limit_sec=3600, after_outage=True,
+        max_mb=KARLON_SCRAPER_MAX_MB, silent_limit_sec=3600, after_outage=True, needs_desktop=True,
     ),
 }
 
@@ -507,7 +508,7 @@ def _monitor(selected: dict[str, ManagedProcess], started: float) -> None:
 def claim_instance(takeover: bool) -> care.InstanceLock | None:
     """The single-instance lock. Replaces a running supervisor that stopped
     answering; with takeover, asks one on another Windows session (the hidden
-    one started at boot) to hand over. None = another one is running fine."""
+    one with no desktop) to hand over. None = another one is running fine."""
     lock = care.InstanceLock()
     if lock.acquire():
         return lock
@@ -581,7 +582,7 @@ def main() -> None:
     ap.add_argument("--service", action="store_true",
                     help="unattended: no console windows for the processes, log to file only (the scheduled task)")
     ap.add_argument("--takeover", action="store_true",
-                    help="take over from an instance on another Windows session (logon after a boot start)")
+                    help="take over from an instance on another Windows session (e.g. one with no desktop)")
     ap.add_argument("--status", action="store_true", help="show what the running supervisor is doing")
     ap.add_argument("--stop", action="store_true", help="ask the running supervisor to stop")
     ap.add_argument("--restart", action="store_true", help="ask the running supervisor to restart its processes")
@@ -603,6 +604,7 @@ def main() -> None:
         print(f"[supervisor] unknown key(s) {unknown} — choose from {list(ALL_PROCESSES.keys())}")
         return
     selected = {k: ALL_PROCESSES[k] for k in selected_keys}
+    no_desktop = care.IS_WINDOWS and care.session_id() == 0
 
     Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
     log_path = Path(LOG_DIR) / "karlon_supervisor.log"
@@ -622,6 +624,17 @@ def main() -> None:
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, lambda *_: _stop.set())
 
+    if no_desktop:
+        # Session 0 = started before anyone signed in: there is no screen, so a
+        # browser there is effectively headless and WhatsApp Web / Airbnb
+        # don't work. They start when the signed-in copy takes over.
+        skipped = [k for k, e in selected.items() if e.needs_desktop]
+        selected = {k: e for k, e in selected.items() if not e.needs_desktop}
+        log(f"[supervisor] no desktop (not signed in): not starting {', '.join(skipped)} - "
+            f"they need a visible browser and start at sign-in")
+        if not selected:
+            lock.release()
+            return
     print_active_config()
     awake = KARLON_KEEP_AWAKE and care.keep_awake(True)
     started = time.time()

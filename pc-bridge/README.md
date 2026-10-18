@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 104 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 106 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -17,7 +17,7 @@ python -m pytest tests               # 104 tests, no WhatsApp/Airbnb/network nee
 | `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
 | `karlon_supervisor.py` | starts the three above, restarts them with backoff; watchdog for memory, hangs, network |
 | `karlon_care.py` | process-tree killing (job objects), browser profile/temp cleanup, lock, heartbeat |
-| `install_karlon.ps1` | makes it all part of Windows: boot/logon tasks, lid, sleep, Wi-Fi, registry |
+| `install_karlon.ps1` | makes it all part of Windows: sign-in task, auto sign-in, lid, sleep, Wi-Fi, registry |
 | `karlon_status.ps1` / `uninstall_karlon.ps1` | see / restart / pause it; remove it and restore settings |
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
@@ -25,40 +25,50 @@ python -m pytest tests               # 104 tests, no WhatsApp/Airbnb/network nee
 
 ## Always on: part of Windows (install_karlon.ps1)
 
-One command makes the three processes start by themselves at power-on and at
-logon, and keep running through crashes, Wi-Fi drops, sleep and a closed lid.
-In PowerShell, in this folder:
+One command makes the three processes start by themselves and keep running
+through crashes, Wi-Fi drops, sleep and a closed lid. WhatsApp Web and Airbnb
+only work in a real, visible browser window (not headless), so Karlon always
+runs on your signed-in desktop; `-AutoLogon` makes Windows sign you in by
+itself after a power-on or restart (and lock the screen), so that desktop is
+there even when nobody is at the laptop. In PowerShell, in this folder:
 
 ```
-Unblock-File .\*.ps1                                            # files from a zip are marked "from the internet"
-powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1   # asks for Administrator
+Unblock-File .\*.ps1                                                       # files from a zip are marked "from the internet"
+powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon   # asks for Administrator, then your Windows password
 .\karlon_status.ps1            # what's running, memory, network, lid setting, last log lines
 .\karlon_status.ps1 -Follow    # live log
 .\karlon_status.ps1 -Restart   # fresh start of all three (browsers closed cleanly)
 .\karlon_status.ps1 -Pause     # stop and stay stopped   (-Resume to start again)
-powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1 # remove it, settings restored
+powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1           # remove it, settings restored
 ```
 
-Options: `-KeepAwakeOnBattery` (never sleep on battery either), `-KarlonUrl <url>`
-(saved as your user's `KARLON_URL`), `-Mode Logon|Boot` (one task instead of
-both), `-NoPowerChanges`, `-NoUpdateRebootBlock`, `-Python <path>`.
+Options: `-AutoLogon` (sign in by itself after power-on; `-NoLockAfterAutoLogon`
+to skip the screen lock), `-KeepAwakeOnBattery` (never sleep on battery
+either), `-KarlonUrl <url>` (saved as your user's `KARLON_URL`),
+`-NoPowerChanges`, `-NoUpdateRebootBlock`, `-Python <path>`.
 
 **Continuous**
-- *Karlon Boot* task: starts at power-on, before anyone logs on, hidden.
-  *Karlon Logon* task: starts when you log on, on your desktop (the WhatsApp
-  window is visible, the QR code can be scanned), and takes over from the
-  hidden copy. A registry Run entry starts it too if the Task Scheduler is off.
-- Both tasks: restarted 1 min after any crash (999 times), no time limit, run
-  on battery, started again when the network connects or the PC wakes, and
-  checked every 5 min. Only one copy ever runs (a lock file); a copy that stops
-  answering for 3 min is killed and replaced.
+- *Karlon* task: starts at sign-in, on your desktop (browser windows visible,
+  the QR code can be scanned). Restarted 1 min after any crash (999 times), no
+  time limit, runs on battery, started again when the network connects or the
+  PC wakes, checked every 5 min. Only one copy ever runs (a lock file); a copy
+  that stops answering for 3 min is killed and replaced. A registry Run entry
+  starts it too if the Task Scheduler is off.
+- `-AutoLogon`: after a power cut, Windows Update restart or reboot, Windows
+  signs in by itself, *Karlon Lock* locks the screen 40 s later, and Karlon runs
+  behind the lock (the browsers keep working; unlock to see them). The password
+  is stored encrypted by Windows (an LSA secret, as Sysinternals Autologon
+  does), never in a file; the uninstaller deletes it. Without `-AutoLogon`
+  nothing runs after a restart until you sign in.
 - Lid: "do nothing" when closed (plugged in and on battery). Sleep and
   hibernate: never when plugged in. While Karlon runs it also tells Windows not
-  to idle-sleep (`powercfg /requests` shows it). Fast Startup is turned off so
-  every power-on is a real boot, and Windows Update won't restart the PC by
-  itself while you're logged on. Wi-Fi: maximum performance, and Windows may not
-  switch the adapter off. Everything changed is saved first
-  (`~/.karlon/install_backup.json`) and put back by the uninstaller.
+  to idle-sleep (`powercfg /requests` shows it). Fast Startup is turned off, and
+  Windows Update won't restart the PC by itself while you're signed in. Wi-Fi:
+  maximum performance, and Windows may not switch the adapter off. Everything
+  changed is saved first (`~/.karlon/install_backup.json`) and put back by the
+  uninstaller.
+- Never headless: the supervisor refuses to start WhatsApp or the scraper on a
+  session with no desktop (Windows session 0).
 
 **Durable**
 - Wi-Fi drop: the supervisor sees the server is unreachable and holds every
@@ -92,9 +102,6 @@ Settings like `AIRBNB_RESERVE_LIVE` must be saved for your user so the task
 sees them (`[Environment]::SetEnvironmentVariable("AIRBNB_RESERVE_LIVE","1","User")`),
 then `.\karlon_status.ps1 -Pause` and `-Resume`.
 
-The hidden boot copy has no screen: WhatsApp must already be logged in (scan
-the QR once from the desktop copy), and an Airbnb login that needs a person
-waits until you log on.
 
 ## First start, login and "no chats"
 

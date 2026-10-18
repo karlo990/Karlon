@@ -92,10 +92,25 @@ if (-not $KeepPowerSettings -and (Test-Path $BackupFile)) {
     $au = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
     if ($null -ne $bk.NoAutoReboot) { Set-ItemProperty -Path $au -Name 'NoAutoRebootWithLoggedOnUsers' -Value ([int]$bk.NoAutoReboot) -Type DWord }
     else { Remove-ItemProperty -Path $au -Name 'NoAutoRebootWithLoggedOnUsers' -ErrorAction SilentlyContinue }
-    Remove-Item $BackupFile
     Ok 'power plan, Fast Startup and Windows Update settings restored'
 } elseif ($KeepPowerSettings) {
     Ok 'power settings left as they are (-KeepPowerSettings)'
 }
 
+# 5. automatic sign-in off again (always, whatever -KeepPowerSettings says)
+. (Join-Path $PSScriptRoot 'karlon_lsa.ps1')
+$wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+$bk2 = if (Test-Path $BackupFile) { Get-Content $BackupFile -Raw | ConvertFrom-Json } else { $null }
+if ($Reg.AutoLogon -eq 1 -or ((Get-ItemProperty -Path $wl -ErrorAction SilentlyContinue).AutoAdminLogon -eq '1' -and $bk2 -and $bk2.AutoAdminLogon -ne '1')) {
+    try { [KarlonLsa]::Set('DefaultPassword', $null) } catch { }
+    $was = if ($bk2 -and $bk2.AutoAdminLogon) { [string]$bk2.AutoAdminLogon } else { '0' }
+    Set-ItemProperty -Path $wl -Name 'AutoAdminLogon' -Value $was
+    if ($bk2 -and $null -ne $bk2.PasswordLess) {
+        Set-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\PasswordLess\Device' `
+            -Name 'DevicePasswordLessBuildVersion' -Value ([int]$bk2.PasswordLess) -Type DWord -ErrorAction SilentlyContinue
+    }
+    Ok 'automatic sign-in turned off, stored password deleted'
+}
+
+Remove-Item $BackupFile -ErrorAction SilentlyContinue
 Write-Host "`nDone. Your WhatsApp login and files are kept; run .\install_karlon.ps1 to set it up again." -ForegroundColor Cyan

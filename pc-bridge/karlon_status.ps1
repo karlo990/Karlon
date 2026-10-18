@@ -68,7 +68,7 @@ if ($Resume) {
     $tasks = @(Get-ScheduledTask -TaskPath $TaskPath -ErrorAction SilentlyContinue)
     if (-not $tasks) { Write-Host 'Karlon is not installed. Run .\install_karlon.ps1' -ForegroundColor Yellow; return }
     $tasks | Enable-ScheduledTask | Out-Null
-    $first = $tasks | Where-Object TaskName -eq 'Karlon Logon' | Select-Object -First 1
+    $first = $tasks | Where-Object TaskName -eq 'Karlon' | Select-Object -First 1
     if (-not $first) { $first = $tasks[0] }
     Start-ScheduledTask -TaskPath $TaskPath -TaskName $first.TaskName
     Write-Host "Resumed ($($first.TaskName))." -ForegroundColor Green
@@ -92,7 +92,7 @@ if (-not $b) {
 } elseif ($b.state -eq 'stopped' -or $age -gt 180) {
     Write-Host ("  supervisor: NOT RUNNING (last heartbeat {0:N0} s ago)" -f $age) -ForegroundColor Red
 } else {
-    $where = if ($b.session -eq 0) { 'hidden (started at boot)' } else { "on the desktop (session $($b.session))" }
+    $where = if ($b.session -eq 0) { 'NO DESKTOP - browsers wait for sign-in' } else { "on the desktop (session $($b.session))" }
     $since = [DateTimeOffset]::FromUnixTimeSeconds([long]$b.started).LocalDateTime
     Write-Host ("  supervisor: RUNNING pid {0}, {1}, since {2:g}, heartbeat {3:N0} s ago" -f $b.pid, $where, $since, $age) -ForegroundColor Green
     $net = if ($b.network.ok) { 'ok' } else { 'DOWN (restarts wait for it)' }

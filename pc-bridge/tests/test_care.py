@@ -357,3 +357,19 @@ def test_powershell_scripts_are_plain_ascii():
     for p in scripts:
         data = p.read_bytes()
         assert all(b < 128 for b in data), f"{p.name} has non-ASCII bytes"
+
+
+def test_browsers_are_never_headless_and_need_a_desktop():
+    """WhatsApp Web and Airbnb only work in a visible browser: never started
+    with --headless, and never on a session with no desktop."""
+    for e in sup.ALL_PROCESSES.values():
+        assert "--headless" not in e.args
+    assert sup.ALL_PROCESSES["wa"].needs_desktop and sup.ALL_PROCESSES["scraper"].needs_desktop
+    assert not sup.ALL_PROCESSES["invoice"].needs_desktop
+
+
+def test_installer_only_registers_desktop_tasks():
+    here = Path(__file__).resolve().parent.parent
+    text = (here / "install_karlon.ps1").read_text()
+    assert "LogonType S4U" not in text and "-AtStartup" not in text, "no task without a desktop"
+    assert "LogonType Interactive" in text
