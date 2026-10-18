@@ -81,7 +81,8 @@ from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_se
 from local_config import (
     KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, WA_FULL_SWEEP_EVERY,
     WA_SYNC_LAST_N_CHATS, CHAT_SNAPSHOT_DIR, WA_UTC_OFFSET_MINUTES, WA_RELOAD_HOURS,
-    LOG_DIR, CHROMIUM_ARGS, print_active_config,
+    LOG_DIR, CHROMIUM_ARGS, KARLON_WA_HEADLESS, headless_choice, wa_session_dir, wa_login_marker,
+    print_active_config,
 )
 from wa_clean import (
     chat_slug, clean_chat_name, combine, detect_dayfirst, is_system_notice,
@@ -98,21 +99,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-def _default_session_dir() -> str:
-    """Where the WhatsApp login (the Chromium profile) is kept. It used to be
-    ./wa_session, relative to wherever the script was started, so every
-    unzip of a new version into a new folder started logged out. Now:
-    WA_SESSION_DIR if set, else ~/.karlon/wa_session (the same place whatever
-    folder the scripts run from). An existing ./wa_session is still used when
-    there is no home-folder session yet, so old setups keep their login."""
-    env = os.environ.get("WA_SESSION_DIR", "").strip()
-    if env:
-        return str(Path(env).expanduser().resolve())
-    home = Path.home() / ".karlon" / "wa_session"
-    legacy = Path("./wa_session")
-    if not home.exists() and legacy.exists():
-        return str(legacy.resolve())
-    return str(home)
+_default_session_dir = wa_session_dir          # (moved to local_config: the supervisor needs it too)
 
 
 SESSION_DIR         = _default_session_dir()
@@ -1513,7 +1500,8 @@ def dump_whatsapp_state(page: Page, tag: str, out_dir: Optional[str] = None) -> 
 
 
 def wait_for_whatsapp(page: Page, load_timeout: float = WA_LOAD_TIMEOUT, login_timeout: float = WA_LOGIN_TIMEOUT,
-                      poll: float = 2.0, report_every: float = 15.0, out_dir: Optional[str] = None) -> bool:
+                      poll: float = 2.0, report_every: float = 15.0, out_dir: Optional[str] = None,
+                      headless: bool = False) -> bool:
     """Waits until the WhatsApp chat list is drawn, handling what comes first:
     the login QR (waits up to login_timeout for it to be scanned), the "open in
     another window" notice (clicks Use here) and the loading screen (up to
@@ -1526,6 +1514,14 @@ def wait_for_whatsapp(page: Page, load_timeout: float = WA_LOAD_TIMEOUT, login_t
         now = time.time()
         if kind == "chats":
             return True
+        if kind == "qr" and headless:
+            # Logged out (unlinked on the phone, or expired). Nobody can scan a
+            # QR in a headless browser: forget the saved login so the next
+            # start opens a visible window for it.
+            mark_logged_in(False)
+            print("[wa_bridge] WhatsApp is logged out and asks for the QR code, which needs a visible window.\n"
+                  "            Run:  python karlon_login.py   (or the next start opens a window by itself)")
+            return False
         if kind != phase:                       # a new phase gets its own full timeout
             phase, phase_start, last_report = kind, now, 0.0
             if kind == "qr":
@@ -1572,16 +1568,58 @@ def wait_for_chat_rows(page: Page, timeout: float = WA_CHATS_TIMEOUT, poll: floa
     return False
 
 
+def mark_logged_in(yes: bool) -> None:
+    """The saved-login marker the headless choice (and the supervisor) go by."""
+    marker = wa_login_marker(SESSION_DIR)
+    try:
+        if yes:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(datetime.now().isoformat(timespec="seconds"), encoding="utf-8")
+        elif marker.exists():
+            marker.unlink()
+    except OSError:
+        pass
+
+
+def wants_headless(forced: bool = False) -> bool:
+    """--headless, or KARLON_WA_HEADLESS (auto = once the login is saved)."""
+    return forced or headless_choice(KARLON_WA_HEADLESS, wa_login_marker(SESSION_DIR).exists())
+
+
+def _real_user_agent(pw) -> str:
+    """A headless browser calls itself "HeadlessChrome", and WhatsApp Web then
+    refuses it ("update your browser"). Same browser, normal name."""
+    try:
+        b = pw.chromium.launch(headless=True)
+        version = b.version
+        b.close()
+    except Exception:
+        version = "130.0.0.0"
+    plat = "Windows NT 10.0; Win64; x64" if os.name == "nt" else "X11; Linux x86_64"
+    return f"Mozilla/5.0 ({plat}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{version} Safari/537.36"
+
+
+def _launch_context(pw, headless: bool):
+    kw = dict(user_data_dir=SESSION_DIR, headless=headless, viewport={"width": 1400, "height": 900},
+              args=CHROMIUM_ARGS)
+    if not headless:
+        return pw.chromium.launch_persistent_context(**kw)
+    kw["user_agent"] = _real_user_agent(pw)
+    try:
+        # The full browser in its new headless mode (same engine as the
+        # visible one), not the stripped-down headless shell.
+        return pw.chromium.launch_persistent_context(channel="chromium", **kw)
+    except Exception as e:
+        if re.search(r"ProcessSingleton|already in use|profile.*in use", str(e), re.IGNORECASE):
+            raise
+        return pw.chromium.launch_persistent_context(**kw)
+
+
 def launch_page(headless: bool = False):
     print(f"[wa_bridge] WhatsApp session folder: {SESSION_DIR}")
     pw = sync_playwright().start()
     try:
-        ctx = pw.chromium.launch_persistent_context(
-            user_data_dir=SESSION_DIR,
-            headless=headless,
-            viewport={"width": 1400, "height": 900},
-            args=CHROMIUM_ARGS,
-        )
+        ctx = _launch_context(pw, headless)
     except Exception as e:
         pw.stop()
         if re.search(r"ProcessSingleton|already in use|profile.*in use|has been closed", str(e), re.IGNORECASE):
@@ -1601,9 +1639,9 @@ def launch_page(headless: bool = False):
     except Exception:
         pass
 
-    print(f"[wa_bridge] Browser: {'HEADLESS' if headless else 'HEADED (visible)'}")
+    print(f"[wa_bridge] Browser: {'HEADLESS (background, saved login)' if headless else 'HEADED (visible)'}")
     print("Waiting for WhatsApp to load...")
-    if not wait_for_whatsapp(page):
+    if not wait_for_whatsapp(page, headless=headless):
         try:
             ctx.close()
         finally:
@@ -1611,6 +1649,7 @@ def launch_page(headless: bool = False):
         raise SystemExit("[wa_bridge] Could not reach the WhatsApp chat list; see the message above. "
                          "Starting again will retry.")
     print("Logged in.")
+    mark_logged_in(True)
     if not wait_for_chat_rows(page):
         shot = dump_whatsapp_state(page, "no_chats")
         print("[wa_bridge] Logged in, but WhatsApp shows no chats yet. Continuing; the bridge picks them up as "
@@ -3276,7 +3315,9 @@ def main() -> None:
                     help="read chats and write their JSON snapshots, but send nothing to Karlon")
     ap.add_argument("--no-pics",  action="store_true", help="don't sync profile pictures")
     ap.add_argument("--pics",     action="store_true", help=argparse.SUPPRESS)   # old flag; pics are on by default
-    ap.add_argument("--headless", action="store_true", default=False, help="hide browser")
+    ap.add_argument("--headless", action="store_true", default=False,
+                    help="no browser window (default: automatic once the login is saved, see KARLON_WA_HEADLESS)")
+    ap.add_argument("--visible", action="store_true", help="always show the browser window")
     ap.add_argument("--discover", action="store_true", help="dump selector info and exit")
     ap.add_argument(
         "--deep-history",
@@ -3297,7 +3338,7 @@ def main() -> None:
         print("    uvicorn app.main:app --host 0.0.0.0 --port 8000")
         return
 
-    pw, ctx, page = launch_page(headless=args.headless)
+    pw, ctx, page = launch_page(headless=False if args.visible else wants_headless(args.headless))
 
     # ── Start outbox-poller threads ──────────────────────────────────────────
     stop_event = threading.Event()

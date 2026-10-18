@@ -11,6 +11,7 @@ nothing here is secret.
 """
 
 import os
+from pathlib import Path
 
 
 def _int_env(name: str, default: int, minimum: int = 1) -> int:
@@ -105,6 +106,51 @@ KARLON_OUTAGE_RESTART_SEC = _int_env("KARLON_OUTAGE_RESTART_SEC", 180, minimum=0
 KARLON_SYS_MEM_PCT    = _int_env("KARLON_SYS_MEM_PCT", 92)
 # Stop Windows idle-sleeping while the supervisor runs (1 = on).
 KARLON_KEEP_AWAKE     = os.environ.get("KARLON_KEEP_AWAKE", "1").strip() not in ("0", "false", "no", "off")
+
+# ── Headless after a one-time visible login (python karlon_login.py) ──────
+# WhatsApp and Airbnb need a person once (QR scan, Airbnb login); after that
+# the saved login lets them run headless, in the background, with no window.
+#   auto (default) = headless once that app's login is saved, a visible window
+#                    while it isn't (or after it expires);
+#   1 = always headless;  0 = always a visible window.
+KARLON_WA_HEADLESS     = os.environ.get("KARLON_WA_HEADLESS", "auto").strip().lower()
+KARLON_AIRBNB_HEADLESS = os.environ.get("KARLON_AIRBNB_HEADLESS", "auto").strip().lower()
+
+
+def headless_choice(setting: str, login_saved: bool) -> bool:
+    if setting in ("1", "true", "yes", "on"):
+        return True
+    if setting in ("0", "false", "no", "off"):
+        return False
+    return bool(login_saved)
+
+
+def wa_session_dir() -> str:
+    """Where the WhatsApp login (the Chromium profile) is kept. It used to be
+    ./wa_session, relative to wherever the script was started, so every
+    unzip of a new version into a new folder started logged out. Now:
+    WA_SESSION_DIR if set, else ~/.karlon/wa_session (the same place whatever
+    folder the scripts run from). An existing ./wa_session is still used when
+    there is no home-folder session yet, so old setups keep their login."""
+    env = os.environ.get("WA_SESSION_DIR", "").strip()
+    if env:
+        return str(Path(env).expanduser().resolve())
+    home = Path.home() / ".karlon" / "wa_session"
+    legacy = Path("./wa_session")
+    if not home.exists() and legacy.exists():
+        return str(legacy.resolve())
+    return str(home)
+
+
+def wa_login_marker(session_dir: str | None = None) -> Path:
+    """Written by wa_bridge.py when the chat list shows (logged in), removed
+    when WhatsApp asks for the QR code again (logged out)."""
+    return Path(session_dir or wa_session_dir()) / "karlon_logged_in"
+
+
+# The scraper's saved Airbnb login (cookies + localStorage), relative to the
+# pc-bridge folder like the rest of airbnb_data/.
+AIRBNB_AUTH_STATE_FILE = os.path.join("./airbnb_data", "auth_state.json")
 
 # Flags for every Chromium the scripts start. The first three stop Chromium
 # slowing a tab down when its window is minimised, covered or the lid is

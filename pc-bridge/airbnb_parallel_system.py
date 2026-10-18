@@ -120,7 +120,7 @@ OUTPUT_DIR = "./airbnb_data"
 MASTER_INDEX_FILE = Path(OUTPUT_DIR) / "master_index.json"
 CSV_FILE = Path(OUTPUT_DIR) / "master_index.csv"
 CHECKPOINT_FILE = Path(OUTPUT_DIR) / ".checkpoint.json"
-STORAGE_STATE_FILE = Path(OUTPUT_DIR) / "auth_state.json"  # saved login profile (cookies + localStorage)
+STORAGE_STATE_FILE = Path(OUTPUT_DIR) / "auth_state.json"  # saved login profile (cookies + localStorage); = local_config.AIRBNB_AUTH_STATE_FILE
 COORDS_FILE = Path(OUTPUT_DIR) / "coordinates.json"        # {listingId: {lat, lng, location}}
 
 # ---------- CURRENCY CONVERSION (ZAR -> USD) ----------
@@ -160,6 +160,7 @@ USER_AGENT = (
 # invoice_worker.py were talking to. Now reads the same KARLON_URL as
 # everything else (override via the KARLON_URL env var, or local_config.py).
 from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN, CHROMIUM_ARGS
+from local_config import KARLON_AIRBNB_HEADLESS, headless_choice
 ENABLE_KARLON_PUSH = True
 # Cold HuggingFace Spaces can take 20-30s to answer their first request after
 # idling — 10s made the very first ingest of a cycle fail. 60s covers a wake-up.
@@ -710,7 +711,9 @@ async def wait_for_manual_continue(prompt: str) -> asyncio.Event:
         try:
             input(prompt)
         except Exception:
-            pass
+            # No keyboard (started by the supervisor / scheduled task): that is
+            # NOT "I'm logged in" — only the automatic check can decide.
+            return
         loop.call_soon_threadsafe(event.set)
 
     loop.run_in_executor(None, _blocking_input)
@@ -748,6 +751,28 @@ def prompt_for_search_queries(default_queries: List[str]) -> List[str]:
         return default_queries
     queries = [q.strip() for q in raw.split(",") if q.strip()]
     return queries or default_queries
+
+
+# ---------- BROWSER ----------
+async def launch_browser(p, headless: bool) -> Browser:
+    """Headless = the full browser in its new headless mode (same engine as the
+    visible one, so Airbnb sees the same browser), falling back to the
+    default headless build on older Playwright."""
+    if headless:
+        try:
+            return await p.chromium.launch(headless=True, channel="chromium", args=CHROMIUM_ARGS)
+        except Exception:
+            pass
+    return await p.chromium.launch(headless=headless, args=CHROMIUM_ARGS)
+
+
+async def save_session(context: BrowserContext) -> None:
+    """Re-save the login (Airbnb rotates its cookies), so the saved profile
+    stays fresh and the background browser stays logged in for weeks."""
+    try:
+        await context.storage_state(path=str(STORAGE_STATE_FILE))
+    except Exception as e:
+        print(f"  (could not refresh the saved login: {e})")
 
 
 # ---------- SESSION REUSE ----------
@@ -2668,14 +2693,26 @@ async def main():
           f"{', '.join(SEARCH_QUERIES)}\n")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False, args=CHROMIUM_ARGS)
+        # Headless once a login is saved (python karlon_login.py), a visible
+        # window while one is needed. KARLON_AIRBNB_HEADLESS=0/1 forces it.
+        headless = headless_choice(KARLON_AIRBNB_HEADLESS, STORAGE_STATE_FILE.exists())
+        browser = await launch_browser(p, headless)
+        print(f"Browser: {'HEADLESS (background, saved login)' if headless else 'visible window'}")
 
         # Try the saved profile first; only fall back to the manual login flow if it's
         # missing or expired. The rest of the pipeline never starts without a working,
         # logged-in context — no more silent "proceeding without auth".
         context = await try_restore_session(browser)
+        if context is None and headless:
+            # The saved login expired: a person has to log in, so a window.
+            print("Saved Airbnb login no longer works — opening a visible window to log in again "
+                  "(or run: python karlon_login.py --only airbnb).")
+            await browser.close()
+            browser = await launch_browser(p, False)
         if context is None:
             context = await login_with_timeout(browser)
+        else:
+            await save_session(context)
 
         if context is None:
             print("\n❌ Could not establish a logged-in Airbnb session. Aborting — nothing will be scraped or messaged.")
@@ -2788,6 +2825,7 @@ async def main():
                     print(f"  {city}: {count}")
 
                 CURRENT_ZAR_TO_USD_RATE = await fetch_zar_to_usd_rate()
+                await save_session(context)
 
                 print(f"\n💤 Sleeping {CYCLE_REST_SECONDS}s before the next full re-scan "
                       f"(cycle {cycle_num + 1})...")

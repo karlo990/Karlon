@@ -60,7 +60,8 @@ from pathlib import Path
 import karlon_care as care
 from local_config import (KARLON_URL, LOG_DIR, KARLON_WA_MAX_MB, KARLON_SCRAPER_MAX_MB, KARLON_INVOICE_MAX_MB,
                           KARLON_RECYCLE_HOURS, KARLON_OUTAGE_RESTART_SEC, KARLON_SYS_MEM_PCT, KARLON_KEEP_AWAKE,
-                          print_active_config)
+                          KARLON_WA_HEADLESS, KARLON_AIRBNB_HEADLESS, AIRBNB_AUTH_STATE_FILE, headless_choice,
+                          wa_session_dir, wa_login_marker, print_active_config)
 
 # One-for-one restart with exponential backoff: 5s, 10s, 20s ... capped at
 # MAX_BACKOFF_SEC. A run that stayed up at least STABLE_RUN_SEC counts as
@@ -78,15 +79,12 @@ CLEAN_STOP_GRACE_SEC = 45     # how long a process gets to close its browser its
 NET_WAIT_MAX_SEC = 60         # longest pause between network checks while it's down
 
 
-def _wa_session_dir() -> str:
-    """The WhatsApp profile folder, worked out exactly as wa_bridge.py does
-    (without importing it: that would load Playwright into this process)."""
-    env = os.environ.get("WA_SESSION_DIR", "").strip()
-    if env:
-        return str(Path(env).expanduser().resolve())
-    home = Path.home() / ".karlon" / "wa_session"
-    legacy = Path("./wa_session")
-    return str(legacy.resolve()) if not home.exists() and legacy.exists() else str(home)
+def _wa_login_saved() -> bool:
+    return wa_login_marker(wa_session_dir()).exists()
+
+
+def _airbnb_login_saved() -> bool:
+    return Path(AIRBNB_AUTH_STATE_FILE).exists()
 
 
 @dataclass
@@ -108,7 +106,10 @@ class ManagedProcess:
     after_outage: bool = False    # restart once the network is back after an outage
     profile_dir: str = ""         # browser profile cleaned before each start
     clean_stop: bool = False      # understands KARLON_CHILD_STOP_FILE (closes its browser itself)
-    needs_desktop: bool = False   # a visible browser window: WhatsApp Web and Airbnb don't work headless
+    # A browser that logs in to a site: headless once its login is saved
+    # (karlon_login.py), a visible window - which needs a desktop - until then.
+    headless_setting: str = ""
+    login_saved: object = None    # () -> bool
     proc: subprocess.Popen | None = None
     job: care.JobObject | None = None
     last_restart: float = 0.0
@@ -121,6 +122,15 @@ class ManagedProcess:
     last_profile_clean: float = 0.0
     # The watch thread and shutdown can both stop a process; one at a time.
     _stopping: threading.RLock = field(default_factory=threading.RLock, repr=False)
+
+    def headless(self) -> bool | None:
+        """True/False for a site browser, None for a process with no login."""
+        if self.login_saved is None:
+            return None
+        return headless_choice(self.headless_setting, self.login_saved())
+
+    def needs_desktop(self) -> bool:
+        return self.headless() is False
 
     @property
     def stop_file(self) -> Path:
@@ -215,12 +225,14 @@ class ManagedProcess:
 ALL_PROCESSES: dict[str, ManagedProcess] = {
     "wa":      ManagedProcess(key="wa", script="wa_bridge.py", max_mb=KARLON_WA_MAX_MB,
                               silent_limit_sec=1800, after_outage=True,
-                              profile_dir=_wa_session_dir(), clean_stop=True, needs_desktop=True),
+                              profile_dir=wa_session_dir(), clean_stop=True,
+                              headless_setting=KARLON_WA_HEADLESS, login_saved=_wa_login_saved),
     "invoice": ManagedProcess(key="invoice", script="invoice_worker.py", max_mb=KARLON_INVOICE_MAX_MB),
     "scraper": ManagedProcess(
         key="scraper", script="airbnb_parallel_system.py",
         env={"KARLON_SCRAPER_NONINTERACTIVE": "1"},
-        max_mb=KARLON_SCRAPER_MAX_MB, silent_limit_sec=3600, after_outage=True, needs_desktop=True,
+        max_mb=KARLON_SCRAPER_MAX_MB, silent_limit_sec=3600, after_outage=True,
+        headless_setting=KARLON_AIRBNB_HEADLESS, login_saved=_airbnb_login_saved,
     ),
 }
 
@@ -229,6 +241,8 @@ _out_lock = threading.Lock()
 _net = {"ok": True, "down_since": None, "checked": 0.0}
 _hidden = False
 _mode = "console"
+_no_desktop = False           # Windows session 0: started before anyone signed in
+_waiting: set[str] = set()    # processes held back until a desktop is there
 
 
 def compute_backoff(consecutive_fast_failures: int) -> int:
@@ -323,6 +337,24 @@ def wait_for_network() -> bool:
     return False
 
 
+def wait_for_desktop(entry: ManagedProcess) -> bool:
+    """With no desktop (started at power-on, nobody signed in), a browser
+    that still needs a person to log in can't show its window: hold it until
+    its login is saved (karlon_login.py) or the signed-in copy takes over.
+    Processes with a saved login run headless and never wait. False if
+    we're stopping."""
+    said = False
+    while _no_desktop and entry.needs_desktop() and not _stop.is_set():
+        if not said:
+            log(f"[supervisor] {entry.key} has no saved login and there's no desktop to show a login window: "
+                f"it starts at sign-in (or after: python karlon_login.py)")
+            said = True
+            _waiting.add(entry.key)
+        _sleep(30)
+    _waiting.discard(entry.key)
+    return not _stop.is_set()
+
+
 def _set_net(ok: bool) -> None:
     """Record a network check (for wait_for_network and the heartbeat)."""
     now = time.time()
@@ -356,7 +388,7 @@ def _watch(proc_entry: ManagedProcess) -> None:
     grows if it's crash-looping. A restart the monitor asked for (memory,
     hang, recycle, network back) is planned: no backoff, no failure count."""
     while not _stop.is_set():
-        if not wait_for_network():
+        if not wait_for_desktop(proc_entry) or not wait_for_network():
             return
         try:
             _prepare_browser(proc_entry)
@@ -448,11 +480,13 @@ def _heartbeat(selected: dict[str, ManagedProcess], started: float) -> None:
         "started": started, "karlon_url": KARLON_URL, "log": str(Path(LOG_DIR).resolve() / "karlon_supervisor.log"),
         "network": {"ok": _net["ok"], "down_since": _net["down_since"]},
         "system_memory_pct": care.system_memory_percent(),
+        "waiting_for_desktop": sorted(_waiting),
         "children": {
             k: {"pid": e.proc.pid if e.alive() else None, "running": e.alive(),
                 "uptime_s": round(now - e.last_restart) if e.alive() else 0,
                 "memory_mb": e.mem_mb, "restarts": e.restart_count, "last_exit": e.last_exit,
-                "silent_s": round(now - e.last_output) if e.alive() else None}
+                "silent_s": round(now - e.last_output) if e.alive() else None,
+                "headless": e.headless(), "waiting_for_desktop": k in _waiting}
             for k, e in selected.items()
         },
     })
@@ -463,7 +497,7 @@ def _housekeeping(selected: dict[str, ManagedProcess]) -> None:
     removed = care.prune_logs(LOG_DIR)
     t0 = time.time()                  # a browser starting after this is never swept
     keep = {pid for e in selected.values() if e.alive() for pid in care.tree_pids(e.proc.pid)}
-    orphans = care.sweep_orphan_browsers(_wa_session_dir(), keep, started_before=t0)
+    orphans = care.sweep_orphan_browsers(wa_session_dir(), keep, started_before=t0)
     if freed > 2**20 or removed or orphans:
         log(f"[supervisor] housekeeping: {freed / 2**20:.0f} MB browser temp freed, "
             f"{removed} old log file(s) removed, {orphans} orphan browser(s) closed")
@@ -524,9 +558,9 @@ def claim_instance(takeover: bool) -> care.InstanceLock | None:
             f"({age:.0f}s since its last heartbeat) — replacing it")
         if pid and care.is_supervisor(pid):
             care.kill_tree(pid)
-    elif takeover and beat.get("session") != care.session_id():
-        log(f"[supervisor] taking over from pid {pid} (Windows session {beat.get('session')}) "
-            f"so the browsers show on this desktop")
+    elif takeover and beat.get("session") != care.session_id() and beat.get("waiting_for_desktop"):
+        log(f"[supervisor] taking over from pid {pid} (Windows session {beat.get('session')}): "
+            f"{', '.join(beat['waiting_for_desktop'])} need(s) this desktop for a login window")
         care.STOP_REQUEST.parent.mkdir(parents=True, exist_ok=True)
         care.STOP_REQUEST.touch()
     else:
@@ -572,7 +606,7 @@ def _print_status() -> None:
 
 
 def main() -> None:
-    global _hidden, _mode
+    global _hidden, _mode, _no_desktop
     _force_utf8_console()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
@@ -604,7 +638,6 @@ def main() -> None:
         print(f"[supervisor] unknown key(s) {unknown} — choose from {list(ALL_PROCESSES.keys())}")
         return
     selected = {k: ALL_PROCESSES[k] for k in selected_keys}
-    no_desktop = care.IS_WINDOWS and care.session_id() == 0
 
     Path(LOG_DIR).mkdir(parents=True, exist_ok=True)
     log_path = Path(LOG_DIR) / "karlon_supervisor.log"
@@ -613,6 +646,12 @@ def main() -> None:
     sys.stderr = _Tee(logfile, sys.stderr)
     _hidden = args.service
     _mode = "service" if args.service else "console"
+
+    hold = care.STATE_DIR / "login.hold"
+    if hold.exists() and time.time() - hold.stat().st_mtime < 1800:
+        log("[supervisor] karlon_login.py is saving the logins - not starting until it's done")
+        return
+    _no_desktop = care.IS_WINDOWS and care.session_id() == 0
 
     lock = claim_instance(args.takeover)
     if lock is None:
@@ -624,17 +663,6 @@ def main() -> None:
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, lambda *_: _stop.set())
 
-    if no_desktop:
-        # Session 0 = started before anyone signed in: there is no screen, so a
-        # browser there is effectively headless and WhatsApp Web / Airbnb
-        # don't work. They start when the signed-in copy takes over.
-        skipped = [k for k, e in selected.items() if e.needs_desktop]
-        selected = {k: e for k, e in selected.items() if not e.needs_desktop}
-        log(f"[supervisor] no desktop (not signed in): not starting {', '.join(skipped)} - "
-            f"they need a visible browser and start at sign-in")
-        if not selected:
-            lock.release()
-            return
     print_active_config()
     awake = KARLON_KEEP_AWAKE and care.keep_awake(True)
     started = time.time()

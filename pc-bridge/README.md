@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 106 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 111 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -17,7 +17,8 @@ python -m pytest tests               # 106 tests, no WhatsApp/Airbnb/network nee
 | `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
 | `karlon_supervisor.py` | starts the three above, restarts them with backoff; watchdog for memory, hangs, network |
 | `karlon_care.py` | process-tree killing (job objects), browser profile/temp cleanup, lock, heartbeat |
-| `install_karlon.ps1` | makes it all part of Windows: sign-in task, auto sign-in, lid, sleep, Wi-Fi, registry |
+| `install_karlon.ps1` | makes it all part of Windows: power-on + sign-in tasks, lid, sleep, Wi-Fi, registry |
+| `karlon_login.py` | the one-time visible logins (WhatsApp QR, Airbnb); after that both run headless |
 | `karlon_status.ps1` / `uninstall_karlon.ps1` | see / restart / pause it; remove it and restore settings |
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
@@ -25,41 +26,53 @@ python -m pytest tests               # 106 tests, no WhatsApp/Airbnb/network nee
 
 ## Always on: part of Windows (install_karlon.ps1)
 
-One command makes the three processes start by themselves and keep running
-through crashes, Wi-Fi drops, sleep and a closed lid. WhatsApp Web and Airbnb
-only work in a real, visible browser window (not headless), so Karlon always
-runs on your signed-in desktop; `-AutoLogon` makes Windows sign you in by
-itself after a power-on or restart (and lock the screen), so that desktop is
-there even when nobody is at the laptop. In PowerShell, in this folder:
+WhatsApp and Airbnb need a person once: scan the QR, log in to Airbnb. After
+that the saved logins let them run **headless** (no window, in the background),
+from power-on, before anyone signs in. Invoices never need a login (the PDFs
+are always printed by a headless browser). In PowerShell, in this folder:
 
 ```
-Unblock-File .\*.ps1                                                       # files from a zip are marked "from the internet"
-powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon   # asks for Administrator, then your Windows password
-.\karlon_status.ps1            # what's running, memory, network, lid setting, last log lines
+Unblock-File .\*.ps1                                            # files from a zip are marked "from the internet"
+python karlon_login.py                                          # once: WhatsApp QR, then Airbnb login; Enter when done
+powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1   # asks for Administrator
+.\karlon_status.ps1            # running? headless or window? memory, network, lid, last log lines
 .\karlon_status.ps1 -Follow    # live log
 .\karlon_status.ps1 -Restart   # fresh start of all three (browsers closed cleanly)
 .\karlon_status.ps1 -Pause     # stop and stay stopped   (-Resume to start again)
-powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1           # remove it, settings restored
+powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1 # remove it, settings restored
 ```
 
-Options: `-AutoLogon` (sign in by itself after power-on; `-NoLockAfterAutoLogon`
-to skip the screen lock), `-KeepAwakeOnBattery` (never sleep on battery
-either), `-KarlonUrl <url>` (saved as your user's `KARLON_URL`),
-`-NoPowerChanges`, `-NoUpdateRebootBlock`, `-Python <path>`.
+`karlon_login.py` pauses Karlon, opens a visible WhatsApp window (scan the QR;
+when your chats show, press Enter), then a visible Airbnb window (log in, press
+Enter), saves both logins (`~/.karlon/wa_session`, `airbnb_data/auth_state.json`)
+and starts Karlon again. `--only wa` / `--only airbnb` for one of them.
+
+Headless is automatic (`KARLON_WA_HEADLESS` / `KARLON_AIRBNB_HEADLESS` = `auto`):
+headless while the login is saved, a visible window when it isn't. If WhatsApp
+is unlinked or Airbnb's login expires, that app forgets the saved login and
+opens a window at your next sign-in (or run `karlon_login.py` again). Set `1` to
+always run headless, `0` to always show the window. A headless WhatsApp uses
+the full browser in its new headless mode with a normal browser name (a
+"HeadlessChrome" name makes WhatsApp Web refuse to load); the scraper re-saves
+its Airbnb cookies after every cycle so the login stays fresh.
+
+Options: `-KeepAwakeOnBattery` (never sleep on battery either), `-KarlonUrl <url>`
+(saved as your user's `KARLON_URL`), `-NoBootTask` (start at sign-in only),
+`-AutoLogon` (Windows signs in by itself after a restart and locks the screen;
+only needed if you want visible windows after a restart), `-NoPowerChanges`,
+`-NoUpdateRebootBlock`, `-Python <path>`.
 
 **Continuous**
-- *Karlon* task: starts at sign-in, on your desktop (browser windows visible,
-  the QR code can be scanned). Restarted 1 min after any crash (999 times), no
-  time limit, runs on battery, started again when the network connects or the
-  PC wakes, checked every 5 min. Only one copy ever runs (a lock file); a copy
-  that stops answering for 3 min is killed and replaced. A registry Run entry
-  starts it too if the Task Scheduler is off.
-- `-AutoLogon`: after a power cut, Windows Update restart or reboot, Windows
-  signs in by itself, *Karlon Lock* locks the screen 40 s later, and Karlon runs
-  behind the lock (the browsers keep working; unlock to see them). The password
-  is stored encrypted by Windows (an LSA secret, as Sysinternals Autologon
-  does), never in a file; the uninstaller deletes it. Without `-AutoLogon`
-  nothing runs after a restart until you sign in.
+- *Karlon Boot* task: starts at power-on, before anyone signs in: everything
+  whose login is saved (headless) and the invoice worker. Something that still
+  needs a login window waits (`karlon_status.ps1` shows `wait`).
+- *Karlon* task: starts at sign-in, on your desktop; takes over from the boot
+  copy only if something is waiting for a login window.
+- Both: restarted 1 min after any crash (999 times), no time limit, run on
+  battery, started again when the network connects or the PC wakes, checked
+  every 5 min. Only one copy ever runs (a lock file); a copy that stops
+  answering for 3 min is killed and replaced. A registry Run entry starts it at
+  sign-in too if the Task Scheduler is off.
 - Lid: "do nothing" when closed (plugged in and on battery). Sleep and
   hibernate: never when plugged in. While Karlon runs it also tells Windows not
   to idle-sleep (`powercfg /requests` shows it). Fast Startup is turned off, and
@@ -67,8 +80,6 @@ either), `-KarlonUrl <url>` (saved as your user's `KARLON_URL`),
   maximum performance, and Windows may not switch the adapter off. Everything
   changed is saved first (`~/.karlon/install_backup.json`) and put back by the
   uninstaller.
-- Never headless: the supervisor refuses to start WhatsApp or the scraper on a
-  session with no desktop (Windows session 0).
 
 **Durable**
 - Wi-Fi drop: the supervisor sees the server is unreachable and holds every

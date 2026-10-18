@@ -5,23 +5,24 @@
   and crashes, and keeps its browsers and memory clean.
 
 .DESCRIPTION
-  WhatsApp Web and Airbnb only work in a real, visible browser window (not
-  headless, not on the hidden pre-logon desktop). So Karlon always runs on
-  your own desktop, and -AutoLogon makes Windows sign you in by itself after
-  a power-on or restart (then locks the screen), so the desktop - and Karlon
-  with it - is there even when nobody is at the laptop.
+  WhatsApp Web and Airbnb need a person once: scan the QR, log in to Airbnb.
+  Do that with  python karlon_login.py  (visible windows, press Enter when
+  done; the logins are saved). After that both run HEADLESS - no window, in
+  the background - and so can start at power-on, before anyone signs in.
+  A login that expires opens a visible window again at your next sign-in.
 
   What it sets up (everything is undone by uninstall_karlon.ps1):
 
   Task Scheduler, folder \Karlon\
-    "Karlon"       starts at sign-in, on your desktop (browser windows
-                   visible; a WhatsApp QR code can be scanned). Restarted
-                   1 min after any crash (999 times), no time limit, runs on
-                   battery, re-checked every 5 minutes, started again when
-                   the network (re)connects or the PC wakes from sleep.
-                   Only one copy ever runs (karlon_supervisor.py holds a lock).
-    "Karlon Lock"  with -AutoLogon: locks the screen right after an automatic
-                   sign-in at power-on (Karlon keeps running behind the lock).
+    "Karlon Boot"  starts at power-on, before anyone signs in. Runs everything
+                   whose login is saved (headless) plus the invoice worker.
+    "Karlon"       starts at sign-in, on your desktop. Takes over from the
+                   boot copy only if a login window is needed.
+    Both: restarted 1 min after any crash (999 times), no time limit, run on
+    battery, re-checked every 5 minutes, started again when the network
+    (re)connects or the PC wakes. Only one copy ever runs (a lock file).
+    "Karlon Lock"  with -AutoLogon only: locks the screen after an automatic
+                   sign-in at power-on.
 
   Power plan (current plan, values saved first)
     Closing the lid: do nothing (plugged in and on battery).
@@ -34,18 +35,21 @@
     HKCU\...\CurrentVersion\Run      "Karlon" fallback start at sign-in.
     HKLM ...\Session Manager\Power   HiberbootEnabled=0 (Fast Startup off).
     HKLM ...\WindowsUpdate\AU        NoAutoRebootWithLoggedOnUsers=1.
-    HKLM ...\Winlogon                with -AutoLogon: automatic sign-in; the
-                                     password is kept encrypted by Windows
-                                     (LSA secret), never in a file.
+    HKLM ...\Winlogon                with -AutoLogon (optional, only if you
+                                     want visible windows after a restart):
+                                     automatic sign-in; the password is kept
+                                     encrypted by Windows, never in a file.
 
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon
+  python karlon_login.py
+  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1
 .EXAMPLE
-  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon -KeepAwakeOnBattery
+  powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -KeepAwakeOnBattery
 #>
 [CmdletBinding()]
 param(
     [switch]$AutoLogon,
+    [switch]$NoBootTask,
     [switch]$NoLockAfterAutoLogon,
     [string]$Python,
     [string]$KarlonUrl,
@@ -246,8 +250,7 @@ try {
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
         -DontStopOnIdleEnd -WakeToRun:$KeepAwakeOnBattery -MultipleInstances IgnoreNew -Priority 5 `
         -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-    # Interactive = only ever on the signed-in desktop, where the browser
-    # windows are real and visible. Never "run whether signed in or not".
+    # Interactive = the signed-in desktop, where a login window can show.
     $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
 
     foreach ($old in @('Karlon', 'Karlon Logon', 'Karlon Boot', 'Karlon Lock')) {
@@ -264,6 +267,23 @@ try {
         -Principal $principal -Force `
         -Description 'Karlon on your desktop: WhatsApp bridge, invoices, Airbnb scraper (visible browsers).' | Out-Null
     Ok "scheduled task $($TaskPath)Karlon"
+
+    if (-not $NoBootTask) {
+        # Before anyone signs in there is no screen: only browsers with a saved
+        # login (headless) and the invoice worker run; the supervisor holds
+        # back anything that still needs a login window until sign-in.
+        $bootTriggers = @(
+            (New-ScheduledTaskTrigger -AtStartup),
+            (New-Every5MinTrigger),
+            (New-EventTrigger 'Microsoft-Windows-NetworkProfile/Operational' 'EventID=10000'),
+            (New-EventTrigger 'System' "Provider[@Name='Microsoft-Windows-Power-Troubleshooter'] and EventID=1")
+        )
+        $bootAction = New-ScheduledTaskAction -Execute $PythonW -Argument "`"$Supervisor`" --service" -WorkingDirectory $Here
+        Register-ScheduledTask -TaskName 'Karlon Boot' -TaskPath $TaskPath -Action $bootAction -Trigger $bootTriggers `
+            -Settings $settings -Principal (New-ScheduledTaskPrincipal -UserId $User -LogonType S4U -RunLevel Highest) -Force `
+            -Description 'Karlon from power-on, before sign-in: headless browsers with saved logins, invoices.' | Out-Null
+        Ok "scheduled task $($TaskPath)Karlon Boot (runs from power-on, headless)"
+    }
 
     if ($AutoLogon -and -not $NoLockAfterAutoLogon) {
         # Lock only a sign-in that happened by itself right after power-on
@@ -295,18 +315,19 @@ try {
         }
     }
 
-    if ($AutoLogon) {
-        Say "`nDone. After any power-on or restart Windows signs you in by itself, locks the screen, and Karlon starts on your desktop." 'Cyan'
-    } else {
-        Say "`nDone. Karlon starts when you sign in. To have it start after a power-on or restart with nobody there," 'Cyan'
-        Say '  run the installer again with -AutoLogon.' 'Cyan'
-    }
+    Say "`nDone. Karlon starts at power-on (headless, with the saved logins) and at sign-in." 'Cyan'
+    $waOk = Test-Path (Join-Path $HOME '.karlon\wa_session\karlon_logged_in')
+    $abOk = Test-Path (Join-Path $Here 'airbnb_data\auth_state.json')
+    $missing = @()
+    if (-not $waOk) { $missing += 'WhatsApp' }
+    if (-not $abOk) { $missing += 'Airbnb' }
+    if ($missing) { Warn ('Login not saved yet: ' + ($missing -join ', ') + ' - run  python karlon_login.py  once so it runs headless.') }
     Say '  It comes back by itself after crashes, Wi-Fi drops, sleep and with the lid closed.'
     Say '  See what it is doing:   .\karlon_status.ps1          (live log: .\karlon_status.ps1 -Follow)'
     Say '  Restart its processes:  .\karlon_status.ps1 -Restart'
     Say '  Pause / resume:         .\karlon_status.ps1 -Pause   /  -Resume'
     Say '  Remove everything:      .\uninstall_karlon.ps1'
-    Say '  The first time, scan the WhatsApp QR code in the browser window that opens.'
+    Say '  Log in again (WhatsApp QR / Airbnb):  python karlon_login.py'
 }
 catch {
     Write-Host "`nInstall failed: $($_.Exception.Message)" -ForegroundColor Red

@@ -1,6 +1,7 @@
 """The always-on pieces: tree killing, browser cleanup, lock, heartbeat,
 restart rules. Run on any OS; the Windows-only calls are no-ops here."""
 
+import asyncio
 import os
 import socket
 import subprocess
@@ -359,17 +360,81 @@ def test_powershell_scripts_are_plain_ascii():
         assert all(b < 128 for b in data), f"{p.name} has non-ASCII bytes"
 
 
-def test_browsers_are_never_headless_and_need_a_desktop():
-    """WhatsApp Web and Airbnb only work in a visible browser: never started
-    with --headless, and never on a session with no desktop."""
+def test_headless_once_the_login_is_saved(tmp_path, monkeypatch):
+    """A site browser runs headless once its login is saved and needs a
+    visible window (a desktop) until then; the invoice worker has no login."""
+    wa, scraper, inv = (sup.ALL_PROCESSES[k] for k in ("wa", "scraper", "invoice"))
     for e in sup.ALL_PROCESSES.values():
-        assert "--headless" not in e.args
-    assert sup.ALL_PROCESSES["wa"].needs_desktop and sup.ALL_PROCESSES["scraper"].needs_desktop
-    assert not sup.ALL_PROCESSES["invoice"].needs_desktop
+        assert "--headless" not in e.args          # each script decides from its saved login
+    assert inv.headless() is None and not inv.needs_desktop()
+    monkeypatch.setattr(wa, "headless_setting", "auto")
+    monkeypatch.setattr(wa, "login_saved", lambda: False)
+    assert wa.headless() is False and wa.needs_desktop()
+    monkeypatch.setattr(wa, "login_saved", lambda: True)
+    assert wa.headless() is True and not wa.needs_desktop()
+    monkeypatch.setattr(scraper, "headless_setting", "0")       # forced visible
+    monkeypatch.setattr(scraper, "login_saved", lambda: True)
+    assert scraper.needs_desktop()
 
 
-def test_installer_only_registers_desktop_tasks():
+def test_no_desktop_holds_back_only_what_needs_a_login_window(monkeypatch):
+    wa = _Fake("wa")
+    wa.login_saved, wa.headless_setting = (lambda: False), "auto"
+    monkeypatch.setattr(sup, "_no_desktop", True)
+    seen = []
+    monkeypatch.setattr(sup, "_sleep", lambda s: seen.append(set(sup._waiting)) or sup._stop.set())  # one round
+    try:
+        assert sup.wait_for_desktop(wa) is False and seen == [{"wa"}]   # shown as waiting in the heartbeat
+    finally:
+        sup._stop.clear()
+        sup._waiting.clear()
+    wa.login_saved = lambda: True                                           # saved: runs headless, no wait
+    assert sup.wait_for_desktop(wa) is True and not sup._waiting
+
+
+def test_headless_choice():
+    from local_config import headless_choice
+    assert headless_choice("auto", True) and not headless_choice("auto", False)
+    assert headless_choice("1", False) and not headless_choice("0", True)
+
+
+def test_airbnb_login_paths_agree():
+    import local_config
+    import airbnb_parallel_system as ab
+    assert Path(local_config.AIRBNB_AUTH_STATE_FILE).resolve() == ab.STORAGE_STATE_FILE.resolve()
+
+
+def test_no_keyboard_is_not_logged_in(monkeypatch):
+    """Under the supervisor stdin is closed: input() fails at once, which used
+    to count as 'Enter pressed, I'm logged in'."""
+    import airbnb_parallel_system as ab
+
+    def no_stdin(prompt=""):
+        raise EOFError
+    monkeypatch.setattr("builtins.input", no_stdin)
+
+    async def run():
+        ev = await ab.wait_for_manual_continue("")
+        await asyncio.sleep(0.3)
+        return ev.is_set()
+    assert asyncio.run(run()) is False
+
+
+def test_headless_whatsapp_logged_out_forgets_the_login(tmp_path, monkeypatch):
+    import wa_bridge as w
+    monkeypatch.setattr(w, "SESSION_DIR", str(tmp_path))
+    w.mark_logged_in(True)
+    assert (tmp_path / "karlon_logged_in").exists() and w.wants_headless()
+    monkeypatch.setattr(w, "whatsapp_state", lambda page: ("qr", "Scan the QR code"))
+    assert w.wait_for_whatsapp(None, headless=True) is False
+    assert not (tmp_path / "karlon_logged_in").exists(), "next start opens a visible window"
+    assert not w.wants_headless()
+
+
+def test_installer_tasks():
     here = Path(__file__).resolve().parent.parent
     text = (here / "install_karlon.ps1").read_text()
-    assert "LogonType S4U" not in text and "-AtStartup" not in text, "no task without a desktop"
+    assert "'Karlon Boot'" in text and "-AtStartup" in text and "LogonType S4U" in text
     assert "LogonType Interactive" in text
+    login = (here / "karlon_login.py").read_text()
+    assert "login.hold" in login and "login.hold" in (here / "karlon_supervisor.py").read_text()
