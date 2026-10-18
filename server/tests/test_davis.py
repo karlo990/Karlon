@@ -192,16 +192,14 @@ def test_full_booking_flow_live(dc, db):
     _guest(db, "I have paid, here is the proof")
     r = _run(dc)
     s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
-    assert s["attention"] and s["attention_reason"] == "payment proof to verify" and s["stage"] == "payment"
-    assert not s["handoff"]
+    assert s["stage"] == "payment" and not s["handoff"] and "attention" not in s     # no hand-over, no alert
+    assert "proof received" in _davis(db)[-1]["text"] and "team" not in _davis(db)[-1]["text"].lower()
     _guest(db, "hello?")                                       # Davis still answers after payment
-    assert _run(dc)["status"] == "sent" and "confirming your payment" in _davis(db)[-1]["text"]
+    assert _run(dc)["status"] == "sent" and "payment is being matched" in _davis(db)[-1]["text"]
 
-    dc.post(f"/api/davis/sessions/{GUEST}/handoff", json={"active": True})   # staff take over: Davis muted
+    dc.post(f"/api/davis/sessions/{GUEST}/handoff", json={"active": True})   # manual "Take over" still mutes
     _guest(db, "any update?")
     assert _run(dc)["reason"] == "staff_took_over"
-    dc.post(f"/api/davis/sessions/{GUEST}/attention", json={"active": False})
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
 
 def test_never_more_than_two_replies_per_guest_turn(dc, db):
@@ -251,15 +249,20 @@ def test_opt_out_and_back(dc, db):
     assert _run(dc)["status"] == "sent"
 
 
-def test_complaint_hands_over_to_staff(dc, db):
+def test_complaint_and_person_request_handled_by_davis(dc, db):
     _setup(dc, db)
     _guest(db, "This is a scam, I want a refund")
-    _run(dc)
+    r = _run(dc)
     s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
-    assert s["attention"] and s["attention_reason"] == "complaint" and not s["handoff"]
-    assert "sorry" in _davis(db)[-1]["text"].lower()
+    assert not s["handoff"] and [a["type"] for a in r["plan"]["actions"]] == ["reply"]
+    text = _davis(db)[-1]["text"].lower()
+    assert "sorry" in text and "manager" not in text and "team" not in text
     _guest(db, "The last house had no water")
     assert _run(dc)["status"] == "sent"                        # Davis stays with the guest
+    _guest(db, "can I speak to a manager")
+    _run(dc)
+    text = _davis(db)[-1]["text"]
+    assert "Davis" in text and "everything" in text and "contact you" not in text
 
 
 def test_hidden_and_featured_houses(dc, db):
@@ -325,6 +328,82 @@ def test_no_prices_for_dates_requests_live_prices_then_sends(dc, db):
     assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["stage"] == "present"
 
 
+def _wait(pred, tries=50):
+    for _ in range(tries):                                # hooks run on the engine's loop
+        if pred():
+            return True
+        time.sleep(0.1)
+    return False
+
+
+def test_houses_go_out_before_the_scraper_finishes(dc, db):
+    """The guest sees the first EARLY_PRESENT homes as soon as they're priced,
+    while the scraper is still working on the rest."""
+    _setup(dc, db, houses=False)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    job = _run(dc)["refresh_job_id"]
+    dc.get("/api/houses/refresh/pending")                 # the scraper takes the job (in progress)
+    dc.post("/api/houses/ingest", json={"listings": [_house(11, job=job), _house(12, job=job)]})
+    time.sleep(0.5)
+    assert not any(m["sender"] == "Davis (catalogue)" for m in _davis(db))   # 2 < EARLY_PRESENT: wait
+    dc.post("/api/houses/ingest", json={"listings": [_house(13, job=job, usd=95.0)]})
+    assert _wait(lambda: sum(m["sender"] == "Davis (catalogue)" and m["kind"] == "text" for m in _davis(db)) == 3)
+    assert dc.get(f"/api/houses/refresh/{job}").json()["status"] == "in_progress"
+    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["stage"] == "present"
+    dc.post(f"/api/houses/refresh/{job}/complete", json={"pushed": 3})
+    time.sleep(0.3)
+    assert sum(m["sender"] == "Davis" for m in _davis(db)) == 2           # nothing repeated at completion
+
+
+def test_late_prices_are_requested_again_then_other_dates_offered(dc, db):
+    _setup(dc, db, houses=False)
+    _guest(db, f"Bulawayo {_human(CI)} to {_human(CO)}")
+    r = _run(dc)
+    assert r["plan"]["stage"] == "searching"
+    r = _run(dc, trigger="refresh_timeout")              # nothing arrived: ask the scraper again, quietly
+    assert [a["type"] for a in r["plan"]["actions"]] == ["request_refresh"]
+    s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
+    assert s["stage"] == "searching" and s["refresh_tries"] == 2
+    r = _run(dc, trigger="refresh_timeout")              # still nothing: the guest hears it plainly
+    text = _davis(db)[-1]["text"]
+    assert r["plan"]["stage"] == "qualify" and "couldn't get live prices" in text and "team" not in text.lower()
+    assert sum(m["sender"] == "Davis" for m in _davis(db)) == 2           # "checking" + the outcome
+
+
+def test_quiet_guest_gets_one_followup(dc, db):
+    from app.davis.engine import Engine
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)                                              # houses sent, Davis spoke last
+    assert Engine._quiet_guests(db) == []                 # not quiet long enough yet
+    hours_ago = (datetime.now(timezone.utc) - timedelta(hours=4)).isoformat()
+    db.execute("UPDATE davis_sessions SET last_reply_at=?", (hours_ago,))
+    db.commit()
+    assert Engine._quiet_guests(db) == [GUEST]
+    r = _run(dc, trigger="followup")
+    assert r["status"] == "sent" and "catch your eye" in _davis(db)[-1]["text"]
+    s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
+    assert s["followups"] == 1
+    db.execute("UPDATE davis_sessions SET last_reply_at=?", (hours_ago,))
+    db.commit()
+    assert Engine._quiet_guests(db) == []                 # one nudge per silence
+    _guest(db, "KCER 102 please")                         # the guest is back: a new silence may get one
+    _run(dc)
+    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["followups"] == 0
+    _guest(db, "thanks")
+    assert _run(dc, trigger="followup")["reason"] == "guest_wrote"        # the normal path answers instead
+
+
+def test_live_requests_api(dc, db):
+    when = (TODAY + timedelta(days=30)).isoformat(), (TODAY + timedelta(days=33)).isoformat()
+    j = dc.post("/api/davis/requests", json={"city": "Bulawayo", "check_in": when[0], "check_out": when[1]}).json()
+    assert j["location"] == "bulawayo" and j["status"] == "pending"
+    again = dc.post("/api/davis/requests", json={"city": "bulawayo", "check_in": when[0], "check_out": when[1]})
+    assert again.json()["id"] == j["id"]                  # one job per (city, dates)
+    reqs = dc.get("/api/davis/requests").json()["requests"]
+    assert reqs[0]["id"] == j["id"] and reqs[0]["guests_waiting"] == 0
+
+
 # ─────────────────────────── hook from the bridge sync ───────────────────────
 
 def test_bridge_sync_triggers_davis(dc, db):
@@ -361,13 +440,12 @@ def _fake_local(monkeypatch, payload=None, error=None):
 def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
     from app.davis import persona
     _setup(dc, db)
-    calls = _fake_local(monkeypatch, {"reply": "Mhoro! Lovely, Harare! Which dates are you looking at, and for how many guests?",
-                                      "handoff": False})
+    calls = _fake_local(monkeypatch, {"reply": "Mhoro! Lovely, Harare! Which dates are you looking at, and for how many guests?"})
     assert dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"}).status_code == 200
     _guest(db, "Hi, I need a place in Harare")
     r = _run(dc)
     c = calls[0]
-    assert c["schema"]["required"] == ["reply", "handoff"] and c["schema"]["additionalProperties"] is False
+    assert c["schema"]["required"] == ["reply"] and c["schema"]["additionalProperties"] is False
     assert persona.PERSONA["name"] in c["system"] and "KCER" in c["system"]
     assert "KEY POINTS:" in c["user"] and "airbnb.com" not in c["user"]
     assert _davis(db)[-1]["text"].startswith("Mhoro!") and r["plan"]["llm"]["provider"] == "local"
@@ -375,7 +453,7 @@ def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
 
 def test_model_reply_with_invented_price_is_not_sent(dc, db, monkeypatch):
     _setup(dc, db)
-    _fake_local(monkeypatch, {"reply": "Great news, all homes are just USD 20 a night! Which one?", "handoff": False})
+    _fake_local(monkeypatch, {"reply": "Great news, all homes are just USD 20 a night! Which one?"})
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
     r = _run(dc)
@@ -383,13 +461,21 @@ def test_model_reply_with_invented_price_is_not_sent(dc, db, monkeypatch):
     assert "USD 20" not in _davis(db)[0]["text"] and "KCER" in _davis(db)[0]["text"]
 
 
-def test_model_handoff_only_counts_on_open_questions(dc, db, monkeypatch):
+def test_no_staff_actions_anywhere(dc, db, monkeypatch):
+    """No plan ever hands a guest to a person: every action is one of Davis's hands."""
+    from app.davis import persona
     _setup(dc, db)
-    _fake_local(monkeypatch, {"reply": "Hello! Which city and dates would you like?", "handoff": True})
-    dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
-    _guest(db, "Hello")
-    _run(dc)
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]   # a greeting raises no alert
+    hands = {"reply", "send_options", "send_terms", "create_invoice", "request_refresh", "skill_used",
+             "opt_out", "opt_in"}
+    for t in ("Hello", f"Harare {_human(CI)} to {_human(CO)} for 4", "is there wifi?", "I want to speak to a manager",
+              "this is a scam", "KCER 102", "can we bring our dog?", "Leon Moyo 63-1234567 X 42",
+              "is it near the airport?", "I have paid"):
+        _guest(db, t)
+        r = _run(dc)
+        assert {a["type"] for a in r["plan"]["actions"]} <= hands, (t, r["plan"]["actions"])
+    joined = " ".join(m["text"] or "" for m in _davis(db)).lower()
+    assert "get back to you" not in joined and "our team" not in joined and "manager" not in joined
+    assert "handoff" not in persona.system_prompt(40)
 
 
 def test_model_down_falls_back_and_breaker_opens(dc, db, monkeypatch):
@@ -423,31 +509,28 @@ def test_guard_catches_small_model_mistakes():
 
 def test_open_question_uses_house_note_or_hands_over(dc, db, monkeypatch):
     _setup(dc, db)
-    calls = _fake_local(monkeypatch, {"reply": "Yes, KCER 102 has wifi and a pool ✨ Shall I prepare your invoice?",
-                                      "handoff": False})
+    calls = _fake_local(monkeypatch, {"reply": "Yes, KCER 102 has wifi and a pool ✨ Shall I prepare your invoice?"})
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "open"})    # model for open questions only
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
     _run(dc)
     assert calls == []                                                          # booking steps: persona lines, no model
     _guest(db, "is there wifi?")
     _run(dc)
-    assert calls == [] and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]   # no note: team
-    dc.post(f"/api/davis/sessions/{GUEST}/attention", json={"active": False})
+    assert calls == [] and "isn't in our listing" in _davis(db)[-1]["text"]      # no note: said plainly
     dc.patch("/api/davis/catalogue", json={"listing_url": "https://www.airbnb.com/rooms/2", "note": "wifi, pool"})
     _guest(db, "does KCER 102 have wifi?")
     r = _run(dc)
     assert len(calls) == 1 and "note: wifi, pool" in calls[0]["user"]
     assert _davis(db)[-1]["text"].startswith("Yes, KCER 102 has wifi")
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
     _guest(db, "is KCER 102 near the airport?")              # no note mentions it: never ask the model
     _run(dc)
-    assert len(calls) == 1 and dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
+    assert len(calls) == 1 and "isn't in our listing" in _davis(db)[-1]["text"]
 
 
 def test_model_answer_must_use_the_note(dc, db, monkeypatch):
     _setup(dc, db)
-    _fake_local(monkeypatch, {"reply": "Yes, it's close to everything ✨ Shall I prepare your invoice?", "handoff": False})
+    _fake_local(monkeypatch, {"reply": "Yes, it's close to everything ✨ Shall I prepare your invoice?"})
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "open"})
     dc.patch("/api/davis/catalogue", json={"listing_url": "https://www.airbnb.com/rooms/2", "note": "wifi, pool"})
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
@@ -456,7 +539,6 @@ def test_model_answer_must_use_the_note(dc, db, monkeypatch):
     r = _run(dc)
     assert r["plan"]["llm"]["rejected"] == "answer_not_grounded_in_note"
     assert _davis(db)[-1]["text"].startswith("KCER 102 has wifi, pool")            # the note itself goes out
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
 
 
 def test_question_while_collecting_details(dc, db):
@@ -468,9 +550,8 @@ def test_question_while_collecting_details(dc, db):
     _guest(db, "can we bring our dog?")
     _run(dc)
     text = _davis(db)[-1]["text"]
-    assert "I'll check that for you" in text and "team" not in text           # no "ask the team" excuse
+    assert "isn't in our listing" in text and "team" not in text and "get back" not in text   # honest, no promise
     assert text.endswith("Please send your full name and ID number for the invoice.")
-    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]   # the team is alerted quietly
 
 
 def test_choice_and_name_in_one_burst_are_both_kept(dc, db):
@@ -495,7 +576,7 @@ def test_ecocash_number_is_given_and_no_other(dc, db, monkeypatch):
     _guest(db, "what is your ecocash number?")
     _run(dc)
     assert "EcoCash 0780563561 (Karl Muzunze)" in _davis(db)[-1]["text"]
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]    # not a payment claim
+    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["stage"] != "payment"   # not a payment claim
     for t in ("KCER 102", "Leon Moyo 63-1234567 X 42"):
         _guest(db, t)
         r = _run(dc)
@@ -589,7 +670,7 @@ def test_skills_learned_from_team_replies_in_other_chats(dc, db):
     r = _run(dc)
     text = _davis(db)[-1]["text"]
     assert text.startswith("Yes, small pets are welcome") and text.endswith("?") and r["plan"]["intent"] == "skill"
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
+    assert "isn't in our listing" not in _davis(db)[-1]["text"]           # answered, not "no detail"
     assert dc.get("/api/davis/skills").json()[0]["uses"] == 1
     k = dc.post("/api/davis/skills", json={"question": "Is there a generator for power cuts?",
                                            "answer": "Our homes have solar or generator backup for power cuts."}).json()
@@ -613,7 +694,7 @@ def test_business_faq_and_small_talk_need_no_staff(dc, db):
     _run(dc)
     text = _davis(db)[-1]["text"]
     assert text.startswith("I'm well, thank you Leon!") and "check" not in text
-    assert not dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["attention"]
+    assert "isn't in our listing" not in _davis(db)[-1]["text"]           # answered, not "no detail"
 
 
 def test_quoted_total_matches_the_invoice_with_service_fee(dc, db):
@@ -655,7 +736,7 @@ def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monke
     _setup(dc, db)
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "ai"})
     answers = iter([{"reply": "Mhoro Leon! Harare is a great choice. What dates are you thinking of, and how many "
-                              "of you are coming?", "handoff": False}])
+                              "of you are coming?"}])
     calls = []
 
     def gen(msgs, schema):
@@ -667,26 +748,40 @@ def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monke
     assert r["status"] == "sent" and _davis(db)[-1]["text"].startswith("Mhoro Leon! Harare is a great choice")
     assert "KEY POINTS:" in calls[0]
 
-    # a reply that drops the payment number is retried, then left to staff: nothing canned is sent
-    bad = {"reply": "Please pay by EcoCash and send proof here.", "handoff": False}
+    # a reply that drops the payment number: nothing is sent, the turn runs again
+    # shortly (no person is asked); after AI_RETRIES the plan's own wording goes out
+    from app.davis import config
+    monkeypatch.setattr(config, "AI_RETRY_SEC", 3600)          # the retry timer never fires inside the test
+    bad = {"reply": "Please pay by EcoCash and send proof here."}
     monkeypatch.setattr(local_llm.model, "generate", lambda msgs, schema: (calls.append(msgs[-1]["content"]) or bad,
                                                                           {"model": "t.gguf"}))
     before = len(_davis(db))
     _guest(db, "how do I pay?")
     r = _run(dc)
-    assert r["status"] == "needs_staff" and len(_davis(db)) == before
+    assert r["status"] == "retry" and len(_davis(db)) == before
     assert "REJECTED (dropped:" in calls[-1]                                    # the retry was told why
     s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
-    assert s["attention"] and "couldn't write a safe reply" in s["attention_reason"]
-    drafts = dc.get("/api/davis/drafts").json()
-    assert drafts and [a["type"] for a in drafts[0]["plan"]["actions"]] == ["reply"]   # staff can send/edit it
+    assert s["ai_retries"] == 1 and s["last_inbound_id"] != _last_in(db)       # not claimed: it runs again
+    assert _run(dc)["status"] == "retry"
+    r = _run(dc)
+    assert r["status"] == "sent" and len(_davis(db)) == before + 1             # the guest is never left waiting
+    assert "0780563561" in _davis(db)[-1]["text"]
+    assert [a.get("by") for a in r["plan"]["actions"] if a["type"] == "reply"] == ["plan"]
+    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["ai_retries"] == 0
 
-    # model down: still no fixed sentence to the guest
+    # model down: the same - retried, then answered
     def boom(msgs, schema):
         raise RuntimeError("model file missing")
     monkeypatch.setattr(local_llm.model, "generate", boom)
     _guest(db, "hello?")
-    assert _run(dc)["status"] == "needs_staff" and len(_davis(db)) == before
+    assert _run(dc)["status"] == "retry"
+    _run(dc)
+    assert _run(dc)["status"] == "sent" and len(_davis(db)) == before + 2
+
+
+def _last_in(db):
+    return db.execute("SELECT id FROM messages WHERE chat_id=? AND direction='in' ORDER BY rowid DESC LIMIT 1",
+                      (GUEST,)).fetchone()["id"]
 
 
 def test_persona_lines_fit_the_word_limit():
@@ -752,8 +847,25 @@ def test_dashboard_is_locked_by_the_karlon_password(dc, db, monkeypatch):
 def test_cut_off_reply_keeps_complete_sentences():
     from app.davis.local_llm import salvage
     cut = '{"reply": "Full payment confirms the booking for KCER 5100, 11–14 Dec. Please send USD 520 to EcoCash 07805'
-    assert salvage(cut) == {"reply": "Full payment confirms the booking for KCER 5100, 11–14 Dec.", "handoff": False}
+    assert salvage(cut) == {"reply": "Full payment confirms the booking for KCER 5100, 11–14 Dec."}
     assert salvage('{"reply": "Hello there, I can help you with') is None          # no full sentence
     assert salvage('{"reply": "Sure. Thanks a lot for that, I will check it now.\\') == {
-        "reply": "Sure. Thanks a lot for that, I will check it now.", "handoff": False}
+        "reply": "Sure. Thanks a lot for that, I will check it now."}
     assert salvage('{"handoff": tr') is None
+
+
+def test_complaints_in_plain_words(dc, db):
+    """'ridiculous', 'dirty', 'no water'… are complaints, handled by Davis
+    (and "your last house" in one is not a pick of the last option)."""
+    from app.davis import nlu
+    for t in ("This is ridiculous, your last house was dirty", "there was no water at the house",
+              "the gate was broken when we arrived"):
+        assert nlu.extract(t, TODAY)["complaint"], t
+    assert not nlu.extract("is the TV broken?", TODAY)["complaint"]
+    _setup(dc, db)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
+    _run(dc)
+    _guest(db, "This is ridiculous, your last house was dirty")
+    r = _run(dc)
+    assert r["plan"]["intent"] == "complaint" and not r["plan"].get("choice")
+    assert "sorry" in _davis(db)[-1]["text"].lower()

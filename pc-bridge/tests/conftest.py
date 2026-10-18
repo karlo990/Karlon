@@ -28,3 +28,12 @@ def page(browser):
     p = browser.new_page(viewport={"width": 900, "height": 700})
     yield p
     p.close()
+
+
+def run_async(coro):
+    """asyncio.run in its own thread: a Playwright (sync) fixture may already
+    run an event loop in the test thread."""
+    import asyncio
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        return pool.submit(asyncio.run, coro).result()

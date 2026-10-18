@@ -78,6 +78,13 @@ AIRBNB_RESCRAPE_HOURS = _int_env("AIRBNB_RESCRAPE_HOURS", 12)
 AIRBNB_CITY_WORKERS = _int_env("AIRBNB_CITY_WORKERS", 3)          # cities searched at the same time
 AIRBNB_CYCLE_REST_SECONDS = _int_env("AIRBNB_CYCLE_REST_SECONDS", 300, minimum=0)
 
+# On demand only (default): the scraper fetches homes just for the city and
+# dates a guest asks for (Davis or the dashboard requests them); no timed
+# sweeps of every city. 1 = also run the old full sweep of AIRBNB_CITIES.
+AIRBNB_FULL_SWEEP = os.environ.get("AIRBNB_FULL_SWEEP", "0").strip().lower() in ("1", "true", "yes", "on")
+AIRBNB_ONDEMAND_PARALLEL = _int_env("AIRBNB_ONDEMAND_PARALLEL", 2)   # guests' requests worked at once
+AIRBNB_ONDEMAND_POLL_SEC = _int_env("AIRBNB_ONDEMAND_POLL_SEC", 5)   # how fast a new request is picked up
+
 # ── Reservations (Reserve button in the app → airbnb_reserve.py) ──────────
 # TEST MODE unless AIRBNB_RESERVE_LIVE=1: every step runs (listing, Reserve,
 # card/total checks, message to host) except the final "Request to book"

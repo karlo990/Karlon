@@ -7,8 +7,7 @@ PUT  /api/davis/settings                     mode / provider / model / pause / c
 GET  /api/davis/sessions                     conversations Davis knows, newest first
 GET  /api/davis/sessions/{chat_id}           one conversation: frame, messages, events, drafts
 POST /api/davis/sessions/{chat_id}/pause     {paused: bool}
-POST /api/davis/sessions/{chat_id}/handoff   {active: bool}   staff take over (Davis muted) / give back
-POST /api/davis/sessions/{chat_id}/attention {active: false}  mark Davis's "needs staff" alert as done
+POST /api/davis/sessions/{chat_id}/handoff   {active: bool}   manual "Take over" (Davis muted) / give back
 POST /api/davis/sessions/{chat_id}/reset     forget the frame (stage back to new)
 POST /api/davis/sessions/{chat_id}/run       process now (shadow: draft only)
 GET  /api/davis/events                       recent events
@@ -17,6 +16,8 @@ POST /api/davis/drafts/{id}/approve          {text?, force?} → sends it
 POST /api/davis/drafts/{id}/discard
 GET  /api/davis/catalogue                    houses per city with Davis's flags
 PATCH /api/davis/catalogue                   {listing_url, hidden?, featured?, note?}
+GET  /api/davis/requests                     live-home requests to the Airbnb scraper (newest first)
+POST /api/davis/requests                     {city, check_in, check_out} → ask the scraper for those dates
 POST /api/davis/preview                      {text, chat_id?} → what Davis would do (nothing sent)
 
 GET  /api/davis/lock-state · POST /api/davis/unlock {password} · POST /api/davis/lock
@@ -195,7 +196,7 @@ def _funnel(conn) -> dict:
     out = {s: 0 for s in policy.STAGES}
     out.update({r["stage"]: r["n"] for r in rows})
     out["handoff"] = conn.execute("SELECT COUNT(*) FROM davis_sessions WHERE handoff=1").fetchone()[0]
-    out["attention"] = conn.execute("SELECT COUNT(*) FROM davis_sessions WHERE attention=1").fetchone()[0]
+    out["followups"] = conn.execute("SELECT COALESCE(SUM(followups), 0) FROM davis_sessions").fetchone()[0]
     return out
 
 
@@ -213,7 +214,11 @@ def _status() -> dict:
         "limits": {"max_words": config.MAX_WORDS, "max_replies_per_turn": config.MAX_REPLIES_PER_TURN,
                    "debounce_sec": config.DEBOUNCE_SEC, "fresh_minutes": config.FRESH_MINUTES,
                    "human_quiet_minutes": config.HUMAN_QUIET_MINUTES, "concurrency": config.CONCURRENCY,
-                   "options_per_send": config.OPTIONS_PER_SEND, "images_per_option": config.IMAGES_PER_OPTION},
+                   "options_per_send": config.OPTIONS_PER_SEND, "images_per_option": config.IMAGES_PER_OPTION,
+                   "early_present": config.EARLY_PRESENT, "ai_retries": config.AI_RETRIES,
+                   "ai_retry_sec": config.AI_RETRY_SEC, "refresh_tries": config.REFRESH_TRIES,
+                   "refresh_timeout_minutes": config.REFRESH_TIMEOUT_MINUTES,
+                   "followup_hours": config.FOLLOWUP_HOURS, "followup_max": config.FOLLOWUP_MAX},
         "local_model": local_model.status(), "lock_configured": bool(_secrets()),
         "modes": config.MODES, "providers": config.PROVIDERS,
     }
@@ -318,27 +323,13 @@ async def handoff(chat_id: str, body: FlagIn):
     return {"ok": True, "handoff": bool(body.active)}
 
 
-@api.post("/api/davis/sessions/{chat_id}/attention")
-async def attention(chat_id: str, body: FlagIn):
-    conn = get_db()
-    try:
-        _need_session(conn, chat_id)
-        store.update_session(conn, chat_id, attention=bool(body.active),
-                             **({} if body.active else {"attention_reason": None}))
-    finally:
-        conn.close()
-    await engine.emit(chat_id, "alert" if body.active else "alert_done")
-    return {"ok": True, "attention": bool(body.active)}
-
-
 @api.post("/api/davis/sessions/{chat_id}/reset")
 async def reset(chat_id: str):
     conn = get_db()
     try:
         _need_session(conn, chat_id)
         store.update_session(conn, chat_id, stage="new", slots={}, choice=None, handoff=False, handoff_reason=None,
-                             attention=False, attention_reason=None,
-                             refresh_job_id=None, invoice_key=None)
+                             refresh_job_id=None, refresh_tries=0, ai_retries=0, followups=0, invoice_key=None)
     finally:
         conn.close()
     await engine.emit(chat_id, "reset")
@@ -346,7 +337,7 @@ async def reset(chat_id: str):
 
 
 @api.post("/api/davis/sessions/{chat_id}/run")
-async def run_now(chat_id: str, trigger: str = Query("message", pattern="^(message|refresh_done)$"),
+async def run_now(chat_id: str, trigger: str = Query("message", pattern="^(message|refresh_done|refresh_timeout|followup)$"),
                   again: bool = False):
     """Process the chat now, without waiting for the debounce. In shadow mode
     (or mode off) this only drafts; in live mode it sends. again=true
@@ -430,6 +421,40 @@ def get_catalogue(city: str = "all", limit: int = 120):
             "sent_to_chats": sends.get(r["url"], 0), **offers.get(r["url"], {"offers": 0, "next_check_in": None}),
         })
     return {"cities": cities, "houses": out}
+
+
+class LiveRequestIn(BaseModel):
+    city: str
+    check_in: str
+    check_out: str
+
+
+@api.get("/api/davis/requests")
+def live_requests(limit: int = 30):
+    """What Davis (or the dashboard) asked the Airbnb scraper for: the
+    catalogue fills from these, for exactly the dates guests want."""
+    conn = get_db()
+    try:
+        rows = conn.execute("SELECT * FROM refresh_jobs ORDER BY created_at DESC LIMIT ?",
+                            (max(1, min(limit, 200)),)).fetchall()
+        waiting = {r["refresh_job_id"]: r["n"] for r in conn.execute(
+            "SELECT refresh_job_id, COUNT(*) AS n FROM davis_sessions WHERE stage='searching' "
+            "AND refresh_job_id IS NOT NULL GROUP BY refresh_job_id")}
+    finally:
+        conn.close()
+    return {"requests": [{**dict(r), "pushed_count": r["pushed_count"] or 0,
+                          "guests_waiting": waiting.get(r["id"], 0)} for r in rows]}
+
+
+@api.post("/api/davis/requests")
+async def new_live_request(body: LiveRequestIn):
+    from ..models import HouseRefreshRequestIn
+    from ..routers import house_refresh
+    job = house_refresh.request_refresh(HouseRefreshRequestIn(location=body.city, check_in=body.check_in,
+                                                              check_out=body.check_out))
+    await engine.emit(None, "live_request", {k: job[k] for k in ("id", "location", "check_in", "check_out",
+                                                                  "status")})
+    return job
 
 
 @api.patch("/api/davis/catalogue")

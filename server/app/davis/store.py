@@ -25,12 +25,14 @@ CREATE TABLE IF NOT EXISTS davis_sessions (
     last_inbound_id TEXT,                 -- newest guest message already handled
     last_reply_at   TEXT,
     paused          INTEGER NOT NULL DEFAULT 0,
-    handoff         INTEGER NOT NULL DEFAULT 0,   -- staff took over on the dashboard: Davis is muted
+    handoff         INTEGER NOT NULL DEFAULT 0,   -- someone chose "Take over" on the dashboard: Davis is muted
     handoff_reason  TEXT,
-    attention       INTEGER NOT NULL DEFAULT 0,   -- Davis alerted the team (Davis keeps replying)
-    attention_reason TEXT,
     opted_out       INTEGER NOT NULL DEFAULT 0,
-    refresh_job_id  INTEGER,              -- waiting for live prices for the guest's dates
+    refresh_job_id  INTEGER,              -- waiting for live homes for the guest's dates
+    refresh_tries   INTEGER NOT NULL DEFAULT 0,   -- live-home requests for this search
+    ai_retries      INTEGER NOT NULL DEFAULT 0,   -- turns re-run because the model failed
+    followups       INTEGER NOT NULL DEFAULT 0,   -- nudges since the guest last wrote
+    last_followup_at TEXT,
     invoice_id      TEXT,
     invoice_key     TEXT,                 -- listing|dates|name the invoice was made for
     terms_sent_at   TEXT,
@@ -97,8 +99,10 @@ def now_iso() -> str:
 
 def init(conn) -> None:
     conn.executescript(SCHEMA)
-    for stmt in ("ALTER TABLE davis_sessions ADD COLUMN attention INTEGER NOT NULL DEFAULT 0",
-                 "ALTER TABLE davis_sessions ADD COLUMN attention_reason TEXT"):
+    for stmt in ("ALTER TABLE davis_sessions ADD COLUMN refresh_tries INTEGER NOT NULL DEFAULT 0",
+                 "ALTER TABLE davis_sessions ADD COLUMN ai_retries INTEGER NOT NULL DEFAULT 0",
+                 "ALTER TABLE davis_sessions ADD COLUMN followups INTEGER NOT NULL DEFAULT 0",
+                 "ALTER TABLE davis_sessions ADD COLUMN last_followup_at TEXT"):
         try:
             conn.execute(stmt)
         except Exception:
@@ -156,7 +160,7 @@ def _session_row(row) -> dict:
             d[c] = json.loads(d[c]) if d.get(c) else ({} if c == "slots" else None)
         except Exception:
             d[c] = {} if c == "slots" else None
-    for c in ("paused", "handoff", "opted_out", "attention"):
+    for c in ("paused", "handoff", "opted_out"):
         d[c] = bool(d.get(c))
     return d
 

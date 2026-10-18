@@ -11,16 +11,15 @@ from .catalogue import fee_label, fmt_range
 
 SYSTEM = persona.system_prompt(config.MAX_WORDS)
 
-# Only what the model must decide: the wording, and whether a person is
-# needed. Slots come from nlu.py; a small schema keeps the answer short
-# (every generated token is ~0.1 s on a 2-core CPU).
+# Only what the model must decide: the wording. Slots come from nlu.py and
+# actions from policy.py; a small schema keeps the answer short (every
+# generated token is ~0.1 s on a 2-core CPU).
 SCHEMA = {
     "type": "object",
     "properties": {
         "reply": {"type": "string"},
-        "handoff": {"type": "boolean"},
     },
-    "required": ["reply", "handoff"],
+    "required": ["reply"],
     "additionalProperties": False,
 }
 
@@ -28,9 +27,7 @@ _ACTION_TEXT = {
     "send_options": "send the houses under SENDING NOW as cards with photos, right after your reply",
     "send_terms": "send the Terms & Conditions PDF",
     "create_invoice": "create and send the invoice PDF",
-    "request_refresh": "check live prices for the guest's dates (a few minutes)",
-    "alert_staff": "alert a team member (you keep helping the guest)",
-    "maybe_alert": "alert a team member unless FACTS answer the question",
+    "request_refresh": "fetch live homes and prices for the guest's dates (a few minutes)",
     "opt_out": "stop messaging this guest",
     "opt_in": "resume messaging this guest",
 }

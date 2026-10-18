@@ -70,7 +70,7 @@ OPTIONS_PER_SEND = _int("DAVIS_OPTIONS_PER_SEND", 3, 1)
 IMAGES_PER_OPTION = _int("DAVIS_IMAGES_PER_OPTION", 3, 1)
 
 # ── when Davis stays quiet ─────────────────────────────────────────────────
-DEBOUNCE_SEC = _float("DAVIS_DEBOUNCE_SEC", 8.0)            # let the guest finish typing
+DEBOUNCE_SEC = _float("DAVIS_DEBOUNCE_SEC", 5.0)            # let the guest finish typing (speed to lead)
 FRESH_MINUTES = _int("DAVIS_FRESH_MINUTES", 3 * 24 * 60, 1)  # answer guests who wrote in the last 3 days
 # 0 = Davis answers every guest message, even right after a staff reply (Davis
 # always has the last word; "Take over" on the dashboard mutes a chat).
@@ -80,11 +80,26 @@ HISTORY_MESSAGES = _int("DAVIS_HISTORY_MESSAGES", 24, 4)    # what Davis reads p
 # team's house notes); every booking step uses the persona's lines (instant,
 # exact). "all" = the model rewrites every reply too (slower; each rewrite
 # must still pass the guard). Changeable on the dashboard.
-#   ai   = the model writes every reply itself (no fixed sentences reach guests;
-#          if it can't write a safe one, the reply waits for staff). Default.
+#   ai   = the model writes every reply itself. If it can't write a safe one
+#          it tries again shortly (AI_RETRIES), and only then sends the plan's
+#          own wording: a guest is never left waiting for a person. Default.
 LLM_FOR = os.environ.get("DAVIS_LLM_FOR", "ai") if os.environ.get("DAVIS_LLM_FOR", "ai") in ("open", "all", "ai") \
     else "ai"
 MODEL_HISTORY = _int("DAVIS_MODEL_HISTORY", 10, 2)          # of which the model sees the last N
+
+# ── no human in the middle: Davis resolves everything itself ───────────────
+AI_RETRIES = _int("DAVIS_AI_RETRIES", 2)                    # model retries before the plan's wording
+AI_RETRY_SEC = _int("DAVIS_AI_RETRY_SEC", 40, 5)
+REFRESH_TRIES = _int("DAVIS_REFRESH_TRIES", 2, 1)           # live-price requests before offering other dates
+REFRESH_TIMEOUT_MINUTES = _int("DAVIS_REFRESH_TIMEOUT_MINUTES", 12, 3)
+# Houses go to the guest as soon as this many are priced for their dates
+# (the scraper keeps adding more; "more options" sends them).
+EARLY_PRESENT = _int("DAVIS_EARLY_PRESENT", 3, 1)
+# Customer care: one friendly nudge when a guest goes quiet mid-booking
+# (houses sent, details or payment pending). 0 = off.
+FOLLOWUP_HOURS = _float("DAVIS_FOLLOWUP_HOURS", 3.0)
+FOLLOWUP_MAX = _int("DAVIS_FOLLOWUP_MAX", 1)                # nudges per guest silence
+FOLLOWUP_WINDOW_HOURS = _int("DAVIS_FOLLOWUP_WINDOW_HOURS", 23, 1)   # never nudge a long-gone chat
 
 # ── process management ─────────────────────────────────────────────────────
 CONCURRENCY = _int("DAVIS_CONCURRENCY", 4, 1)               # conversations at once

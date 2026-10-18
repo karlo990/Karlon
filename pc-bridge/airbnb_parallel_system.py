@@ -161,6 +161,7 @@ USER_AGENT = (
 # everything else (override via the KARLON_URL env var, or local_config.py).
 from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN, CHROMIUM_ARGS
 from local_config import KARLON_AIRBNB_HEADLESS, headless_choice
+from local_config import AIRBNB_FULL_SWEEP, AIRBNB_ONDEMAND_PARALLEL, AIRBNB_ONDEMAND_POLL_SEC
 ENABLE_KARLON_PUSH = True
 # Cold HuggingFace Spaces can take 20-30s to answer their first request after
 # idling — 10s made the very first ingest of a cycle fail. 60s covers a wake-up.
@@ -177,7 +178,9 @@ KARLON_PUSH_TIMEOUT_SECONDS = 60
 # completely unaffected either way.
 ENABLE_ONDEMAND_REFRESH = True
 ONDEMAND_REFRESH_PATH_PREFIX = "/api/houses/refresh"
-ONDEMAND_POLL_INTERVAL_SECONDS = 20
+ONDEMAND_POLL_INTERVAL_SECONDS = AIRBNB_ONDEMAND_POLL_SEC   # a guest is waiting: pick requests up fast
+ONDEMAND_IDLE_SAVE_SECONDS = 1800    # on-demand mode: re-save the login / exchange rate this often
+ONDEMAND_HEARTBEAT_SECONDS = 600     # an "idle" line now and then, so the supervisor knows we're alive
 ONDEMAND_MAX_LISTINGS_PER_JOB = 8   # small + fast — a guest is waiting on this, unlike the full sweep
 # How many of each listing's photos get pushed up — the app only ever shows/
 # sends a handful per property, so there's no point pushing every photo.
@@ -2579,8 +2582,30 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
     session = await _karlon_http()
     pending_url = f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/pending"
     warned_missing_endpoint = False
+    sem = asyncio.Semaphore(AIRBNB_ONDEMAND_PARALLEL)
+    running: Set[asyncio.Task] = set()
+    last_beat = time.time()
+
+    async def work(job_id: int, location: str, check_in: date, check_out: date) -> None:
+        async with sem:                     # AIRBNB_ONDEMAND_PARALLEL guests' requests at a time
+            pushed = await run_ondemand_job(context, checkpoint, location, check_in, check_out, job_id=job_id)
+        try:
+            await session.post(
+                f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/{job_id}/complete",
+                json={"pushed": pushed},
+                timeout=aiohttp.ClientTimeout(total=60),
+            )
+        except Exception as e:
+            print(f"[ondemand] ⚠️ couldn't ack job {job_id} complete: {e}")
+
     while True:
         jobs = []
+        if time.time() - last_beat > ONDEMAND_HEARTBEAT_SECONDS:
+            print(f"[ondemand] waiting for guests' requests ({len(running)} running)")
+            last_beat = time.time()
+        if len(running) >= AIRBNB_ONDEMAND_PARALLEL:
+            await asyncio.sleep(ONDEMAND_POLL_INTERVAL_SECONDS)     # don't take work we can't start
+            continue
         try:
             async with session.get(pending_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 if resp.status == 404:
@@ -2607,15 +2632,10 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
                 print(f"[ondemand] ⚠️ skipping malformed job {job}: {e}")
                 continue
 
-            pushed = await run_ondemand_job(context, checkpoint, location, check_in, check_out, job_id=job_id)
-            try:
-                await session.post(
-                    f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/{job_id}/complete",
-                    json={"pushed": pushed},
-                    timeout=aiohttp.ClientTimeout(total=60),
-                )
-            except Exception as e:
-                print(f"[ondemand] ⚠️ couldn't ack job {job_id} complete: {e}")
+            task = asyncio.create_task(work(job_id, location, check_in, check_out))
+            running.add(task)
+            task.add_done_callback(running.discard)
+            last_beat = time.time()
 
         await asyncio.sleep(ONDEMAND_POLL_INTERVAL_SECONDS)
 
@@ -2700,12 +2720,15 @@ async def main():
     checkpoint = Checkpoint.load()
     print(f"Resuming: {len(checkpoint.scraped_urls)} scraped, {len(checkpoint.sent_urls)} messaged.")
 
-    SEARCH_QUERIES = prompt_for_search_queries(SEARCH_QUERIES)
-
     CURRENT_ZAR_TO_USD_RATE = await fetch_zar_to_usd_rate()
-    print(f"Cities queued ({MAX_SEARCH_WORKERS} run concurrently, each capped at "
-          f"{MAX_SECONDS_PER_CITY}s so none can starve the others): "
-          f"{', '.join(SEARCH_QUERIES)}\n")
+    if AIRBNB_FULL_SWEEP:
+        SEARCH_QUERIES = prompt_for_search_queries(SEARCH_QUERIES)
+        print(f"Cities queued ({MAX_SEARCH_WORKERS} run concurrently, each capped at "
+              f"{MAX_SECONDS_PER_CITY}s so none can starve the others): "
+              f"{', '.join(SEARCH_QUERIES)}\n")
+    else:
+        print("On demand only: homes are fetched just for the city and dates a guest asks for "
+              f"(up to {AIRBNB_ONDEMAND_PARALLEL} requests at once). AIRBNB_FULL_SWEEP=1 adds timed city sweeps.\n")
 
     async with async_playwright() as p:
         # Headless once a login is saved (python karlon_login.py), a visible
@@ -2740,6 +2763,12 @@ async def main():
 
         cycle_num = 0
         try:
+            while not AIRBNB_FULL_SWEEP:
+                # On demand only: requests and reservations run in their own
+                # tasks; this just keeps the login and the exchange rate fresh.
+                await asyncio.sleep(ONDEMAND_IDLE_SAVE_SECONDS)
+                await save_session(context)
+                CURRENT_ZAR_TO_USD_RATE = await fetch_zar_to_usd_rate()
             while True:
                 cycle_num += 1
                 print(f"\n{'='*60}\n🔁 Starting cycle {cycle_num} — re-scanning all {len(SEARCH_QUERIES)} "

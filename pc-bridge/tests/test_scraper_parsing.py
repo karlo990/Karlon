@@ -1,5 +1,6 @@
 """Price per night, capacity and suburb from Airbnb listing text."""
 import airbnb_parallel_system as a
+from conftest import run_async
 
 
 def test_per_night_is_total_divided_by_nights(monkeypatch):
@@ -59,3 +60,59 @@ def test_all_cities_enabled_with_sane_limits():
     assert len(a.ZIMBABWE_CITIES) >= 10 and "Harare" in a.ZIMBABWE_CITIES
     assert a.MAX_LISTINGS_PER_SEARCH == 10
     assert a.MAX_SECONDS_PER_CITY <= 3600 and a.MAX_SEARCH_WORKERS <= 5
+
+
+def test_ondemand_requests_run_in_parallel_and_are_acked(monkeypatch):
+    """Two guests' requests are worked at the same time (not one after the
+    other), each is acked to the server, and no work is taken beyond what
+    can start."""
+    import asyncio
+    import airbnb_parallel_system as ab
+
+    jobs = [[{"id": 1, "location": "harare", "check_in": "2031-01-10", "check_out": "2031-01-12"},
+             {"id": 2, "location": "bulawayo", "check_in": "2031-01-10", "check_out": "2031-01-12"}]]
+    acked, active, peak = [], [0], [0]
+
+    class Resp:
+        status = 200
+
+        async def json(self):
+            return jobs.pop() if jobs else []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Session:
+        def get(self, url, timeout=None):
+            return Resp()
+
+        async def post(self, url, json=None, timeout=None):
+            acked.append((url.rsplit("/", 2)[-2], json["pushed"]))
+
+    async def fake_http():
+        return Session()
+
+    async def fake_job(context, checkpoint, location, ci, co, job_id=None):
+        active[0] += 1
+        peak[0] = max(peak[0], active[0])
+        await asyncio.sleep(0.2)
+        active[0] -= 1
+        return 3
+
+    monkeypatch.setattr(ab, "_karlon_http", fake_http)
+    monkeypatch.setattr(ab, "run_ondemand_job", fake_job)
+    monkeypatch.setattr(ab, "ONDEMAND_POLL_INTERVAL_SECONDS", 0.05)
+    monkeypatch.setattr(ab, "AIRBNB_ONDEMAND_PARALLEL", 2)
+
+    async def run():
+        task = asyncio.create_task(ab.ondemand_poll_loop(None, None))
+        for _ in range(100):                      # until both are acked (or 5 s)
+            if len(acked) == 2:
+                break
+            await asyncio.sleep(0.05)
+        task.cancel()
+    run_async(run())
+    assert peak[0] == 2 and sorted(acked) == [("1", 3), ("2", 3)]

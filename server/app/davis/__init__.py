@@ -13,10 +13,11 @@ def notify_inbound(chat_id: str) -> None:
         print(f"[davis] notify failed for {chat_id}: {e}")
 
 
-def notify_refresh_done(job_id: int) -> None:
-    """The scraper finished re-pricing a (city, dates) window."""
+def notify_refresh_done(job_id: int, early: bool = False) -> None:
+    """The scraper finished a (city, dates) request, or (early=True) has
+    priced the first few homes for it: guests waiting can see them now."""
     try:
         from .engine import engine
-        engine.notify_refresh_done(job_id)
+        engine.notify_refresh_done(job_id, early)
     except Exception as e:
         print(f"[davis] refresh hook failed for job {job_id}: {e}")

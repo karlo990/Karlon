@@ -315,6 +315,15 @@ def ingest_listings(body: HouseIngestIn, background: BackgroundTasks):
 
     _purge_expired_offers(conn)
     conn.commit()
+    # A guest waiting on a live request sees the first homes as soon as a few
+    # are priced, not after the scraper has finished all of them.
+    from .. import davis
+    from ..davis.config import EARLY_PRESENT
+    for job_id in {i.refresh_job_id for i in body.listings if i.refresh_job_id is not None}:
+        row = conn.execute("SELECT pushed_count FROM refresh_jobs WHERE id=? AND status='in_progress'",
+                           (job_id,)).fetchone()
+        if row and (row["pushed_count"] or 0) >= EARLY_PRESENT:
+            davis.notify_refresh_done(job_id, early=True)
     conn.close()
     return {"ingested": len(body.listings), "offers": offers}
 

@@ -234,6 +234,15 @@ body.locked #lock{display:flex}
       <div id="tab-chat"></div>
       <div id="tab-drafts" hidden></div>
       <div id="tab-catalogue" hidden>
+        <div class="pb" style="border-bottom:1px solid var(--line)">
+          <div class="row" style="justify-content:space-between"><b class="small">LIVE REQUESTS · the scraper fetches homes only for the dates guests ask for</b></div>
+          <div class="row" style="margin-top:6px">
+            <input type="text" id="reqCity" placeholder="City (e.g. Harare)" style="flex:1;min-width:110px">
+            <input type="date" id="reqIn" title="Check-in"><input type="date" id="reqOut" title="Check-out">
+            <button class="btn sm gold" id="reqGo">Fetch homes</button>
+          </div>
+          <div id="reqList" class="small mono" style="margin-top:6px"></div>
+        </div>
         <div class="pb row" style="border-bottom:1px solid var(--line)">
           <select id="catCity"></select>
           <input type="text" id="catSearch" placeholder="KCER, area…" style="flex:1;min-width:120px">
@@ -313,7 +322,7 @@ function renderStatus(){
     ["Mode", `<span style="color:${st.mode==="live"?"var(--ok)":st.mode==="shadow"?"var(--violet)":"var(--dim)"}">${esc(st.mode.toUpperCase())}</span>${st.paused?' <span>paused</span>':""}`],
     ["Guest turns", c.turns || 0], ["Replies sent", c.replies || 0],
     ["Drafts waiting", s.drafts_pending], ["Houses sent", c.options_sent || 0],
-    ["Invoices", c.invoices || 0], ["Staff alerts", c.alerts || 0],
+    ["Invoices", c.invoices || 0], ["Follow-ups", c.followups || 0],
     ["Speed to lead", lat(m.speed_to_lead_s, "s")], ["Pipeline", lat(m.pipeline_ms, "ms")],
     ["Model", lat(m.llm_ms, "ms")],
     ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : st.provider === "local" ? "model " + esc(s.local_model.state) : (s.llm.stats.errors||0) + " err"}</span>`],
@@ -322,7 +331,6 @@ function renderStatus(){
   const f = s.funnel, top = Math.max(1, ...STAGES.map(k => f[k] || 0));
   $("#funnel").innerHTML = STAGES.map(k => `<div class="stage"><label>${STAGE_LABEL[k]}</label><b>${f[k]||0}</b>
     <div class="bar"><i style="width:${Math.round(100*(f[k]||0)/top)}%"></i></div></div>`).join("")
-    + `<div class="stage hand"><label>Needs staff</label><b>${f.attention||0}</b><div class="bar"><i style="width:0"></i></div></div>`
     + `<div class="stage hand"><label>Taken over</label><b>${f.handoff||0}</b><div class="bar"><i style="width:0"></i></div></div>`;
   $("#draftCount").textContent = s.drafts_pending; $("#draftCount").style.display = s.drafts_pending ? "" : "none";
   if (state.tab === "settings") renderSettings();
@@ -336,7 +344,6 @@ function renderSessions(){
   $("#convCount").textContent = list.length;
   $("#convList").innerHTML = list.length ? list.map(s => {
     const flags = [];
-    if (s.attention) flags.push(`<span class="chip warn">⚑ needs staff</span>`);
     if (s.handoff) flags.push(`<span class="chip err">taken over</span>`);
     if (s.paused) flags.push(`<span class="chip err">paused</span>`);
     if (s.opted_out) flags.push(`<span class="chip err">opted out</span>`);
@@ -379,7 +386,6 @@ function draftCard(d){
   const acts = (plan.actions || []).filter(a => a.type !== "reply").map(a => {
     if (a.type === "send_options") return `<span class="chip st">send ${a.options.length} houses: ${a.options.map(o => esc(o.ref)).join(", ")}</span>`;
     if (a.type === "create_invoice") return `<span class="chip st">invoice ${esc(a.invoice.property_name)} · ${esc(a.invoice.guest_name)}</span>`;
-    if (a.type === "alert_staff") return `<span class="chip warn">alert staff: ${esc(a.reason)}</span>`;
     return `<span class="chip">${esc(a.type.replace(/_/g, " "))}</span>`;
   }).join("");
   return `<div class="draft" data-draft="${d.id}">
@@ -400,14 +406,13 @@ function renderDetail(){
   box.innerHTML = `
     <div class="ph"><div class="row"><div class="av">${esc(initials(d.chat.name))}</div>
       <div><b>${esc(d.chat.name)}</b><div class="chips"><span class="chip st">${esc(STAGE_LABEL[s.stage] || s.stage)}</span>
-      ${s.attention ? `<span class="chip warn">⚑ needs staff: ${esc(s.attention_reason || "")}</span>` : ""}
       ${s.handoff ? `<span class="chip err">taken over: Davis muted</span>` : ""}
       ${s.paused ? `<span class="chip err">paused</span>` : ""}${s.opted_out ? `<span class="chip err">opted out</span>` : ""}
-      ${s.refresh_job_id ? `<span class="chip vio">live prices job #${s.refresh_job_id}</span>` : ""}</div></div></div>
+      ${s.refresh_job_id ? `<span class="chip vio">fetching live homes · request #${s.refresh_job_id}</span>` : ""}
+      ${s.followups ? `<span class="chip">followed up</span>` : ""}</div></div></div>
       <div class="row">
         <button class="btn sm" data-act="run">Run now</button>
         <button class="btn sm" data-act="pause">${s.paused ? "Resume" : "Pause"}</button>
-        ${s.attention ? `<button class="btn sm" data-act="attention">Alert done</button>` : ""}
         <button class="btn sm" data-act="handoff" title="Mute Davis in this chat while you handle it">${s.handoff ? "Give back to Davis" : "Take over"}</button>
         <button class="btn sm danger" data-act="reset">Reset</button>
       </div></div>
@@ -430,8 +435,15 @@ function renderDrafts(){
 }
 
 /* ── catalogue tab ─────────────────────────────────────────────── */
+async function loadRequests(){
+  try { state.reqs = (await api("/api/davis/requests?limit=12")).requests; } catch (x) { return; }
+  const icon = {pending: "⏳", in_progress: "🔎", done: "✅", error: "⚠️"};
+  $("#reqList").innerHTML = state.reqs.length ? state.reqs.map(r => `<div>${icon[r.status] || "·"} #${r.id} ${esc(r.location)} ${esc(r.check_in)} → ${esc(r.check_out)} · ${esc(r.status.replace("_", " "))} · ${r.pushed_count} home${r.pushed_count === 1 ? "" : "s"}${r.guests_waiting ? ` · ${r.guests_waiting} guest${r.guests_waiting === 1 ? "" : "s"} waiting` : ""}${r.error_message ? " · " + esc(r.error_message) : ""}</div>`).join("")
+    : `No requests yet. Davis asks automatically when a guest gives a city and dates.`;
+}
 async function loadCatalogue(){
   const city = $("#catCity").value || "all";
+  loadRequests();
   state.cat = await api(`/api/davis/catalogue?city=${encodeURIComponent(city)}&limit=300`);
   const sel = $("#catCity");
   if (sel.options.length <= 1){ sel.innerHTML = `<option value="all">All cities</option>` + state.cat.cities.map(c => `<option value="${esc(c)}">${esc(c[0].toUpperCase() + c.slice(1))}</option>`).join(""); sel.value = city; }
@@ -452,7 +464,7 @@ function renderCatalogue(){
         <input type="text" data-note placeholder="Team note Davis may quote (wifi, pool…)" value="${esc(h.note || "")}">
         <div class="toggles"><label><input type="checkbox" data-flag="featured" ${h.featured ? "checked" : ""}> featured</label>
         <label><input type="checkbox" data-flag="hidden" ${h.hidden ? "checked" : ""}> hidden</label></div></div></div>`).join("")
-    : `<div class="empty-note">No houses here yet. The scraper fills this as it runs.</div>`;
+    : `<div class="empty-note">No houses yet. They arrive live: when a guest gives a city and dates, Davis asks the Airbnb scraper for exactly those dates (or use “Fetch homes” above).</div>`;
 }
 
 /* ── skills tab ────────────────────────────────────────────────── */
@@ -558,7 +570,7 @@ $("#convList").addEventListener("click", e => { const c = e.target.closest(".con
 function selectTab(t){ state.tab = t; document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
   ["chat","drafts","catalogue","skills","settings"].forEach(k => $("#tab-" + k).hidden = k !== t);
   if (t === "skills") loadSkills();
-  if (t === "drafts") renderDrafts(); if (t === "catalogue" && !state.cat) loadCatalogue(); if (t === "settings") renderSettings(); }
+  if (t === "drafts") renderDrafts(); if (t === "catalogue") { if (state.cat) loadRequests(); else loadCatalogue(); } if (t === "settings") renderSettings(); }
 $("#tabs").addEventListener("click", e => { const b = e.target.closest("button"); if (b) selectTab(b.dataset.tab); });
 
 document.addEventListener("input", e => { if (e.target.id === "skA"){ const w = words(e.target.value);
@@ -589,7 +601,6 @@ document.addEventListener("click", async e => {
     if (act.dataset.act === "run"){ const r = await api(`/api/davis/sessions/${id}/run?again=true`, {method: "POST"}); toast(r.status === "skipped" ? "Davis would stay quiet: " + r.reason : "Davis " + r.status); }
     if (act.dataset.act === "pause") await api(`/api/davis/sessions/${id}/pause`, {method: "POST", body: JSON.stringify({paused: !s.paused})});
     if (act.dataset.act === "handoff") await api(`/api/davis/sessions/${id}/handoff`, {method: "POST", body: JSON.stringify({active: !s.handoff})});
-    if (act.dataset.act === "attention") await api(`/api/davis/sessions/${id}/attention`, {method: "POST", body: JSON.stringify({active: false})});
     if (act.dataset.act === "reset" && confirm("Forget what Davis knows about this booking?")) await api(`/api/davis/sessions/${id}/reset`, {method: "POST"});
     refreshAll(); return; }
   if (e.target.id === "saveSettings"){ const lines = id => $(id).value.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
@@ -604,6 +615,12 @@ $("#catGrid").addEventListener("change", async e => { const h = e.target.closest
   try { await api("/api/davis/catalogue", {method: "PATCH", body: JSON.stringify(body)}); toast("Saved");
     const x = state.cat.houses.find(y => y.url === h.dataset.url); Object.assign(x, body); renderCatalogue(); } catch (x) {} });
 $("#catCity").addEventListener("change", loadCatalogue);
+$("#reqGo").addEventListener("click", async () => {
+  const body = {city: $("#reqCity").value.trim(), check_in: $("#reqIn").value, check_out: $("#reqOut").value};
+  if (!body.city || !body.check_in || !body.check_out) { toast("City and both dates, please"); return; }
+  try { const j = await api("/api/davis/requests", {method: "POST", body: JSON.stringify(body)}); toast(`Request #${j.id} queued`); loadRequests(); } catch (x) {}
+});
+setInterval(() => { if (state.tab === "catalogue") { loadRequests(); } }, 10000);
 $("#catSearch").addEventListener("input", renderCatalogue);
 $("#catHidden").addEventListener("change", renderCatalogue);
 $("#feedClear").addEventListener("click", () => $("#feed").innerHTML = "");

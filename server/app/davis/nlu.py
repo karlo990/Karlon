@@ -408,7 +408,10 @@ def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = Non
     f["bot_question"] = _has(t, "are you a (?:bot|robot|machine|ai)", "is this a (?:bot|robot)", "am i talking to a")
     f["complaint"] = _has(t, "refund", "scam(?:mer)?", "fraud", "complain(?:t)?", "terrible", "worst", "angry",
                           "disappointed", "cheat(?:ed)?", "police", "lawyer", "money back", "not happy", "rude",
-                          "unacceptable", "disgusting", "useless", "rip ?off")
+                          "unacceptable", "disgusting", "useless", "rip ?off", "ridiculous", "horrible", "awful",
+                          "dirty", "filthy", "smell(?:y|s|ed)?", "cockroach(?:es)?", "bed ?bugs?", "(?:was|were) broken",
+                          "no (?:water|electricity|power|hot water|wifi)", "(?:was|is|were) (?:a )?(?:mess|nightmare)",
+                          "not as (?:advertised|described|pictured)", "never again", "fed up")
     f["payment_claim"] = _has(t, "paid", "payment (?:done|made|sent)", "(?:sent|transferred) (?:the )?(?:money|funds|payment)",
                               "proof of payment", "pop", "ecocashed", "(?:sent|paid|transferred)(?: it| the money)? (?:via|on|by|through) ecocash", "swiped", "deposit(?:ed| made)",
                               "here is the proof", "i have paid", "made the payment", "bank transfer done")

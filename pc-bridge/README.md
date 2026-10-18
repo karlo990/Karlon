@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 113 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 114 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -306,15 +306,22 @@ Most of this lives on the server, so it also helps older app builds:
 Only "sent first, per guest" needs the app to say which chat it is asking about
 (`chat_id`).
 
-## Airbnb scraper: every city, 10 listings each
+## Airbnb scraper: homes for the dates guests ask for
 
-`airbnb_parallel_system.py` sweeps the 20 cities in `ZIMBABWE_CITIES` (or
-`AIRBNB_CITIES="Harare,Bulawayo"`), `AIRBNB_CITY_WORKERS` (3) at a time. Per
-city it takes `AIRBNB_LISTINGS_PER_CITY` (10) listings: new ones first, then
-any not refreshed for `AIRBNB_RESCRAPE_HOURS` (12). A city's listings are
-scraped and pushed as soon as its search finishes, so each city fills the app
-on its own. Houses wiped by a Space restart are pushed again on the next
-refresh. Cycles rest `AIRBNB_CYCLE_REST_SECONDS` (300).
+By default (`AIRBNB_FULL_SWEEP=0`) the scraper works **on demand only**. When a
+guest gives Davis a city and dates with no prices yet, the server queues a live
+request; the scraper picks it up within `AIRBNB_ONDEMAND_POLL_SEC` (5 s), works
+`AIRBNB_ONDEMAND_PARALLEL` (2) requests at once, searches Airbnb for exactly that
+city and those dates, and pushes each home as soon as it's priced. Davis sends
+the first 3 straight away. The Davis dashboard's Catalogue tab lists the requests
+and can queue one by hand ("Fetch homes"). While idle it keeps the Airbnb login
+and the exchange rate fresh every 30 minutes and prints a line every 10.
+
+`AIRBNB_FULL_SWEEP=1` adds the old timed sweep: the 20 cities in
+`ZIMBABWE_CITIES` (or `AIRBNB_CITIES="Harare,Bulawayo"`), `AIRBNB_CITY_WORKERS`
+(3) at a time, `AIRBNB_LISTINGS_PER_CITY` (10) listings each (new ones first,
+then any not refreshed for `AIRBNB_RESCRAPE_HOURS`, 12), resting
+`AIRBNB_CYCLE_REST_SECONDS` (300) between cycles.
 
 ## Reserve button: booking a house on Airbnb from the app
 

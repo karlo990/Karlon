@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import run_async
+
 import karlon_care as care
 import karlon_supervisor as sup
 
@@ -424,7 +426,7 @@ def test_no_keyboard_is_not_logged_in(monkeypatch):
         ev = await ab.wait_for_manual_continue("")
         await asyncio.sleep(0.3)
         return ev.is_set()
-    assert asyncio.run(run()) is False
+    assert run_async(run()) is False
 
 
 def test_headless_whatsapp_logged_out_forgets_the_login(tmp_path, monkeypatch):
@@ -463,7 +465,7 @@ def test_login_check_waits_for_the_page(monkeypatch):
         return None
     monkeypatch.setattr(ab, "is_logged_in", late_header)
     monkeypatch.setattr(ab, "sleep_ms", no_wait)
-    assert asyncio.run(ab.wait_logged_in(None, timeout=5)) is True and len(calls) == 3
+    assert run_async(ab.wait_logged_in(None, timeout=5)) is True and len(calls) == 3
 
 
 def test_login_helper_never_deletes_a_saved_airbnb_login():

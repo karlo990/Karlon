@@ -4,10 +4,16 @@ Davis reads every guest message that reaches Karlon from WhatsApp. It decides wh
 the guest from "hello" to a paid booking:
 
 ```
-greeting → city + dates + guests → 3 houses with photos (live catalogue)
-        → guest picks a KCER → full name + ID → invoice PDF + Terms & Conditions PDF
-        → "I have paid" / proof photo → team alerted to confirm (Davis keeps replying)
+greeting → city + dates + guests → live homes for those exact dates (Airbnb scraper, on demand)
+        → 3 houses with photos → guest picks a KCER → full name + ID → invoice PDF + Terms PDF
+        → "I have paid" / proof photo → Davis thanks them; confirmation follows once it reflects
 ```
+
+**No human in the middle.** Davis runs the whole conversation itself. There is no "needs staff" alert and no
+hand-over: complaints, requests for a person, payment proofs, questions nobody has answered before and late
+prices are all handled by Davis. Its hands are WhatsApp (the outbox) and Airbnb (the scraper, which fetches
+homes for the dates a guest asks for). A person can still mute Davis in one chat with **Take over** on the
+dashboard; nothing ever asks them to.
 
 Davis runs inside the Karlon server on the Karlon Space, next to the outbox, the house catalogue and the invoice
 queue. What it sends goes through the same outbox to `wa_bridge.py` as anything sent from the app.
@@ -26,7 +32,7 @@ change how Davis sounds:
   It also lists the hard "never" rules: no invented prices or amenities, no links, no Airbnb, never pretends
   to be human.
 - `LINES` holds the exact sentences for each situation: greeting, asking dates, presenting houses, confirming
-  the choice, asking for name and ID, invoice sent, payment, staff alerts, and so on. Each one is under 40 words
+  the choice, asking for name and ID, invoice sent, payment, complaints, follow-ups, and so on. Each one is under 40 words
   (a test checks this).
 - `EXAMPLES` are worked examples shown to the model.
 - `PAYMENT` holds the EcoCash details: **0780563561 (Karl Muzunze)**. Davis gives them when a guest asks
@@ -39,7 +45,7 @@ change how Davis sounds:
 `DAVIS_LLM_FOR=ai`, shown in the dashboard as Settings → Model writes → "AI only".
 
 **How a reply is made:**
-- **Code decides what happens:** which houses to send, the invoice, the Terms, alerts. It also works out the
+- **Code decides what happens:** which houses to send, the invoice, the Terms, live-home requests. It also works out the
   **key points** a message must get across, from the persona lines, FAQ, house notes and skills.
 - **The AI writes the message itself**, in its own words, reacting to what the guest said, with the whole
   recent chat in view (guest, Davis and staff).
@@ -49,14 +55,17 @@ key points: the EcoCash number, KCER numbers, totals, times, dates, and the view
 must not invent numbers, links or houses, or write as the guest.
 
 **If the check fails:**
-- The AI gets one retry, told what to fix.
-- If it fails again, **no fixed sentence is sent to the guest**. The houses, invoice and Terms still go out, a
-  "needs staff" alert appears, and the reply waits in Drafts so staff can send or edit it.
+- The AI gets one retry at once, told what to fix.
+- If that fails too, nothing is sent yet: the whole turn runs again after `DAVIS_AI_RETRY_SEC` (40 s), up to
+  `DAVIS_AI_RETRIES` (2) times. A busy or cold model usually succeeds then.
+- If it still fails, the plan's own wording (the key points, from the persona lines) goes out, so a guest is
+  never left waiting for a person. The dashboard shows such replies as `reply(plan)`.
 - The same happens if the model is down.
 
-**Measured with the local 1.5B model on 2 CPUs** (Taku's real conversation, 15 messages):
-- 14 replies were written by the AI and sent, all correct; 1 was held for staff.
-- Each reply took 13–33 s.
+**Measured with the local 1.5B model on 2 CPUs:**
+- Taku's real conversation (15 messages): 14 replies written by the AI, all correct.
+- The no-staff paths (open questions, complaint, "a real person", payment proof, follow-up): every reply
+  written by the AI and sent; 8–20 s each once the model is warm.
 
 A larger model (hosted, a bigger CPU or a GPU) makes it faster and smarter with no code change: set
 `DAVIS_PROVIDER` / the model.
@@ -76,9 +85,9 @@ notes per house on the dashboard (Catalogue → team note: "wifi, pool, borehole
 1. If the question shares a word with a house's note, Davis replies with the note ("KCER 102 has wifi, pool,
    solar backup ✨ …").
 2. The model may reword that reply. Its answer must still pass the guard and must use the note's word.
-3. If no note covers the question ("can we bring our dog?", "is it near the airport?"), Davis says the team
-   will confirm, alerts the team on the dashboard and continues with the next booking step. The model isn't
-   asked, so there's no wait.
+3. If no note covers the question ("can we bring our dog?", "is it near the airport?"), Davis says plainly
+   that detail isn't in the listing and continues with the next booking step. Nobody is alerted, nothing is
+   promised. The model isn't asked in this mode, so there's no wait.
 
 This was decided from real tests of the 1.5B model on 2 CPU threads:
 
@@ -102,7 +111,7 @@ draft's KCERs, amounts and closing question, or the persona line goes out. A big
 
 ## Answers without "let me ask the team"
 
-Davis answers questions in this order and never says "let me confirm with our team":
+Davis answers questions in this order and never says "let me confirm with our team" or "I'll get back to you":
 
 1. **Business FAQ** (`persona.FAQS`, permanent):
    - company and registration (KARLCON Consultancy (Private) Limited, Reg. No. 15017/2023)
@@ -117,8 +126,8 @@ Davis answers questions in this order and never says "let me confirm with our te
    - Staff can add skills by hand, or switch off and delete any.
    - Skills are relearned from the chats every 10 minutes and after each restart. Hand-added skills are lost on
      restart, so put permanent ones in `persona.FAQS`.
-4. **Otherwise:** "Sure, I'll check that for you and get back to you here shortly", followed by the next booking
-   step. The team gets a silent "needs staff" alert.
+4. **Otherwise:** "That detail isn't in our listing for this home, sorry", followed by the next booking step.
+   Honest, and no promise that someone will come back.
 
 **Prices match the invoice.** Davis quotes the invoice's Balance Due: nights × rate plus the 15% service
 fee, rounded exactly as `invoice_worker.py` rounds it (`DAVIS_SERVICE_FEE_PCT`, default 15).
@@ -130,6 +139,8 @@ fee, rounded exactly as `invoice_worker.py` rounds it (`DAVIS_SERVICE_FEE_PCT`, 
 | A message never exceeds 40 words | persona lines (tested), `nlu.clip_words` on every reply, the guard, `catalogue.compact_card` |
 | One reply, at most 2 per guest turn, then wait for the guest | `gate.davis_replies_this_turn` + `Engine._cap`; Davis speaks only when the guest spoke last (the second reply is only "here are the houses" after "checking live prices…") |
 | Decide whether to answer at all | `gate.decide`: off/paused, allow/ignore lists, group chats, messages older than 3 days, already answered, opted out, "Take over" pressed on the dashboard, a plain "ok/thanks" |
+| No human in the middle | `policy.plan` has no hand-over action; complaints, "a person", payments, open questions and late prices are answered by Davis (`test_no_staff_actions_anywhere`) |
+| Houses only for the dates asked | `request_refresh` → `refresh_jobs` → the scraper's on-demand loop; first homes sent at `DAVIS_EARLY_PRESENT` (3) |
 | Send T&Cs and the invoice | `send_terms` (`messages.queue_terms`), `create_invoice` (`invoices.create_invoice`, `created_by="Davis"`) |
 | Houses with images per city from the existing endpoints | `catalogue.find_options` → `houses.available_listings`; `houses.queue_listings` (shared with `POST /api/houses/send`) |
 | Session memory | `davis_sessions`, the booking frame, rebuilt from chat history after a restart |
@@ -138,7 +149,8 @@ fee, rounded exactly as `invoice_worker.py` rounds it (`DAVIS_SERVICE_FEE_PCT`, 
 ## Modes (dashboard: `/davis`)
 
 - **OFF**: Davis does nothing.
-- **SHADOW** (the default): Davis drafts. Staff approve (and can edit) or discard each draft on the dashboard.
+- **SHADOW** (the default): Davis drafts; you approve (and can edit) or discard each draft on the dashboard.
+  Use it for a trial run; LIVE is the no-human mode.
 - **LIVE**: Davis replies by itself.
 
 Per chat you can pause Davis, take the chat over, give it back, reset its memory, or run it now. **Only these
@@ -148,7 +160,7 @@ chats** in Settings is the safe way to go live with one or two test chats first.
 
 1. **Hook.** The bridge sync, the legacy import and inbound photos call `davis.notify_inbound`. A sweeper
    every 30 s catches anything a hook missed.
-2. **Debounce, 8 s.** People type in bursts, so a burst is read as one turn (Sacks, Schegloff & Jefferson
+2. **Debounce, 5 s.** People type in bursts, so a burst is read as one turn (Sacks, Schegloff & Jefferson
    1974).
 3. **Admission.** A global semaphore and one lock per chat (SEDA: Welsh, Culler & Brewer 2001).
 4. **Preprocess** (`nlu.py`, no model, under 1 ms): intents and slots (city or suburb, dates in every format
@@ -162,42 +174,61 @@ chats** in Settings is the safe way to go live with one or two test chats first.
 9. **Execute or draft.** The reply first, then house cards and photos, the invoice, the Terms PDF.
 10. **Events and metrics** go to the dashboard over the WebSocket `/api/davis/ws`.
 
-If there are no prices yet for the guest's dates, Davis queues a scraper refresh job and says it's checking.
-When the scraper finishes, Davis sends the houses by itself. If no prices arrive within 20 minutes, it tells
-the guest and alerts the team.
+## The catalogue fills on demand
+
+The scraper no longer sweeps every city on a timer (`AIRBNB_FULL_SWEEP=0`, the default). The catalogue is what
+guests ask for:
+
+1. A guest gives a city and dates. If there are no prices for exactly those dates, Davis queues a live request
+   (`refresh_jobs`) and says it's checking.
+2. The scraper picks it up within 5 s (`AIRBNB_ONDEMAND_POLL_SEC`), works up to 2 requests at once
+   (`AIRBNB_ONDEMAND_PARALLEL`), searches Airbnb for that city and those dates, and pushes each home as soon as
+   it's priced.
+3. When the first 3 homes are in (`DAVIS_EARLY_PRESENT`), Davis sends them, without waiting for the rest.
+   "More options" sends the others.
+4. If nothing arrives within 12 minutes (`DAVIS_REFRESH_TIMEOUT_MINUTES`), Davis asks the scraper once more,
+   quietly. If that also fails, it tells the guest plainly and offers other dates or a nearby area.
+
+The dashboard's Catalogue tab shows these live requests (pending, searching, done, guests waiting), and
+"Fetch homes" queues one by hand.
 
 ## Operating norms (built into the code)
 
 1. **Davis always has the last word.** Every guest message from the last 3 days gets a reply, even right after
    a staff reply. The only exceptions are a plain "ok/thanks", group chats, the ignore list, opt-outs, and
    chats where staff pressed **Take over** on the dashboard.
-2. **Alerts never mute Davis.** A complaint, "speak to a person", a payment to confirm, or a question no
-   note answers raises a **needs staff** alert on the dashboard. Davis keeps helping the guest meanwhile.
-   Press "Alert done" when it's handled.
-3. **Every reply ends with the next step**: city and dates → which KCER → name and ID → pay by EcoCash.
-4. **House policies are answered, not escalated:**
+2. **No hand-over.** A complaint gets an apology and "what exactly went wrong?"; "speak to a person" gets "you're
+   speaking with Davis, I can do everything here"; a payment proof is thanked, with the confirmation to follow
+   once it reflects; a question nothing answers is said plainly. Nobody is alerted.
+3. **Customer care.** A guest who goes quiet mid-booking (houses sent, details or payment pending) gets one
+   friendly nudge after `DAVIS_FOLLOWUP_HOURS` (3 h), only while their last message is under 23 h old. When they
+   write again, a later silence may get one more.
+4. **Every reply ends with the next step**: city and dates → which KCER → name and ID → pay by EcoCash.
+5. **House policies are answered, not escalated:**
    - No viewings before a reservation; once payment is confirmed the guest gets the live location and host
      address.
    - Check-in is from 2:00 PM, check-out by 10:00 AM.
    - Payment is by EcoCash 0780563561 (Karl Muzunze).
-5. **Never lost, always running.**
+6. **Never lost, always running.**
    - If a pass fails, the guest's message is released and retried.
-   - A sweeper re-checks every 30 s for unanswered guests, and a watchdog restarts it if it ever stops.
-   - If the model is slow or down, the persona's lines go out.
+   - A sweeper re-checks every 30 s for unanswered guests, late live requests and quiet guests, and a watchdog
+     restarts it if it ever stops.
+   - If the model is slow or down, the turn is retried, then the plan's wording goes out.
 
 ## Speed
 
-- **Booking steps:** the persona lines take milliseconds; only the 8 s debounce waits.
+- **Debounce** 5 s (was 8). With the AI writing every reply, the model's time is most of the wait: 8–20 s
+  per reply on the Space's 2 CPUs. A bigger CPU or a GPU Space cuts that with no code change.
 - **Local model (open questions):**
   - The model loads and computes the persona prefix at boot, so the first guest doesn't wait for it.
   - The persona and examples never change, so llama.cpp reuses that computed prefix and only reads each
     turn's new text.
-  - The answer is constrained to `{"reply", "handoff"}` JSON by a grammar, so the output is short.
+  - The answer is constrained to `{"reply"}` JSON by a grammar, so the output is short.
   - Threads are set to the container's real CPU quota. Oversubscribing threads is what collapsed the
     Conscious Worker to under 1 token/s.
   - Measured: about 5–8 s per answer on 2 threads.
-- **Timeout and breaker:** after 45 s, or after 3 failures in a row, the persona line goes out instead (Dean &
-  Barroso, "The Tail at Scale", 2013).
+- **Timeout and breaker:** after 45 s, or after 3 failures in a row, the model is skipped for a minute and the
+  turn is retried (Dean & Barroso, "The Tail at Scale", 2013).
 - **Caches:** catalogue queries per (city, dates) are cached for 60 s; model answers are cached per prompt.
 - **Why it matters:** in an audit of 2,241 firms only 37% answered a web lead within an hour (Oldroyd,
   McElheran & Elkington, HBR 2011). Speed to lead is on the dashboard.
@@ -219,14 +250,18 @@ Optional:
 | Name | Default | Notes |
 |---|---|---|
 | `DAVIS_PROVIDER` | `local` | `ollama`, `worker` or `rules` |
-| `DAVIS_LLM_FOR` | `open` | `all` = the model rewrites every reply |
+| `DAVIS_LLM_FOR` | `ai` | `all` / `open` = older modes |
 | `DAVIS_LOCAL_MODEL_REPO`, `DAVIS_LOCAL_MODEL_FILE` | | change them together with the Dockerfile's `ENV` lines |
 | `DAVIS_LOCAL_THREADS` | auto | |
 | `DAVIS_MAX_WORDS` | 40 | |
 | `DAVIS_MAX_REPLIES_PER_TURN` | 2 | |
-| `DAVIS_DEBOUNCE_SEC` | 8 | |
+| `DAVIS_DEBOUNCE_SEC` | 5 | |
+| `DAVIS_AI_RETRIES`, `DAVIS_AI_RETRY_SEC` | 2, 40 | re-runs of a turn whose AI reply failed, before the plan's wording |
+| `DAVIS_EARLY_PRESENT` | 3 | send homes as soon as this many are priced for the guest's dates |
+| `DAVIS_REFRESH_TIMEOUT_MINUTES`, `DAVIS_REFRESH_TRIES` | 12, 2 | live request deadline; requests before "other dates?" |
+| `DAVIS_FOLLOWUP_HOURS`, `DAVIS_FOLLOWUP_MAX` | 3, 1 | the nudge to a quiet guest (0 = off) |
 | `DAVIS_FRESH_MINUTES` | 4320 | 3 days; older messages aren't answered |
-| `DAVIS_HUMAN_QUIET_MINUTES` | 0 | 0 = Davis replies even right after staff; set e.g. 30 to step back |
+| `DAVIS_HUMAN_QUIET_MINUTES` | 0 | 0 = Davis replies even right after a person writes in the chat |
 | `DAVIS_IGNORE_CHATS` | | comma-separated chat ids Davis never answers (survives restarts) |
 | `DAVIS_ONLY_CHATS` | | comma-separated chat ids for a test rollout |
 
@@ -254,7 +289,9 @@ visible part of the lock. 🔒 Lock (top right) locks it again on that device. S
   the rest of the database. Davis rebuilds each frame from the re-synced chats. After a restart it answers every
   guest whose last message (within 3 days) is still unanswered, so keep `DAVIS_IGNORE_CHATS` up to date for
   family, team and supplier chats.
-- **Prices** come only from the dated offers the scraper stored. Payment is never confirmed by Davis.
+- **Prices** come only from the dated offers the scraper stored for the guest's dates.
+- **Payment.** Davis can't see the EcoCash account, so it never says a booking is confirmed: it thanks the guest
+  for the proof and says the confirmation, live location and host address follow once the payment reflects.
   Group chats are never answered.
 
 ## Code map
@@ -264,13 +301,13 @@ app/davis/
   persona.py    who Davis is: character, voice, selling style, limits, every line, model examples
   config.py     environment defaults (modes, limits, provider, local model)
   nlu.py        preprocessing: intents and slots from text
-  gate.py       answer or not (turn-taking, staff, freshness, groups, caps)
+  gate.py       answer or not (turn-taking, freshness, groups, caps, "Take over")
   policy.py     the booking dialogue: actions + persona lines; note grounding; reply guard
   catalogue.py  live catalogue: options per city/dates, house cards, which option the guest means
   prompts.py    model messages: persona + examples (fixed prefix) + this turn
   local_llm.py  the local model: llama.cpp, warm-up, CPU threads, JSON grammar
   llm.py        providers (local, Ollama, Conscious Worker), breaker, cache
-  engine.py     debounce, admission, pipeline, outbox execution, metrics, live feed
+  engine.py     debounce, admission, pipeline, AI retries, follow-ups, outbox execution, metrics, live feed
   skills.py     answers learned from the team's replies in chats (and added on the dashboard)
   store.py      tables: davis_settings, davis_sessions, davis_events, davis_drafts, davis_catalogue, davis_skills
   router.py     /davis, /api/davis/ws, /api/davis/*

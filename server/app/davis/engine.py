@@ -33,7 +33,6 @@ from ..database import get_db
 from ..models import HouseRefreshRequestIn, InvoiceCreateIn, serialize_message
 from ..ws_manager import manager
 from . import catalogue, config, gate, llm, nlu, policy, prompts, skills, store
-from .persona import line as L
 
 
 def _pct(values, p: float) -> Optional[int]:
@@ -160,8 +159,8 @@ class Engine:
             self._sweeper = asyncio.create_task(self._sweep_loop())
             self.metrics.counters["sweeper_restarts"] += 1
 
-    def notify_refresh_done(self, job_id: int) -> None:
-        self._submit(lambda: self._spawn(self._refresh_done(job_id)))
+    def notify_refresh_done(self, job_id: int, early: bool = False) -> None:
+        self._submit(lambda: self._spawn(self._refresh_done(job_id, early)))
 
     def _schedule(self, chat_id: str, delay: Optional[float]) -> None:
         old = self.timers.pop(chat_id, None)
@@ -182,12 +181,22 @@ class Engine:
             await self.emit(chat_id, "error", {"error": str(e)[:300]})
             print(f"[davis] {chat_id}: {e!r}")
 
-    async def _refresh_done(self, job_id: int) -> None:
+    async def _refresh_done(self, job_id: int, early: bool = False) -> None:
+        """Guests waiting on this request get their homes. early: the scraper
+        has priced the first EARLY_PRESENT homes and is still going - a guest
+        is answered now only if those homes suit them (otherwise the final
+        result decides, so nobody hears "nothing free" too soon)."""
         catalogue.clear_cache()
         conn = get_db()
         try:
-            ids = [r["chat_id"] for r in conn.execute(
-                "SELECT chat_id FROM davis_sessions WHERE refresh_job_id=? AND stage='searching'", (job_id,))]
+            ids = []
+            for r in conn.execute("SELECT chat_id FROM davis_sessions WHERE refresh_job_id=? AND stage='searching'",
+                                  (job_id,)).fetchall():
+                if early:
+                    slots = store.get_session(conn, r["chat_id"]).get("slots") or {}
+                    if catalogue.find_options(conn, r["chat_id"], slots)[1] != "ok":
+                        continue
+                ids.append(r["chat_id"])
         finally:
             conn.close()
         for chat_id in ids:
@@ -198,8 +207,8 @@ class Engine:
 
     async def _sweep_loop(self) -> None:
         """Safety net: answers guests a hook missed (legacy import path,
-        restart mid-debounce) and follows up searches whose live prices
-        never arrived."""
+        restart mid-debounce), follows up searches whose live homes never
+        arrived, and sends the one nudge to guests who went quiet."""
         while True:
             try:
                 await asyncio.sleep(config.SWEEP_SEC)
@@ -216,10 +225,12 @@ class Engine:
                         "LEFT JOIN davis_sessions s ON s.chat_id = m.chat_id "
                         "WHERE m.direction = 'in' AND (s.last_inbound_id IS NULL OR s.last_inbound_id != m.id)",
                         (cutoff,)).fetchall()
-                    stuck_before = (datetime.now(timezone.utc) - timedelta(minutes=20)).isoformat()
+                    stuck_before = (datetime.now(timezone.utc)
+                                    - timedelta(minutes=config.REFRESH_TIMEOUT_MINUTES)).isoformat()
                     stuck = [r["chat_id"] for r in conn.execute(
                         "SELECT chat_id FROM davis_sessions WHERE stage='searching' AND updated_at < ?",
                         (stuck_before,))]
+                    quiet = self._quiet_guests(conn)
                 finally:
                     conn.close()
                 for r in rows:
@@ -227,6 +238,9 @@ class Engine:
                         self._schedule(r["chat_id"], 0)
                 for chat_id in stuck:
                     await self.process(chat_id, trigger="refresh_timeout")
+                for chat_id in quiet:
+                    if chat_id not in self.timers:
+                        await self.process(chat_id, trigger="followup")
                 self._sweeps += 1
                 if self._sweeps % max(1, 600 // config.SWEEP_SEC) == 0:   # every ~10 minutes
                     conn = get_db()
@@ -239,6 +253,27 @@ class Engine:
                 return
             except Exception as e:
                 print(f"[davis] sweep: {e!r}")
+
+    @staticmethod
+    def _quiet_guests(conn) -> list[str]:
+        """Chats mid-booking where Davis spoke last FOLLOWUP_HOURS ago and the
+        guest hasn't answered: each gets at most FOLLOWUP_MAX nudges, and only
+        while the guest's last message is under FOLLOWUP_WINDOW_HOURS old."""
+        if config.FOLLOWUP_HOURS <= 0 or config.FOLLOWUP_MAX <= 0:
+            return []
+        now = datetime.now(timezone.utc)
+        quiet_before = (now - timedelta(hours=config.FOLLOWUP_HOURS)).isoformat()
+        window = (now - timedelta(hours=config.FOLLOWUP_WINDOW_HOURS)).isoformat()
+        rows = conn.execute(
+            "SELECT s.chat_id FROM davis_sessions s "
+            "WHERE s.stage IN ('qualify','present','details','invoice') AND s.followups < ? "
+            "AND s.opted_out=0 AND s.handoff=0 AND s.paused=0 AND s.last_reply_at IS NOT NULL "
+            "AND s.last_reply_at < ? "
+            "AND (SELECT MAX(created_at) FROM messages m WHERE m.chat_id=s.chat_id AND m.direction='in') >= ? "
+            "AND (SELECT direction FROM messages m WHERE m.chat_id=s.chat_id "
+            "     AND (m.direction='in' OR m.kind='text') ORDER BY m.rowid DESC LIMIT 1) = 'out'",
+            (config.FOLLOWUP_MAX, quiet_before, window)).fetchall()
+        return [r["chat_id"] for r in rows]
 
     # ── live feed ─────────────────────────────────────────────────────────────
     async def emit(self, chat_id: Optional[str], kind: str, detail: Any = None,
@@ -300,7 +335,7 @@ class Engine:
         return list(reversed(out))
 
     async def process(self, chat_id: str, trigger: str = "message", force: bool = False) -> dict:
-        """Handle one chat now. trigger: message | refresh_done | refresh_timeout.
+        """Handle one chat now. trigger: message | refresh_done | refresh_timeout | followup.
         force=True (dashboard "run now") ignores mode off, never sends in shadow."""
         if not self.sem:
             raise RuntimeError("Davis engine not started")
@@ -328,7 +363,7 @@ class Engine:
 
     async def _process_body(self, chat_id: str, trigger: str, force: bool, claim: dict) -> dict:
         t0 = time.monotonic()
-        resume = trigger in ("refresh_done", "refresh_timeout")
+        resume = trigger in ("refresh_done", "refresh_timeout", "followup")
         conn = get_db()
         try:
             settings = store.get_settings(conn)
@@ -339,7 +374,11 @@ class Engine:
                 return {"status": "skipped", "reason": "no_such_chat"}
             msgs, session = ctx["messages"], ctx["session"]
             today, places = self._today(), self._places_map(conn)
-            guest_turn = self._guest_turn(msgs, resume)
+            if trigger == "followup":
+                last = next((m for m in reversed(msgs) if gate.speaking(m)), None)
+                if not last or last.get("direction") == "in":
+                    return {"status": "skipped", "reason": "guest_wrote"}     # the normal path answers it
+            guest_turn = [] if trigger == "followup" else self._guest_turn(msgs, resume)
             texts = [m["text"] for m in guest_turn if m.get("kind", "text") == "text" and m.get("text")]
             recent = [m for m in msgs[-14:] if m.get("kind", "text") == "text" and m.get("text")
                       and not gate.is_davis(m.get("sender"))]
@@ -382,29 +421,34 @@ class Engine:
             ctx["offers"] = catalogue.offered(conn, chat_id)
             ctx["session"] = session
             cat = _Cat(conn, chat_id)
-            plan_ = policy.plan(ctx, feats, cat, trigger="refresh_done" if resume else "message")
-            if trigger == "refresh_timeout" and not any(a["type"] == "send_options" for a in plan_["actions"]):
-                plan_["actions"] = [{"type": "alert_staff", "reason": "live prices did not arrive"},
-                                    {"type": "reply", "text": L("prices_late")}]
-                plan_["stage"] = "qualify"
+            plan_ = policy.plan(ctx, feats, cat, trigger=trigger)
+            plan_["trigger"] = trigger
             plan_ = await self._phrase(ctx, feats, plan_, cat, settings)
             plan_["actions"] = self._cap(plan_["actions"], msgs)
             plan_["inbound_id"] = latest_in["id"] if latest_in else None
             plan_["guest_text"] = " / ".join(texts)[:300]
 
-            if settings["mode"] == "live" and not force and plan_.get("ai_failed"):
-                # AI-only: no fixed sentence goes to the guest. The actions run
-                # (houses, invoice…), the reply waits as a draft for staff.
-                reply_only = [a for a in plan_["actions"] if a["type"] == "reply"]
-                plan_["actions"] = [a for a in plan_["actions"] if a["type"] != "reply"] + [
-                    {"type": "alert_staff", "reason": f"Davis couldn't write a safe reply ({plan_['ai_failed']})"}]
-                done = await self.execute(conn, chat_id, plan_, session)
-                if reply_only:
-                    done["draft_id"] = store.add_draft(conn, chat_id, plan_["inbound_id"],
-                                                       {**plan_, "actions": reply_only})
-                status = "needs_staff"
-                self.metrics.counters["ai_failed"] += 1
-            elif settings["mode"] == "live" and not force:
+            tries = session.get("ai_retries") or 0
+            if settings["mode"] == "live" and not force and plan_.get("ai_failed") and tries < config.AI_RETRIES \
+                    and trigger == "message":
+                # The model couldn't write a safe reply (busy, cut off, guard):
+                # nothing is sent yet; this turn runs again shortly. No person
+                # is asked to step in.
+                store.update_session(conn, chat_id, ai_retries=tries + 1, last_inbound_id=prev_inbound)
+                claim.clear()
+                self._schedule(chat_id, config.AI_RETRY_SEC)
+                self.metrics.counters["ai_retries"] += 1
+                await self.emit(chat_id, "retry", {"reason": plan_["ai_failed"], "try": tries + 1,
+                                                   "in_s": config.AI_RETRY_SEC})
+                return {"status": "retry", "reason": plan_["ai_failed"]}
+            if settings["mode"] == "live" and not force:
+                if plan_.get("ai_failed"):
+                    # Still no safe AI reply after the retries: the plan's own
+                    # wording goes out, so the guest is never left waiting.
+                    for a in plan_["actions"]:
+                        if a["type"] == "reply":
+                            a["by"] = "plan"
+                    self.metrics.counters["ai_fallbacks"] += 1
                 done = await self.execute(conn, chat_id, plan_, session)
                 status = "sent"
                 if latest_in and done.get("replied") and not resume:
@@ -430,9 +474,9 @@ class Engine:
         """The model writes the reply. In "ai" mode (the default) it writes every
         reply itself from the conversation and the plan's key points; a reply
         that fails policy.check_reply is retried once with the reason, and if it
-        still fails no fixed sentence is sent: plan_["ai_failed"] is set and the
-        engine leaves the reply to staff. In "all"/"open" modes the persona's
-        line is the fallback."""
+        still fails plan_["ai_failed"] is set: the engine runs the turn again
+        after AI_RETRY_SEC, and after AI_RETRIES sends the plan's own wording.
+        In "all"/"open" modes the persona's line is the fallback."""
         reply = next((a for a in plan_["actions"] if a["type"] == "reply"), None)
         open_q = plan_.get("intent") == "open_question"
         mode = settings.get("llm_for", config.LLM_FOR)
@@ -442,7 +486,6 @@ class Engine:
         if open_q and not plan_.get("note_terms") and not ai_only:
             use_model = False          # no team note covers the question: the team answers (no model wait)
         draft = reply["text"] if reply else None
-        model_handoff = None
         feedback = ""
         for attempt in range(2 if (use_model and ai_only) else (1 if use_model else 0)):
             user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat(), feedback)
@@ -460,7 +503,7 @@ class Engine:
                     missed = [m for m in prompts.must_include(draft) if not prompts.covers(text, m)]
                     if missed:
                         problem = "dropped:" + missed[0]
-                if not problem and open_q and plan_.get("note_terms") and not out.get("handoff") and not any(
+                if not problem and open_q and plan_.get("note_terms") and not any(
                         t in text.lower() for t in plan_.get("note_terms") or []):
                     problem = "answer_not_grounded_in_note"
                 if problem:
@@ -471,8 +514,6 @@ class Engine:
                     reply["text"] = text
                     reply["by"] = "model"
                     plan_["llm"].pop("rejected", None)
-                model_handoff = {"wants": bool(out.get("handoff")), "reason": str(out.get("handoff_reason") or "")[:120],
-                                 "answered": reply.get("by") == "model"}
                 if reply.get("by") == "model":
                     break
             elif "ran out of tokens" in str(info.get("error") or ""):
@@ -482,7 +523,7 @@ class Engine:
         if ai_only and use_model and reply is not None and reply.get("by") != "model":
             llm = plan_.get("llm") or {}
             plan_["ai_failed"] = llm.get("rejected") or llm.get("error") or llm.get("skipped") or "model unavailable"
-        return _resolve_maybe(plan_, model_handoff)
+        return plan_
 
     @staticmethod
     def _cap(actions: list[dict], msgs: list[dict]) -> list[dict]:
@@ -500,7 +541,14 @@ class Engine:
     async def execute(self, conn, chat_id: str, plan_: dict, session: dict) -> dict:
         from ..routers import house_refresh, houses, invoices, messages as messages_router
         new_ids: list[str] = []
-        patch: dict = {"stage": plan_["stage"], "slots": plan_["slots"], "choice": plan_.get("choice")}
+        patch: dict = {"stage": plan_["stage"], "slots": plan_["slots"], "choice": plan_.get("choice"),
+                       "ai_retries": 0}
+        if plan_.get("trigger") == "followup":
+            patch["followups"] = (session.get("followups") or 0) + 1
+            patch["last_followup_at"] = store.now_iso()
+            self.metrics.counters["followups"] += 1
+        elif plan_.get("trigger", "message") == "message":
+            patch["followups"] = 0                   # the guest wrote: a new silence may get its nudge
         result: dict = {"replied": False}
         t = datetime.now(timezone.utc)
         order = {"reply": 0, "send_options": 1, "create_invoice": 2, "send_terms": 3}
@@ -544,12 +592,9 @@ class Engine:
                     job = house_refresh.request_refresh(HouseRefreshRequestIn(
                         location=a["city"], check_in=a["check_in"], check_out=a["check_out"]))
                     patch["refresh_job_id"] = job["id"]
+                    patch["refresh_tries"] = (session.get("refresh_tries") or 0) + 1 if a.get("retry") else 1
                     result["refresh_job_id"] = job["id"]
                     self.metrics.counters["refresh_requests"] += 1
-                elif kind == "alert_staff":
-                    # The team is told (dashboard); Davis keeps answering the guest.
-                    patch["attention"], patch["attention_reason"] = True, a.get("reason") or "needs staff"
-                    self.metrics.counters["alerts"] += 1
                 elif kind == "skill_used":
                     skills.used(conn, a["id"])
                     self.metrics.counters["skills_used"] += 1
@@ -565,6 +610,7 @@ class Engine:
                 await self.emit(chat_id, "error", {"action": kind, "error": repr(e)[:300]})
         if plan_["stage"] != "searching":
             patch.setdefault("refresh_job_id", None)
+            patch.setdefault("refresh_tries", 0)
         store.update_session(conn, chat_id, **patch)
         for mid in new_ids:
             row = conn.execute("SELECT * FROM messages WHERE id=?", (mid,)).fetchone()
@@ -618,23 +664,6 @@ def _brief(a: dict) -> dict:
         return {"type": "create_invoice", "property": inv["property_name"], "total_usd": inv.get("rate"),
                 "guest": inv["guest_name"]}
     return {k: v for k, v in a.items() if k != "options"}
-
-
-def _resolve_maybe(plan_: dict, model: Optional[dict]) -> dict:
-    """maybe_alert marks a question the rules can't answer. It is dropped
-    when the model answered it (reply accepted, no handoff asked); otherwise
-    the team is alerted to answer it (Davis keeps the conversation going).
-    The model's handoff flag counts only there (complaints and requests for
-    a person are caught by the rules)."""
-    acts = []
-    for a in plan_["actions"]:
-        if a["type"] == "maybe_alert":
-            if model is None or model["wants"] or not model["answered"]:
-                acts.append({"type": "alert_staff", "reason": (model and model["reason"]) or a["reason"]})
-            continue
-        acts.append(a)
-    plan_["actions"] = acts
-    return plan_
 
 
 engine = Engine()

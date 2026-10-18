@@ -168,7 +168,7 @@ def salvage(text: str) -> Optional[dict]:
     body = body[:ends[-1] + 1] if ends else ""
     if len(body.split()) < 5:
         return None
-    return {"reply": body.strip(), "handoff": False}
+    return {"reply": body.strip()}
 
 
 model = LocalModel()
