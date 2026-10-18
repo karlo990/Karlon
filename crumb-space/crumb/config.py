@@ -8,6 +8,8 @@ Secrets (Settings → Variables and secrets → New secret):
     CRUMB_ADMIN_PASSWORD   password for the /admin dashboard. Without it the
                            dashboard stays locked.
     CRUMB_SECRET           signs the chat-session cookie (random per restart if unset).
+    CRUMB_BRIDGE_TOKEN     shared with the PC bridge (WhatsApp). Without it the
+                           WhatsApp endpoints stay closed.
 
 Variables:
     TURNSTILE_SITE_KEY     the public site key paired with the secret.
@@ -66,6 +68,15 @@ DAILY_LIMIT = _int("CRUMB_DAILY_LIMIT", 2000, 1)           # model replies per U
 # ── the dashboard ───────────────────────────────────────────────────────────
 ADMIN_PASSWORD = os.environ.get("CRUMB_ADMIN_PASSWORD", "")
 ADMIN_COOKIE = "crumb_admin"
+
+# ── WhatsApp, through the PC bridge (crumb-pc-bridge) ───────────────────────
+# The bridge sends this as "Authorization: Bearer <token>". Without it every
+# bridge endpoint answers 503: a public Space must never take chats from anyone.
+BRIDGE_TOKEN = os.environ.get("CRUMB_BRIDGE_TOKEN", "")
+WA_REPLY_WINDOW_MIN = _int("CRUMB_WA_REPLY_WINDOW_MIN", 30, 1)    # only answer messages newer than this
+WA_DEBOUNCE_SEC = _int("CRUMB_WA_DEBOUNCE_SEC", 6, 0)             # wait for a burst of messages to finish
+WA_HUMAN_PAUSE_MIN = _int("CRUMB_WA_HUMAN_PAUSE_MIN", 120, 0)     # someone typed on the phone: stay quiet this long
+WA_REPLIES_PER_CHAT = _int("CRUMB_WA_REPLIES_PER_CHAT", 10, 1)    # per RATE_WINDOW_SEC, per chat
 
 ALLOWED_ORIGINS = [o.strip().rstrip("/") for o in os.environ.get(
     "CRUMB_ALLOWED_ORIGINS", "https://sunday-crumb.mafatakesure.workers.dev").split(",") if o.strip()]

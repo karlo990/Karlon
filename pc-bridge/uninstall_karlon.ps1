@@ -45,7 +45,8 @@ Ok 'Karlon stopped'
 # 2. anything left over: the supervisor, its scripts, Playwright browsers
 $left = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
     ($_.CommandLine -match 'karlon_supervisor|wa_bridge\.py|invoice_worker\.py|airbnb_parallel_system\.py') -or
-    ($_.Name -match 'chrom' -and ($_.ExecutablePath -match 'ms-playwright' -or $_.CommandLine -match '\\\.karlon\\wa_session'))
+    ($_.Name -match 'chrom' -and $_.CommandLine -notmatch '\\\.crumb\\' -and
+        ($_.ExecutablePath -match 'ms-playwright' -or $_.CommandLine -match '\\\.karlon\\wa_session'))
 }
 foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
 if ($left) { Ok "closed $(@($left).Count) leftover process(es)" }
@@ -63,9 +64,12 @@ Remove-Item -Path 'HKCU:\Software\Karlon' -Recurse -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $StateDir 'stop.request') -ErrorAction SilentlyContinue
 Ok 'registry entries removed'
 
-# 4. power and Windows settings back as they were
+# 4. power and Windows settings back as they were (not while Crumb's bridge needs them)
 $BackupFile = Join-Path $StateDir 'install_backup.json'
-if (-not $KeepPowerSettings -and (Test-Path $BackupFile)) {
+$CrumbHere = Test-Path 'HKCU:\Software\Crumb'
+if ($CrumbHere) {
+    Ok 'the Crumb bridge is installed too: power, sign-in and Windows Update settings left as they are'
+} elseif (-not $KeepPowerSettings -and (Test-Path $BackupFile)) {
     $bk = Get-Content $BackupFile -Raw | ConvertFrom-Json
     $keys = @{
         Lid       = @('SUB_BUTTONS', 'LIDACTION')
@@ -97,11 +101,11 @@ if (-not $KeepPowerSettings -and (Test-Path $BackupFile)) {
     Ok 'power settings left as they are (-KeepPowerSettings)'
 }
 
-# 5. automatic sign-in off again (always, whatever -KeepPowerSettings says)
+# 5. automatic sign-in off again (whatever -KeepPowerSettings says; kept while the other bridge needs it)
 . (Join-Path $PSScriptRoot 'karlon_lsa.ps1')
 $wl = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 $bk2 = if (Test-Path $BackupFile) { Get-Content $BackupFile -Raw | ConvertFrom-Json } else { $null }
-if ($Reg.AutoLogon -eq 1 -or ((Get-ItemProperty -Path $wl -ErrorAction SilentlyContinue).AutoAdminLogon -eq '1' -and $bk2 -and $bk2.AutoAdminLogon -ne '1')) {
+if (-not $CrumbHere -and ($Reg.AutoLogon -eq 1 -or ((Get-ItemProperty -Path $wl -ErrorAction SilentlyContinue).AutoAdminLogon -eq '1' -and $bk2 -and $bk2.AutoAdminLogon -ne '1'))) {
     try { [KarlonLsa]::Set('DefaultPassword', $null) } catch { }
     $was = if ($bk2 -and $bk2.AutoAdminLogon) { [string]$bk2.AutoAdminLogon } else { '0' }
     Set-ItemProperty -Path $wl -Name 'AutoAdminLogon' -Value $was

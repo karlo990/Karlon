@@ -349,3 +349,20 @@ def test_site_files(client):
 def test_site_path_guard(client):
     for path in ("/..%2Fcrumb%2Fconfig.py", "/nothing.txt", "/assistant"):
         assert client.get(path).status_code == 404, path
+
+
+def test_cors_for_a_separately_hosted_site(client, monkeypatch):
+    origin = config.ALLOWED_ORIGINS[0]
+    r = client.options("/api/chat", headers={"Origin": origin, "Access-Control-Request-Method": "POST",
+                                             "Access-Control-Request-Headers": "content-type"})
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == origin
+    assert r.headers["access-control-allow-credentials"] == "true"
+    r = client.options("/api/chat", headers={"Origin": "https://evil.example", "Access-Control-Request-Method": "POST"})
+    assert r.headers.get("access-control-allow-origin") != "https://evil.example"
+
+
+def test_widget_can_target_another_host():
+    js = (config.STATIC / "site" / "assistant" / "assistant-widget.js").read_text()
+    assert "dataset.api" in js and "credentials: 'include'" in js
+    assert "fetch('/api" not in js

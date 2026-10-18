@@ -62,7 +62,7 @@ def clean_history(messages: list[dict]) -> list[dict]:
     return out
 
 
-async def reply(history: list[dict], notes: str = "") -> Reply:
+async def reply(history: list[dict], notes: str = "", channel: str = "web") -> Reply:
     question = history[-1]["content"] if history else ""
     if not available():
         return Reply(knowledge.offline_answer(question), "offline", error="no_api_key")
@@ -71,7 +71,8 @@ async def reply(history: list[dict], notes: str = "") -> Reply:
         response = await client().beta.messages.create(
             model=config.MODEL,
             max_tokens=config.MAX_TOKENS,
-            system=[{"type": "text", "text": knowledge.system_prompt(notes), "cache_control": {"type": "ephemeral"}}],
+            system=[{"type": "text", "text": knowledge.system_prompt(notes, channel),
+                     "cache_control": {"type": "ephemeral"}}],
             messages=history,
             output_config={"effort": config.EFFORT},
             betas=[config.FALLBACK_BETA],

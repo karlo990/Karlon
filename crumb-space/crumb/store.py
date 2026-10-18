@@ -57,6 +57,36 @@ CREATE TABLE IF NOT EXISTS daily (
     day   TEXT PRIMARY KEY,
     count INTEGER NOT NULL DEFAULT 0
 );
+-- WhatsApp, through the PC bridge (crumb/whatsapp.py)
+CREATE TABLE IF NOT EXISTS wa_chats (
+    id          TEXT PRIMARY KEY,          -- chat_slug(name), the same id the bridge computes
+    name        TEXT NOT NULL,
+    wa_name     TEXT NOT NULL,             -- the name the bridge clicks in WhatsApp Web
+    avatar      TEXT,
+    auto_reply  INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS wa_messages (
+    id           TEXT PRIMARY KEY,
+    chat_id      TEXT NOT NULL,
+    direction    TEXT NOT NULL,            -- in | out
+    sender       TEXT,
+    text         TEXT NOT NULL,
+    created_at   TEXT NOT NULL,            -- UTC ISO
+    external_key TEXT,                     -- the bridge's key for a message it read
+    wa_msg_id    TEXT,                     -- WhatsApp's own id, once seen on WhatsApp
+    wa_status    TEXT,                     -- written here: urgent | pending | sent | error; read from WhatsApp: NULL
+    source       TEXT,                     -- model | offline | refusal | dashboard (written here), NULL (read)
+    latency_ms   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_wa_messages_chat ON wa_messages(chat_id, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wa_messages_key ON wa_messages(chat_id, external_key);
+CREATE TABLE IF NOT EXISTS wa_pics (
+    chat_id  TEXT PRIMARY KEY,
+    version  TEXT NOT NULL,
+    data     BLOB NOT NULL
+);
 """
 
 

@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from . import config, endpoints, guard, knowledge, llm, store
+from . import config, endpoints, guard, knowledge, llm, store, whatsapp
 
 public = APIRouter()
 router = APIRouter()
@@ -77,6 +77,7 @@ def lock():
 @router.get("/api/admin/status", dependencies=[Depends(require_admin)])
 def status():
     return {"stats": store.stats(), "settings": store.settings(), "uptime_s": int(time.time() - _started),
+            "whatsapp": whatsapp.status(),
             "config": {"model": config.MODEL, "effort": config.EFFORT, "model_configured": llm.available(),
                        "person_check": config.TURNSTILE_ON, "turnstile_site_key": config.TURNSTILE_SITE_KEY,
                        "daily_limit": config.DAILY_LIMIT, "rate_per_session": config.RATE_PER_SESSION,
@@ -109,6 +110,7 @@ def feedback():
 
 
 class SettingsIn(BaseModel):
+    wa_auto_reply: Optional[bool] = None
     greeting: Optional[str] = Field(default=None, max_length=300)
     notice: Optional[str] = Field(default=None, max_length=300)
     suggestions: Optional[list[str]] = Field(default=None, max_length=6)
@@ -146,3 +148,52 @@ def endpoint_catalogue():
 def knowledge_view():
     return {"products": knowledge.PRODUCTS, "story": knowledge.STORY, "rules": knowledge.RULES,
             "system_prompt": knowledge.system_prompt(store.settings().get("notes") or "")}
+
+
+# ── WhatsApp (through the PC bridge) ────────────────────────────────────────
+
+@router.get("/api/admin/wa/status", dependencies=[Depends(require_admin)])
+def wa_status():
+    return whatsapp.status()
+
+
+@router.get("/api/admin/wa/chats", dependencies=[Depends(require_admin)])
+def wa_chats(limit: int = 100):
+    return whatsapp.chats(max(1, min(limit, 300)))
+
+
+@router.get("/api/admin/wa/chats/{chat_id}", dependencies=[Depends(require_admin)])
+def wa_chat(chat_id: str):
+    c = whatsapp.chat(chat_id)
+    if not c:
+        raise HTTPException(404, "not found")
+    return c
+
+
+class WaChatIn(BaseModel):
+    auto_reply: bool
+
+
+@router.put("/api/admin/wa/chats/{chat_id}", dependencies=[Depends(require_admin)])
+def wa_chat_settings(chat_id: str, body: WaChatIn):
+    return whatsapp.set_auto_reply(chat_id, body.auto_reply)
+
+
+class WaSendIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/admin/wa/chats/{chat_id}/send", dependencies=[Depends(require_admin)])
+def wa_send(chat_id: str, body: WaSendIn):
+    return whatsapp.queue_manual(chat_id, body.text.strip())
+
+
+@router.post("/api/admin/wa/chats/{chat_id}/answer", dependencies=[Depends(require_admin)])
+async def wa_answer_now(chat_id: str):
+    """Let Crumb answer this chat now (the same rules as automatic replies)."""
+    return await whatsapp.answer(chat_id)
+
+
+@router.get("/api/admin/wa/chats/{chat_id}/picture", dependencies=[Depends(require_admin)])
+def wa_picture(chat_id: str):
+    return whatsapp.picture(chat_id)

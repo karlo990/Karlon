@@ -10,13 +10,14 @@ pinned: false
 
 # Sunday Crumb: Crumb the assistant
 
-The backend for the Sunday Crumb site's "Ask Crumb" chat, plus the site itself and
-Crumb's kitchen (the dashboard).
+The backend for the Sunday Crumb site's "Ask Crumb" chat, plus the site itself,
+Crumb on WhatsApp (with the PC bridge, `crumb-pc-bridge`) and Crumb's kitchen
+(the dashboard).
 
 | Path | What |
 |---|---|
 | `/` | the Sunday Crumb site, with the chat widget calling this API (same origin) |
-| `/admin` | Crumb's kitchen: chats, live feed, settings, try-Crumb, endpoints, setup |
+| `/admin` | Crumb's kitchen: chats, WhatsApp, live feed, settings, try-Crumb, endpoints, setup |
 | `/docs` | interactive API docs |
 | `/api/endpoints` | every endpoint, live and planned, as JSON |
 
@@ -29,6 +30,9 @@ Crumb's kitchen (the dashboard).
 | `TURNSTILE_SITE_KEY` | variable | the matching public site key. The check is on only when both are set. |
 | `CRUMB_ADMIN_PASSWORD` | secret | password for `/admin`. Without it the dashboard stays locked. |
 | `CRUMB_SECRET` | secret | signs the session cookie, so chats survive a restart (any long random string). |
+| `CRUMB_BRIDGE_TOKEN` | secret | shared with the WhatsApp PC bridge (any long random string). Without it WhatsApp is off. |
+| `CRUMB_WA_REPLY_WINDOW_MIN` | variable | only answer WhatsApp messages newer than this (default 30). |
+| `CRUMB_WA_HUMAN_PAUSE_MIN` | variable | someone answered from the phone or dashboard: Crumb stays quiet this long (default 120). |
 | `CRUMB_ALLOWED_ORIGINS` | variable | sites allowed to call the API from a browser (comma-separated). |
 | `CRUMB_MODEL` | variable | default `claude-opus-5-5`. |
 | `CRUMB_EFFORT` | variable | `low` (default), `medium` or `high`. |
@@ -50,6 +54,19 @@ them now: `GET /api/specials`, `GET /api/hours`, `POST /api/orders`, `GET /api/o
 `GET /api/loyalty/{member_id}`, `POST /api/reservations`, `GET /api/chat/stream`, `POST /api/handoff`.
 
 To ship one, implement it in `crumb/api.py` and set its status to `live` in `crumb/endpoints.py`.
+
+## Crumb on WhatsApp
+
+The PC bridge (`crumb-pc-bridge`, on a Windows PC with Crumb's WhatsApp number) reads the recent
+chats from WhatsApp Web and sends each one to `POST /api/chats/{id}/sync`. A new message from a
+person gets an answer from Crumb, queued in `GET /api/outbox/urgent`; the bridge types it into
+WhatsApp within a few seconds and confirms it with `PATCH .../wa-ack`. Every bridge call needs
+`Authorization: Bearer <CRUMB_BRIDGE_TOKEN>`.
+
+Crumb stays quiet when the message is older than 30 minutes (so the first sync of old chats sends
+nothing), when someone answered from the phone or the dashboard in the last 2 hours, when auto-reply
+is off (globally or for that chat), or when a reply is already waiting to go out. The dashboard's
+WhatsApp tab shows each chat, why Crumb is quiet, and lets you write to the person yourself.
 
 ## How a chat works
 

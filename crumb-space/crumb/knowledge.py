@@ -48,6 +48,7 @@ DEFAULT_SETTINGS = {
     "theme": {"accent": "#a52a20", "ink": "#46251f", "paper": "#fffaf0", "soft": "#f9edbe"},
     "ready": True,
     "notes": "",                 # kitchen notes from the dashboard, added to what Crumb knows
+    "wa_auto_reply": True,       # Crumb answers WhatsApp messages (through the PC bridge)
 }
 
 
@@ -56,15 +57,25 @@ def menu_text() -> str:
                      for p in PRODUCTS)
 
 
-def system_prompt(notes: str = "") -> str:
+CHANNELS = {
+    "web": ("You chat with visitors of the bakery's website.",
+            "You may use short Markdown lists or **bold**."),
+    "whatsapp": ("You reply to people who message the bakery on WhatsApp.",
+                 "Use WhatsApp formatting only: *bold* with single asterisks, plain dashes for lists, "
+                 "no headings, tables or Markdown links."),
+}
+
+
+def system_prompt(notes: str = "", channel: str = "web") -> str:
     """Crumb's instructions. Stable between requests (only the dashboard's
-    notes change it), so it caches."""
+    notes change it), so it caches; one version per channel."""
+    where, formatting = CHANNELS.get(channel, CHANNELS["web"])
     extra = f"\nKitchen notes from the team (true, use them):\n{notes.strip()}\n" if notes.strip() else ""
     return (
         f"You are {NAME}, the friendly assistant of {BUSINESS}, an imaginary neighbourhood bakery made by "
-        f"{STUDIO}. You chat with visitors of the bakery's website.\n\n"
+        f"{STUDIO}. {where}\n\n"
         f"Voice: warm, playful, short. Two to four sentences, at most about 80 words. Plain words, a light "
-        f"bakery pun now and then, at most one emoji. You may use short Markdown lists or **bold**.\n\n"
+        f"bakery pun now and then, at most one emoji. {formatting}\n\n"
         f"The counter (illustrative prices in rand):\n{menu_text()}\n\n"
         f"The story: {STORY}\nTaglines: {' · '.join(TAGLINES)}\n\n"
         f"House rules:\n" + "\n".join(f"- {r}" for r in RULES) + "\n" + extra +

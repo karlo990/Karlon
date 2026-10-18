@@ -3,12 +3,16 @@
 //   <script src="/assistant/taggy-format.js" defer></script>
 //   <script src="/assistant/assistant-widget.js" defer></script>
 // It reads its name, greeting and suggestions from GET /api/assistant and stays hidden if that fails.
+// On a site hosted apart from the API, point it there: <script src=".../assistant-widget.js" data-api="https://api.host" defer>
+// (or window.CRUMB_API). Requests then carry cookies across sites; the API must list this site in its CORS origins.
 // When the settings include a Turnstile site key (online), it gets a chat session first; see ensureSession.
 // Built with createElement/textContent only; replies are rendered by TaggyFormat (no innerHTML).
 // The conversation lives in memory only: nothing is stored in the browser.
 (() => {
   'use strict';
   const MAX_SENT = 12, MAX_CHARS = 1000;
+  const API = ((document.currentScript && document.currentScript.dataset.api) || window.CRUMB_API || '').replace(/\/+$/, '');
+  const call = (path, options = {}) => fetch(API + path, API ? { ...options, credentials: 'include' } : options);
   const el = (tag, props = {}, ...children) => {
     const node = document.createElement(tag);
     for (const [key, value] of Object.entries(props)) {
@@ -25,7 +29,7 @@
   async function start() {
     let settings;
     try {
-      const response = await fetch('/api/assistant');
+      const response = await call('/api/assistant');
       if (!response.ok) return;
       settings = await response.json();
     } catch { return; }
@@ -100,7 +104,7 @@
       session ||= (async () => {
         await loadTurnstile();
         const token = await turnstileToken();
-        const response = await fetch('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+        const response = await call('/api/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
         if (!response.ok) throw Error((await response.json().catch(() => ({}))).error);
       })().catch(error => { session = null; throw Error(error.message || 'We couldn’t check that you’re a person. Please try again.'); });
       return session;
@@ -118,7 +122,7 @@
       try {
         const post = async () => {
           await ensureSession();
-          return fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: history.slice(-MAX_SENT) }) });
+          return call('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: history.slice(-MAX_SENT) }) });
         };
         let response = await post();
         let data = await response.json().catch(() => ({}));
