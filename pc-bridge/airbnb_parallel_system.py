@@ -159,7 +159,7 @@ USER_AGENT = (
 # silently push listings to a *different* server than wa_bridge.py/
 # invoice_worker.py were talking to. Now reads the same KARLON_URL as
 # everything else (override via the KARLON_URL env var, or local_config.py).
-from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN
+from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN, CHROMIUM_ARGS
 ENABLE_KARLON_PUSH = True
 # Cold HuggingFace Spaces can take 20-30s to answer their first request after
 # idling — 10s made the very first ingest of a cycle fail. 60s covers a wake-up.
@@ -2668,7 +2668,7 @@ async def main():
           f"{', '.join(SEARCH_QUERIES)}\n")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
+        browser = await p.chromium.launch(headless=False, args=CHROMIUM_ARGS)
 
         # Try the saved profile first; only fall back to the manual login flow if it's
         # missing or expired. The rest of the pipeline never starts without a working,

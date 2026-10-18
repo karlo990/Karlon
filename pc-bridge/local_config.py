@@ -89,6 +89,37 @@ AIRBNB_RESERVE_MAX_TOTAL_USD = _int_env("AIRBNB_RESERVE_MAX_TOTAL_USD", 0, minim
 # How often the scraper asks the server for a queued reservation.
 AIRBNB_RESERVE_POLL_SEC = _int_env("AIRBNB_RESERVE_POLL_SEC", 15, minimum=5)
 
+# ── Always-on running (karlon_supervisor.py, install_karlon.ps1) ──────────
+# Restart a process when it and its browsers together use more than this many
+# MB (0 = no cap). A WhatsApp Web tab grows for days; a restart is the only
+# real way to give that memory back.
+KARLON_WA_MAX_MB      = _int_env("KARLON_WA_MAX_MB", 2500, minimum=0)
+KARLON_SCRAPER_MAX_MB = _int_env("KARLON_SCRAPER_MAX_MB", 3000, minimum=0)
+KARLON_INVOICE_MAX_MB = _int_env("KARLON_INVOICE_MAX_MB", 1200, minimum=0)
+# Fresh start for each process after this many hours up (0 = never), one at a time.
+KARLON_RECYCLE_HOURS  = _int_env("KARLON_RECYCLE_HOURS", 24, minimum=0)
+# The network was down at least this long → restart the browser processes
+# once it's back, instead of trusting pages that sat through the outage.
+KARLON_OUTAGE_RESTART_SEC = _int_env("KARLON_OUTAGE_RESTART_SEC", 180, minimum=0)
+# The whole PC is using this % of its memory → restart the biggest process.
+KARLON_SYS_MEM_PCT    = _int_env("KARLON_SYS_MEM_PCT", 92)
+# Stop Windows idle-sleeping while the supervisor runs (1 = on).
+KARLON_KEEP_AWAKE     = os.environ.get("KARLON_KEEP_AWAKE", "1").strip() not in ("0", "false", "no", "off")
+
+# Flags for every Chromium the scripts start. The first three stop Chromium
+# slowing a tab down when its window is minimised, covered or the lid is
+# closed (WhatsApp Web would otherwise only check for messages about once a
+# minute); the cache cap keeps the profile from growing without limit.
+CHROMIUM_ARGS = [
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disk-cache-size=104857600",
+    "--no-first-run",
+    "--no-default-browser-check",
+] + os.environ.get("KARLON_CHROMIUM_ARGS", "").split()
+
 # ── Paths ──────────────────────────────────────────────────────────────────
 LOG_DIR = os.environ.get("LOG_DIR", "./logs")
 # LibreOffice's soffice executable (invoice_worker.py converts docx→pdf with it).

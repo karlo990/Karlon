@@ -81,7 +81,7 @@ from karlon_client import DOWNLOAD_TIMEOUT, HTTP_TIMEOUT, UPLOAD_TIMEOUT, get_se
 from local_config import (
     KARLON_URL, WA_POLL_INTERVAL, WA_OUTBOX_POLL_SEC, WA_FULL_SWEEP_EVERY,
     WA_SYNC_LAST_N_CHATS, CHAT_SNAPSHOT_DIR, WA_UTC_OFFSET_MINUTES, WA_RELOAD_HOURS,
-    LOG_DIR, print_active_config,
+    LOG_DIR, CHROMIUM_ARGS, print_active_config,
 )
 from wa_clean import (
     chat_slug, clean_chat_name, combine, detect_dayfirst, is_system_notice,
@@ -987,6 +987,15 @@ def outbox_pending() -> bool:
     return not (_urgent_outbox.empty() and _outbox.empty())
 
 
+_CHILD_STOP_FILE = os.environ.get("KARLON_CHILD_STOP_FILE", "")
+
+
+def stop_requested() -> bool:
+    """karlon_supervisor.py asks for a clean exit (browser closed properly,
+    profile saved) by creating this file, before it restarts us."""
+    return bool(_CHILD_STOP_FILE) and os.path.exists(_CHILD_STOP_FILE)
+
+
 def idle_wait(page: Page, seconds: float) -> None:
     """Sleep `seconds`, but wake every 0.5 s to deliver anything that arrives.
     Replaces a flat time.sleep(POLL_INTERVAL) during which outbound messages
@@ -994,7 +1003,7 @@ def idle_wait(page: Page, seconds: float) -> None:
     here the "service" is instant once the browser is free, so the fix is to
     be free — not to poll faster)."""
     deadline = time.time() + seconds
-    while time.time() < deadline:
+    while time.time() < deadline and not stop_requested():
         if outbox_pending():
             process_outbox(page)
         time.sleep(0.5)
@@ -1571,6 +1580,7 @@ def launch_page(headless: bool = False):
             user_data_dir=SESSION_DIR,
             headless=headless,
             viewport={"width": 1400, "height": 900},
+            args=CHROMIUM_ARGS,
         )
     except Exception as e:
         pw.stop()
@@ -3323,6 +3333,9 @@ def main() -> None:
 
         last_reload = time.time()
         while True:
+            if stop_requested():
+                print("[wa_bridge] the supervisor asked for a clean stop — closing the browser")
+                break
             if WA_RELOAD_HOURS and time.time() - last_reload > WA_RELOAD_HOURS * 3600:
                 reload_whatsapp(page)
                 last_reload = time.time()

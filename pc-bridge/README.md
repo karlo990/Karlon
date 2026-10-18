@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 85 tests (server: 33), no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 104 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -15,10 +15,86 @@ python -m pytest tests               # 85 tests (server: 33), no WhatsApp/Airbnb
 | `invoice_worker.py` | pending invoice → KARLCON-layout PDF (Chromium; LibreOffice/Word fallback) → upload |
 | `airbnb_parallel_system.py` | listing scraper → `/api/houses/ingest`; books queued reservations |
 | `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
-| `karlon_supervisor.py` | starts the three above, restarts them with backoff |
+| `karlon_supervisor.py` | starts the three above, restarts them with backoff; watchdog for memory, hangs, network |
+| `karlon_care.py` | process-tree killing (job objects), browser profile/temp cleanup, lock, heartbeat |
+| `install_karlon.ps1` | makes it all part of Windows: boot/logon tasks, lid, sleep, Wi-Fi, registry |
+| `karlon_status.ps1` / `uninstall_karlon.ps1` | see / restart / pause it; remove it and restore settings |
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
 | `wa_clean.py` | good-vs-bad data rules (names, notices, times); identical copy in `server/app/` |
+
+## Always on: part of Windows (install_karlon.ps1)
+
+One command makes the three processes start by themselves at power-on and at
+logon, and keep running through crashes, Wi-Fi drops, sleep and a closed lid.
+In PowerShell, in this folder:
+
+```
+Unblock-File .\*.ps1                                            # files from a zip are marked "from the internet"
+powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1   # asks for Administrator
+.\karlon_status.ps1            # what's running, memory, network, lid setting, last log lines
+.\karlon_status.ps1 -Follow    # live log
+.\karlon_status.ps1 -Restart   # fresh start of all three (browsers closed cleanly)
+.\karlon_status.ps1 -Pause     # stop and stay stopped   (-Resume to start again)
+powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1 # remove it, settings restored
+```
+
+Options: `-KeepAwakeOnBattery` (never sleep on battery either), `-KarlonUrl <url>`
+(saved as your user's `KARLON_URL`), `-Mode Logon|Boot` (one task instead of
+both), `-NoPowerChanges`, `-NoUpdateRebootBlock`, `-Python <path>`.
+
+**Continuous**
+- *Karlon Boot* task: starts at power-on, before anyone logs on, hidden.
+  *Karlon Logon* task: starts when you log on, on your desktop (the WhatsApp
+  window is visible, the QR code can be scanned), and takes over from the
+  hidden copy. A registry Run entry starts it too if the Task Scheduler is off.
+- Both tasks: restarted 1 min after any crash (999 times), no time limit, run
+  on battery, started again when the network connects or the PC wakes, and
+  checked every 5 min. Only one copy ever runs (a lock file); a copy that stops
+  answering for 3 min is killed and replaced.
+- Lid: "do nothing" when closed (plugged in and on battery). Sleep and
+  hibernate: never when plugged in. While Karlon runs it also tells Windows not
+  to idle-sleep (`powercfg /requests` shows it). Fast Startup is turned off so
+  every power-on is a real boot, and Windows Update won't restart the PC by
+  itself while you're logged on. Wi-Fi: maximum performance, and Windows may not
+  switch the adapter off. Everything changed is saved first
+  (`~/.karlon/install_backup.json`) and put back by the uninstaller.
+
+**Durable**
+- Wi-Fi drop: the supervisor sees the server is unreachable and holds every
+  restart until it's back (checks at 5 s ... 60 s), so nothing crash-loops while
+  offline. Processes that sat through an outage of 3 min or more
+  (`KARLON_OUTAGE_RESTART_SEC`) get a fresh browser once it's back.
+- Hung: WhatsApp silent for 30 min, scraper for 60 min -> restarted.
+- Each process and every browser it starts run in a Windows *job object*: a
+  restart (or the supervisor itself dying) kills the whole tree. No orphan
+  chrome.exe keeps the WhatsApp profile locked.
+- Before WhatsApp starts: any browser still holding its profile is closed and
+  Chromium's stale lock files (left by a power cut) are removed.
+
+**Efficient**
+- Memory: a process using more than `KARLON_WA_MAX_MB` (2500),
+  `KARLON_SCRAPER_MAX_MB` (3000) or `KARLON_INVOICE_MAX_MB` (1200), browsers
+  included, is restarted; so is the biggest one if the PC reaches
+  `KARLON_SYS_MEM_PCT` (92%). Each gets a fresh start after
+  `KARLON_RECYCLE_HOURS` (24) up, one at a time. WhatsApp closes its browser
+  itself first (45 s), so the login is saved cleanly.
+- Browser: caches (Cache, Code Cache, GPU/shader caches, crash dumps) cleared
+  once a day before WhatsApp starts; the login (IndexedDB, Local Storage,
+  Cookies, Service Worker) is never touched. Disk cache capped at 100 MB.
+  Chromium is told not to slow a minimised, covered or lid-closed window.
+- Every 30 min: leftover Playwright temp profiles in %TEMP% (not in use, idle
+  1 h+), orphan Playwright browsers, and logs/screenshots older than 14 days.
+- One log, `logs/karlon_supervisor.log`, rolled over at 10 MB (5 kept).
+  State every 15 s in `~/.karlon/supervisor.json`.
+
+Settings like `AIRBNB_RESERVE_LIVE` must be saved for your user so the task
+sees them (`[Environment]::SetEnvironmentVariable("AIRBNB_RESERVE_LIVE","1","User")`),
+then `.\karlon_status.ps1 -Pause` and `-Resume`.
+
+The hidden boot copy has no screen: WhatsApp must already be logged in (scan
+the QR once from the desktop copy), and an Airbnb login that needs a person
+waits until you log on.
 
 ## First start, login and "no chats"
 
