@@ -448,11 +448,23 @@ def _watch(proc_entry: ManagedProcess) -> None:
             return
 
 
+# Low PC memory: restart a Karlon process only when Karlon is part of the
+# problem. When other programs fill the PC, restarting Karlon frees nothing
+# lasting and just kills WhatsApp mid-sync, over and over.
+LOW_MEM_MIN_UPTIME_SEC = 900       # never one that has been up less than this
+LOW_MEM_COOLDOWN_SEC = 900         # at most one such restart per this long
+LOW_MEM_SHARE_OF_CAP = 0.5         # and only if it uses at least this share of its own memory limit
+_low_mem = {"at": 0.0}
+
+
 def check_children(entries: list[ManagedProcess], now: float, net_back_after: float,
-                   sys_mem_pct: float | None, read_mem=care.tree_memory_mb) -> list[tuple[str, str]]:
+                   sys_mem_pct: float | None, read_mem=care.tree_memory_mb,
+                   low_mem: dict | None = None) -> list[tuple[str, str]]:
     """Decide which running processes need a fresh start, and why. Pure
-    except for read_mem, so the rules are testable. At most one recycle per
-    call, so processes don't all restart in the same minute."""
+    except for read_mem (and the low-memory cooldown in low_mem), so the
+    rules are testable. At most one recycle per call, so processes don't all
+    restart in the same minute."""
+    low_mem = _low_mem if low_mem is None else low_mem
     out: list[tuple[str, str]] = []
     recycled = False
     running = [e for e in entries if e.alive() and not e.restart_reason]
@@ -469,9 +481,13 @@ def check_children(entries: list[ManagedProcess], now: float, net_back_after: fl
         elif KARLON_RECYCLE_HOURS and up > KARLON_RECYCLE_HOURS * 3600 and not recycled:
             out.append((e.key, f"up {up / 3600:.0f} h — routine fresh start"))
             recycled = True
-    if sys_mem_pct and sys_mem_pct >= KARLON_SYS_MEM_PCT and not out:
-        big = max((e for e in running if e.mem_mb), key=lambda e: e.mem_mb, default=None)
+    if sys_mem_pct and sys_mem_pct >= KARLON_SYS_MEM_PCT and not out \
+            and now - low_mem["at"] >= LOW_MEM_COOLDOWN_SEC:
+        bloated = [e for e in running if e.mem_mb and e.max_mb and e.mem_mb >= e.max_mb * LOW_MEM_SHARE_OF_CAP
+                   and now - e.last_restart >= LOW_MEM_MIN_UPTIME_SEC]
+        big = max(bloated, key=lambda e: e.mem_mb, default=None)
         if big:
+            low_mem["at"] = now
             out.append((big.key, f"PC memory at {sys_mem_pct:.0f}% — freeing {big.mem_mb:.0f} MB"))
     return out
 
@@ -510,6 +526,7 @@ def _monitor(selected: dict[str, ManagedProcess], started: float) -> None:
     """Every MONITOR_SEC: network, memory, hangs, requests, heartbeat."""
     last_house = 0.0
     outage_start = None           # its own record: the watch threads also update _net
+    last_mem_note = 0.0
     while not _stop.is_set():
         try:
             now = time.time()
@@ -531,8 +548,14 @@ def _monitor(selected: dict[str, ManagedProcess], started: float) -> None:
                 log(f"[supervisor] network back after {back_after:.0f}s")
                 for e in selected.values():
                     e.consecutive_fast_failures = 0
-            for key, why in check_children(list(selected.values()), now, back_after, care.system_memory_percent()):
+            pc_mem = care.system_memory_percent()
+            for key, why in check_children(list(selected.values()), now, back_after, pc_mem):
                 selected[key].restart_reason = why
+            if pc_mem and pc_mem >= KARLON_SYS_MEM_PCT and now - last_mem_note > 1800:
+                last_mem_note = now
+                ours = sum(e.mem_mb or 0 for e in selected.values() if e.alive())
+                log(f"[supervisor] PC memory at {pc_mem:.0f}%: Karlon uses {ours:.0f} MB, other programs the rest. "
+                    f"Close browser tabs/apps you don't need; Karlon keeps running")
             if now - last_house > HOUSEKEEPING_SEC:
                 last_house = now
                 _housekeeping(selected)

@@ -272,10 +272,29 @@ def test_rules_one_recycle_at_a_time_and_low_pc_memory(now):
     a, b = _fake("wa", now, up_h=30), _fake("invoice", now, up_h=30)
     out = sup.check_children([a, b], now, 0, 40, read_mem=lambda p: 100.0)
     assert len(out) == 1 and "fresh start" in out[0][1]
-    c, d = _fake("wa", now), _fake("scraper", now)
+    c, d = _fake("wa", now, max_mb=2500), _fake("scraper", now, max_mb=3000)
     mem = {c.proc.pid: 1800.0, d.proc.pid: 900.0}
-    out = sup.check_children([c, d], now, 0, 95, read_mem=mem.get)
+    low = {"at": 0.0}
+    out = sup.check_children([c, d], now, 0, 95, read_mem=mem.get, low_mem=low)
     assert out[0][0] == "wa" and "PC memory" in out[0][1]
+    assert sup.check_children([_fake("wa", now, max_mb=2500)], now + 60, 0, 95,
+                              read_mem=lambda p: 1800.0, low_mem=low) == []        # cooldown
+
+
+def test_full_pc_from_other_programs_never_causes_a_restart_loop(now):
+    """The user's log: PC at 97-99% (browser tabs etc.), WhatsApp just logged
+    in (1.2 GB) and the scraper just started (0.8 GB). Restarting them freed
+    nothing lasting and killed WhatsApp mid-sync every minute; now neither is
+    touched (too young, and well under their own limits)."""
+    low = {"at": 0.0}
+    wa = _fake("wa", now, up_h=1 / 60, max_mb=2500)
+    sc = _fake("scraper", now, up_h=0.005, max_mb=3000)
+    mem = {wa.proc.pid: 1184.0, sc.proc.pid: 789.0}
+    for t in range(0, 3600, 15):                              # an hour of monitor ticks
+        wa.last_restart = sc.last_restart = now - 60          # whatever their age, they stay
+        assert sup.check_children([wa, sc], now + t, 0, 98, read_mem=mem.get, low_mem=low) == []
+    old_wa = _fake("wa", now, up_h=2, max_mb=2500)            # an old, small WhatsApp: still not Karlon's fault
+    assert sup.check_children([old_wa], now, 0, 98, read_mem=lambda p: 900.0, low_mem=low) == []
 
 
 def test_supervisor_end_to_end(tmp_path):
