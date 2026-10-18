@@ -86,7 +86,18 @@ def resume_supervisor() -> None:
         if r.returncode == 0:
             print("Karlon started again (scheduled task). Check it with: .\\karlon_status.ps1")
             return
-    print("Start Karlon again with:  python karlon_supervisor.py")
+    # Not installed as a task (or no right to run it from here): start the
+    # supervisor in the background ourselves, no window, detached from this one.
+    exe = Path(sys.executable)
+    pyw = exe.with_name("pythonw.exe")
+    cmd = [str(pyw if pyw.exists() else exe), str(HERE / "karlon_supervisor.py"), "--service", "--takeover"]
+    flags = (0x00000008 | 0x00000200) if care.IS_WINDOWS else 0          # DETACHED_PROCESS | NEW_PROCESS_GROUP
+    try:
+        subprocess.Popen(cmd, cwd=HERE, creationflags=flags, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=not care.IS_WINDOWS)
+        print("Karlon started again in the background. Check it with: .\\karlon_status.ps1")
+    except OSError as e:
+        print(f"Could not start Karlon ({e}). Start it with:  python karlon_supervisor.py")
 
 
 def login_whatsapp() -> bool:
@@ -149,17 +160,15 @@ async def _login_airbnb() -> bool:
             ctx = await ab.login_with_timeout(browser)
             if ctx is None:
                 return False
-            page = await ctx.new_page()
-            try:
-                await page.goto("https://www.airbnb.com/", wait_until="domcontentloaded", timeout=ab.NAV_TIMEOUT)
-                logged_in = await ab.is_logged_in(page)
-            except Exception:
-                logged_in = True                     # can't check now; the scraper checks on start
-            if not logged_in:
-                print("  Airbnb doesn't show you as logged in yet. Run this again: python karlon_login.py --only airbnb")
-                Path(AIRBNB_AUTH_STATE_FILE).unlink(missing_ok=True)
-                return False
             await ab.save_session(ctx)
+            # Same check the scraper makes when it starts: a fresh browser
+            # context from the saved file, given time to load.
+            check = await ab.try_restore_session(browser)
+            if check is None:
+                print("  Saved, but a fresh check didn't see you logged in yet. If the scraper later asks")
+                print("  to log in, run:  python karlon_login.py --only airbnb")
+            else:
+                await check.close()
             print(f"  Airbnb login saved ({AIRBNB_AUTH_STATE_FILE}). The scraper now runs headless.")
             return True
         finally:

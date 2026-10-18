@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 111 tests, no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 113 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |

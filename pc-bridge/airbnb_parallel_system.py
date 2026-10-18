@@ -700,6 +700,22 @@ async def is_logged_in(page: Page) -> bool:
     return False
 
 
+async def wait_logged_in(page: Page, timeout: float = 20.0) -> bool:
+    """is_logged_in, given the page time to draw its header: a single check
+    right after domcontentloaded can miss the profile menu (headless above
+    all) and call a good saved login expired."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            if await is_logged_in(page):
+                return True
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return False
+        await sleep_ms(1000)
+
+
 async def wait_for_manual_continue(prompt: str) -> asyncio.Event:
     """Lets you press Enter in the console at any time to tell the script 'I'm logged
     in now, stop waiting on the automatic check and continue immediately'. Runs the
@@ -793,8 +809,7 @@ async def try_restore_session(browser: Browser) -> Optional[BrowserContext]:
     try:
         await page.goto("https://www.airbnb.com/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
         await dismiss_overlays(page)
-        await sleep_ms(1500)
-        if await is_logged_in(page):
+        if await wait_logged_in(page):
             print("  Saved profile is still valid — skipping manual login.\n")
             await page.close()
             return context

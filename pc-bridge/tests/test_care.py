@@ -438,3 +438,25 @@ def test_installer_tasks():
     assert "LogonType Interactive" in text
     login = (here / "karlon_login.py").read_text()
     assert "login.hold" in login and "login.hold" in (here / "karlon_supervisor.py").read_text()
+
+
+def test_login_check_waits_for_the_page(monkeypatch):
+    """The Airbnb header draws after domcontentloaded: one look too early
+    called a good login 'not logged in' (and the file was deleted)."""
+    import airbnb_parallel_system as ab
+    calls = []
+
+    async def late_header(page):
+        calls.append(1)
+        return len(calls) >= 3
+
+    async def no_wait(ms):
+        return None
+    monkeypatch.setattr(ab, "is_logged_in", late_header)
+    monkeypatch.setattr(ab, "sleep_ms", no_wait)
+    assert asyncio.run(ab.wait_logged_in(None, timeout=5)) is True and len(calls) == 3
+
+
+def test_login_helper_never_deletes_a_saved_airbnb_login():
+    login = (Path(__file__).resolve().parent.parent / "karlon_login.py").read_text()
+    assert "unlink" not in login.split("async def _login_airbnb")[1].split("def main")[0]
