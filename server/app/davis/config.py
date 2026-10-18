@@ -50,7 +50,7 @@ LOCAL_MODEL_DIR = os.environ.get("DAVIS_LOCAL_MODEL_DIR",
                                  os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 LOCAL_THREADS = _int("DAVIS_LOCAL_THREADS", 0)          # 0 = the cores this container really has
 LOCAL_CTX = _int("DAVIS_LOCAL_CTX", 4096, 1024)
-LOCAL_MAX_TOKENS = _int("DAVIS_LOCAL_MAX_TOKENS", 120, 40)
+LOCAL_MAX_TOKENS = _int("DAVIS_LOCAL_MAX_TOKENS", 220, 40)   # 40 words + JSON; digits are a token each
 LOCAL_TEMPERATURE = _float("DAVIS_LOCAL_TEMPERATURE", 0.3)
 LOCAL_PRELOAD = os.environ.get("DAVIS_LOCAL_PRELOAD", "1") not in ("0", "false", "no")
 LLM_TIMEOUT_SEC = _float("DAVIS_LLM_TIMEOUT_SEC", 45.0, 3.0)   # then the persona line goes out

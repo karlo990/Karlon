@@ -747,3 +747,13 @@ def test_dashboard_is_locked_by_the_karlon_password(dc, db, monkeypatch):
     monkeypatch.setattr(auth, "PASSWORD", "")                         # no password set: stays locked
     assert dc.get("/api/davis/status").status_code == 403
     assert dc.get("/api/davis/lock-state").json()["configured"] is False
+
+
+def test_cut_off_reply_keeps_complete_sentences():
+    from app.davis.local_llm import salvage
+    cut = '{"reply": "Full payment confirms the booking for KCER 5100, 11–14 Dec. Please send USD 520 to EcoCash 07805'
+    assert salvage(cut) == {"reply": "Full payment confirms the booking for KCER 5100, 11–14 Dec.", "handoff": False}
+    assert salvage('{"reply": "Hello there, I can help you with') is None          # no full sentence
+    assert salvage('{"reply": "Sure. Thanks a lot for that, I will check it now.\\') == {
+        "reply": "Sure. Thanks a lot for that, I will check it now.", "handoff": False}
+    assert salvage('{"handoff": tr') is None

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -132,13 +133,42 @@ class LocalModel:
                      "seconds": round(took, 2), "queued_s": round(waited, 2),
                      "tokens_per_s": round((usage.get("completion_tokens") or 0) / took, 1) if took > 0 else None}
         if out["choices"][0].get("finish_reason") == "length":
-            raise ValueError("local model ran out of tokens")
+            # Cut off at max_tokens (digits are one token each, so a reply
+            # with a payment number, KCER and totals runs long): keep its
+            # complete sentences; the guard still checks what's left.
+            cut = salvage(text)
+            if cut is None:
+                raise ValueError("local model ran out of tokens")
+            self.last["truncated"] = True
+            return cut, {"model": config.LOCAL_MODEL_FILE, **self.last}
         return json.loads(text), {"model": config.LOCAL_MODEL_FILE, **self.last}
 
     def status(self) -> dict:
         return {"state": self.state, "error": self.error, "file": config.LOCAL_MODEL_FILE,
                 "repo": config.LOCAL_MODEL_REPO, "threads": self.threads, "load_s": self.load_s,
                 "calls": self.calls, "last": self.last}
+
+
+def salvage(text: str) -> Optional[dict]:
+    """The reply out of JSON that stopped mid-way: its complete sentences, or
+    None if fewer than 5 words survive."""
+    m = re.search(r'"reply"\s*:\s*"((?:[^"\\]|\\.)*)', text or "", re.S)
+    if not m:
+        return None
+    raw, body = m.group(1), None
+    for cut in range(0, 7):                     # a half-written escape at the end
+        try:
+            body = json.loads('"' + raw[:len(raw) - cut] + '"')
+            break
+        except ValueError:
+            continue
+    if body is None:
+        return None
+    ends = [i for i, ch in enumerate(body) if ch in ".!?"]
+    body = body[:ends[-1] + 1] if ends else ""
+    if len(body.split()) < 5:
+        return None
+    return {"reply": body.strip(), "handoff": False}
 
 
 model = LocalModel()

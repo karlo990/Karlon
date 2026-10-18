@@ -475,6 +475,8 @@ class Engine:
                                  "answered": reply.get("by") == "model"}
                 if reply.get("by") == "model":
                     break
+            elif "ran out of tokens" in str(info.get("error") or ""):
+                feedback = f"too long: at most {config.MAX_WORDS} words"   # a shorter try can work
             else:
                 break                                   # model down / skipped: no point retrying now
         if ai_only and use_model and reply is not None and reply.get("by") != "model":
