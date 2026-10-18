@@ -92,7 +92,7 @@ if (-not $b) {
 } elseif ($b.state -eq 'stopped' -or $age -gt 180) {
     Write-Host ("  supervisor: NOT RUNNING (last heartbeat {0:N0} s ago)" -f $age) -ForegroundColor Red
 } else {
-    $where = if ($b.session -eq 0) { 'started at power-on (no desktop, headless)' } else { "on the desktop (session $($b.session))" }
+    $where = if ($b.session -eq 0) { 'NOT SIGNED IN (session 0) - browsers wait for sign-in' } else { "in your session ($($b.session))" }
     $since = [DateTimeOffset]::FromUnixTimeSeconds([long]$b.started).LocalDateTime
     Write-Host ("  supervisor: RUNNING pid {0}, {1}, since {2:g}, heartbeat {3:N0} s ago" -f $b.pid, $where, $since, $age) -ForegroundColor Green
     $net = if ($b.network.ok) { 'ok' } else { 'DOWN (restarts wait for it)' }
@@ -104,7 +104,7 @@ if (-not $b) {
         $how = if ($c.headless -eq $true) { 'headless' } elseif ($c.headless -eq $false) { 'window' } else { '' }
         Write-Host ('    {0,-8} {1,-5} {2,-9} pid {3,-6} up {4,5} min  {5,7} MB  restarts {6}' -f $p.Name, $state, $how, $c.pid,
             [math]::Floor([double]$c.uptime_s / 60), $c.memory_mb, $c.restarts) -ForegroundColor $color
-        if ($c.waiting_for_desktop) { Write-Host "             needs a login window: sign in to Windows, or run  python karlon_login.py" -ForegroundColor Yellow }
+        if ($c.waiting_for_desktop) { Write-Host "             waits for you to sign in to Windows (its saved login only opens in your session)" -ForegroundColor Yellow }
     }
 }
 

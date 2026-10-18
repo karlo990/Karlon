@@ -338,16 +338,19 @@ def wait_for_network() -> bool:
 
 
 def wait_for_desktop(entry: ManagedProcess) -> bool:
-    """With no desktop (started at power-on, nobody signed in), a browser
-    that still needs a person to log in can't show its window: hold it until
-    its login is saved (karlon_login.py) or the signed-in copy takes over.
-    Processes with a saved login run headless and never wait. False if
-    we're stopping."""
+    """A site browser (WhatsApp, Airbnb) never runs outside the signed-in
+    Windows session, headless or not. Chrome locks its saved logins with a
+    key Windows only unlocks for a signed-in user (DPAPI); a browser started
+    before sign-in (session 0, a "run whether signed in or not" task) can't
+    read them, looks logged out, and can overwrite that key so the profile
+    stays logged out afterwards too. So: hold it until the signed-in copy
+    takes over (it does whenever something here is waiting). False if we're
+    stopping."""
     said = False
-    while _no_desktop and entry.needs_desktop() and not _stop.is_set():
+    while _no_desktop and entry.login_saved is not None and not _stop.is_set():
         if not said:
-            log(f"[supervisor] {entry.key} has no saved login and there's no desktop to show a login window: "
-                f"it starts at sign-in (or after: python karlon_login.py)")
+            log(f"[supervisor] {entry.key} waits for sign-in: its saved login only opens inside your Windows "
+                f"session (automatic sign-in after a restart: install_karlon.ps1 -AutoLogon)")
             said = True
             _waiting.add(entry.key)
         _sleep(30)
@@ -558,9 +561,10 @@ def claim_instance(takeover: bool) -> care.InstanceLock | None:
             f"({age:.0f}s since its last heartbeat) — replacing it")
         if pid and care.is_supervisor(pid):
             care.kill_tree(pid)
-    elif takeover and beat.get("session") != care.session_id() and beat.get("waiting_for_desktop"):
-        log(f"[supervisor] taking over from pid {pid} (Windows session {beat.get('session')}): "
-            f"{', '.join(beat['waiting_for_desktop'])} need(s) this desktop for a login window")
+    elif takeover and beat.get("session") != care.session_id() and (beat.get("waiting_for_desktop")
+                                                                    or beat.get("session") == 0):
+        log(f"[supervisor] taking over from pid {pid} (Windows session {beat.get('session')}, not signed in): "
+            f"the browsers run here, in your signed-in session")
         care.STOP_REQUEST.parent.mkdir(parents=True, exist_ok=True)
         care.STOP_REQUEST.touch()
     else:

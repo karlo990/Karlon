@@ -27,14 +27,16 @@ python -m pytest tests               # 113 tests, no WhatsApp/Airbnb/network nee
 ## Always on: part of Windows (install_karlon.ps1)
 
 WhatsApp and Airbnb need a person once: scan the QR, log in to Airbnb. After
-that the saved logins let them run **headless** (no window, in the background),
-from power-on, before anyone signs in. Invoices never need a login (the PDFs
-are always printed by a headless browser). In PowerShell, in this folder:
+that the saved logins let them run **headless** (no window, in the background)
+inside your signed-in Windows session; `-AutoLogon` signs you in by itself after
+a restart (and locks the screen), so it also runs when nobody is at the laptop.
+Invoices never need a login (the PDFs are always printed by a headless
+browser). In PowerShell, in this folder:
 
 ```
 Unblock-File .\*.ps1                                            # files from a zip are marked "from the internet"
 python karlon_login.py                                          # once: WhatsApp QR, then Airbnb login; Enter when done
-powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1   # asks for Administrator
+powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon   # Administrator, then your Windows password
 .\karlon_status.ps1            # running? headless or window? memory, network, lid, last log lines
 .\karlon_status.ps1 -Follow    # live log
 .\karlon_status.ps1 -Restart   # fresh start of all three (browsers closed cleanly)
@@ -56,19 +58,24 @@ the full browser in its new headless mode with a normal browser name (a
 "HeadlessChrome" name makes WhatsApp Web refuse to load); the scraper re-saves
 its Airbnb cookies after every cycle so the login stays fresh.
 
-Options: `-KeepAwakeOnBattery` (never sleep on battery either), `-KarlonUrl <url>`
-(saved as your user's `KARLON_URL`), `-NoBootTask` (start at sign-in only),
-`-AutoLogon` (Windows signs in by itself after a restart and locks the screen;
-only needed if you want visible windows after a restart), `-NoPowerChanges`,
-`-NoUpdateRebootBlock`, `-Python <path>`.
+Options: `-AutoLogon` (Windows signs in by itself after a restart; the screen
+locks 40 s later, `-NoLockAfterAutoLogon` to skip that), `-KeepAwakeOnBattery`
+(never sleep on battery either), `-KarlonUrl <url>` (saved as your user's
+`KARLON_URL`), `-NoPowerChanges`, `-NoUpdateRebootBlock`, `-Python <path>`.
+
+**Why not start before sign-in?** Chrome locks its saved logins (cookies) with
+a key Windows unlocks only for a signed-in user (DPAPI). A browser started by a
+"run whether signed in or not" task can't read them: WhatsApp looks logged out,
+and Chrome can replace that key so the profile stays logged out afterwards
+too. An earlier version had such a "Karlon Boot" task; the installer now stops
+and removes it, and the supervisor never runs WhatsApp or the scraper outside
+your session.
 
 **Continuous**
-- *Karlon Boot* task: starts at power-on, before anyone signs in: everything
-  whose login is saved (headless) and the invoice worker. Something that still
-  needs a login window waits (`karlon_status.ps1` shows `wait`).
-- *Karlon* task: starts at sign-in, on your desktop; takes over from the boot
-  copy only if something is waiting for a login window.
-- Both: restarted 1 min after any crash (999 times), no time limit, run on
+- *Karlon* task: starts at sign-in, in your session, browsers headless. With
+  `-AutoLogon`, a restart (power cut, Windows Update) signs in by itself and
+  *Karlon Lock* locks the screen; Karlon keeps running behind the lock.
+- Restarted 1 min after any crash (999 times), no time limit, run on
   battery, started again when the network connects or the PC wakes, checked
   every 5 min. Only one copy ever runs (a lock file); a copy that stops
   answering for 3 min is killed and replaced. A registry Run entry starts it at

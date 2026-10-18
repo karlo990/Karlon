@@ -377,19 +377,26 @@ def test_headless_once_the_login_is_saved(tmp_path, monkeypatch):
     assert scraper.needs_desktop()
 
 
-def test_no_desktop_holds_back_only_what_needs_a_login_window(monkeypatch):
-    wa = _Fake("wa")
-    wa.login_saved, wa.headless_setting = (lambda: False), "auto"
+def test_no_desktop_never_runs_site_browsers(monkeypatch):
+    """Before sign-in Chrome can't open its saved logins (DPAPI): WhatsApp and
+    the scraper wait for the signed-in copy even with a saved login; the
+    invoice worker (no login) runs."""
     monkeypatch.setattr(sup, "_no_desktop", True)
-    seen = []
-    monkeypatch.setattr(sup, "_sleep", lambda s: seen.append(set(sup._waiting)) or sup._stop.set())  # one round
-    try:
-        assert sup.wait_for_desktop(wa) is False and seen == [{"wa"}]   # shown as waiting in the heartbeat
-    finally:
-        sup._stop.clear()
-        sup._waiting.clear()
-    wa.login_saved = lambda: True                                           # saved: runs headless, no wait
-    assert sup.wait_for_desktop(wa) is True and not sup._waiting
+    for saved in (False, True):
+        wa = _Fake("wa")
+        wa.login_saved, wa.headless_setting = (lambda s=saved: s), "auto"
+        seen = []
+        monkeypatch.setattr(sup, "_sleep", lambda s: seen.append(set(sup._waiting)) or sup._stop.set())
+        try:
+            assert sup.wait_for_desktop(wa) is False and seen == [{"wa"}]
+        finally:
+            sup._stop.clear()
+            sup._waiting.clear()
+    assert sup.wait_for_desktop(_Fake("invoice")) is True            # no login: runs anywhere
+    monkeypatch.setattr(sup, "_no_desktop", False)
+    wa = _Fake("wa")
+    wa.login_saved, wa.headless_setting = (lambda: True), "auto"
+    assert sup.wait_for_desktop(wa) is True and wa.headless() is True   # signed in: headless
 
 
 def test_headless_choice():
@@ -432,10 +439,12 @@ def test_headless_whatsapp_logged_out_forgets_the_login(tmp_path, monkeypatch):
 
 
 def test_installer_tasks():
+    """Only tasks in the signed-in session: a browser started before sign-in
+    can't read Chrome's saved logins and spoils the profile."""
     here = Path(__file__).resolve().parent.parent
     text = (here / "install_karlon.ps1").read_text()
-    assert "'Karlon Boot'" in text and "-AtStartup" in text and "LogonType S4U" in text
-    assert "LogonType Interactive" in text
+    assert "LogonType S4U" not in text and "-AtStartup" not in text
+    assert "LogonType Interactive" in text and "Stop-ScheduledTask" in text
     login = (here / "karlon_login.py").read_text()
     assert "login.hold" in login and "login.hold" in (here / "karlon_supervisor.py").read_text()
 
