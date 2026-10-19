@@ -53,21 +53,23 @@ KARL_LINE_CHARS = _int("KARL_LINE_CHARS", 300, 80)          # longest message li
 KARL_MAX_WORDS = _int("KARL_MAX_WORDS", 50, 20)             # a model reply may answer a few questions at once
 LOCAL_CACHE_MB = _int("DAVIS_LOCAL_CACHE_MB", 1024, 0)      # RAM cache of evaluated prompt prefixes (0 = off)
 
-# The local model. Default: Qwen2.5 1.5B Instruct, 4-bit (about 1.1 GB, ~2 GB
-# RAM). On a 2-vCPU Space a reply takes roughly 6-12 s; 3B models write
-# better and take about twice as long. The Dockerfile downloads the file at
-# build time; if it is missing at start it is downloaded once.
-LOCAL_MODEL_REPO = os.environ.get("DAVIS_LOCAL_MODEL_REPO", "Qwen/Qwen2.5-1.5B-Instruct-GGUF")
-LOCAL_MODEL_FILE = os.environ.get("DAVIS_LOCAL_MODEL_FILE", "qwen2.5-1.5b-instruct-q4_k_m.gguf")
+# The local model. Default: Qwen3-4B-Instruct-2507, 4-bit Q4_K_M (2.5 GB file,
+# ~4.5 GB RAM with its context and the prefix cache; Apache-2.0). Chosen by
+# tests/eval_state.py on the October chats at 2 threads: the most accurate
+# of Qwen2.5-1.5B, Qwen2.5-3B, Phi-4-mini and Qwen3-4B (numbers in
+# .claude/skills/karl-local-llm/SKILL.md). The Dockerfile downloads the file
+# at build time; if it is missing at start it is downloaded once.
+LOCAL_MODEL_REPO = os.environ.get("DAVIS_LOCAL_MODEL_REPO", "unsloth/Qwen3-4B-Instruct-2507-GGUF")
+LOCAL_MODEL_FILE = os.environ.get("DAVIS_LOCAL_MODEL_FILE", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
 LOCAL_MODEL_DIR = os.environ.get("DAVIS_LOCAL_MODEL_DIR",
                                  "/models" if os.path.isdir("/models") else
                                  os.path.join(os.path.dirname(__file__), "..", "..", "models"))
 LOCAL_THREADS = _int("DAVIS_LOCAL_THREADS", 0)          # 0 = the cores this container really has
 LOCAL_CTX = _int("DAVIS_LOCAL_CTX", 4096, 1024)
-LOCAL_MAX_TOKENS = _int("DAVIS_LOCAL_MAX_TOKENS", 220, 40)   # 40 words + JSON; digits are a token each
+LOCAL_MAX_TOKENS = _int("DAVIS_LOCAL_MAX_TOKENS", 220, 40)   # default cap; Karl's steps pass their own
 LOCAL_TEMPERATURE = _float("DAVIS_LOCAL_TEMPERATURE", 0.3)
 LOCAL_PRELOAD = os.environ.get("DAVIS_LOCAL_PRELOAD", "1") not in ("0", "false", "no")
-LLM_TIMEOUT_SEC = _float("DAVIS_LLM_TIMEOUT_SEC", 45.0, 3.0)   # then the persona line goes out
+LLM_TIMEOUT_SEC = _float("DAVIS_LLM_TIMEOUT_SEC", 120.0, 3.0)  # a 4B STATE step on 2 cores can take ~60 s
 
 WORKER_URL = os.environ.get("DAVIS_WORKER_URL", "https://karl-con-conscious-worker-alpha.hf.space").rstrip("/")
 WORKER_KEY = os.environ.get("DAVIS_WORKER_KEY", os.environ.get("INTERNAL_API_KEY", ""))
