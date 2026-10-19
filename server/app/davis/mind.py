@@ -111,7 +111,7 @@ THE TRANSCRIPT. GUEST is the customer. KARL is you. TEAM is our staff. [house ca
 TASK: STATE. Write the guest's booking as JSON:
 - Read the whole conversation. Guests split one thought over several lines, answer late and correct themselves; the newest statement wins.
 - Take details from the guest's own words. Something KARL or TEAM proposed counts only if the guest agreed.
-- dates_text: copy the guest's own words for their stay dates (the corrected ones if they corrected), e.g. "in Monday 22.3.27 out Tuesday 23 3.37" or "From 23 to 25". check_in / check_out: the same as YYYY-MM-DD, day before month, the next such date on or after TODAY; null if unsure.
+- dates_text: copy, word for word, what the GUEST wrote about their stay dates (the corrected words if they corrected). null if the guest never wrote any dates; never make dates up. check_in / check_out: the same dates as YYYY-MM-DD (day before month, the next such date on or after TODAY), or null.
 - guests: people staying (2 couples = 4). city: the town, lowercase (Avondale, Borrowdale, Mount Pleasant are harare; Hillside is bulawayo).
 - stay_type: long_term_rental for a monthly rent, a room to rent, a lease or "not booking"; short_stay for nights; else unknown.
 - chosen_ref: the KCER number the guest picked to book, else null. photos_for: KCER numbers they want pictures of ("pics" about the house just discussed = that house).
