@@ -309,7 +309,7 @@ function renderStatus(){
   const st = s.settings, m = s.metrics, c = m.counters || {};
   document.querySelectorAll("#modeSeg button").forEach(b => b.classList.toggle("on", b.dataset.mode === st.mode));
   const prov = $("#provider");
-  if (!prov.options.length) s.providers.forEach(p => prov.add(new Option(p === "claude" ? "Claude (reads the whole chat)" : p === "local" ? "Local model" :
+  if (!prov.options.length) s.providers.forEach(p => prov.add(new Option(p === "local" ? "Local model (Karl's mind)" :
     p === "worker" ? "Conscious Worker" : p === "ollama" ? "Ollama" : "Rules only", p)));
   if (document.activeElement !== prov) prov.value = st.provider;
   if (document.activeElement !== $("#model")) $("#model").value = st.model;
@@ -325,7 +325,7 @@ function renderStatus(){
     ["Invoices", c.invoices || 0], ["Follow-ups", c.followups || 0],
     ["Speed to lead", lat(m.speed_to_lead_s, "s")], ["Pipeline", lat(m.pipeline_ms, "ms")],
     ["Model", lat(m.llm_ms, "ms")],
-    ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : st.provider === "local" ? "model " + esc(s.local_model.state) : st.provider === "claude" && s.claude && !s.claude.configured ? "no ANTHROPIC_API_KEY: rules answer" : (s.llm.stats.errors||0) + " err"}</span>`],
+    ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : st.provider === "local" ? "model " + esc(s.local_model.state) : (s.llm.stats.errors||0) + " err"}</span>`],
   ];
   $("#kpis").innerHTML = kp.map(([l, v]) => `<div class="kpi"><label>${l}</label><b>${v}</b></div>`).join("");
   const f = s.funnel, top = Math.max(1, ...STAGES.map(k => f[k] || 0));

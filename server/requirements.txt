@@ -1,9 +1,6 @@
 fastapi>=0.110
 uvicorn[standard]>=0.29
 requests>=2.31
-# Karl's understanding and replies (app/davis/llm.py ClaudeProvider), used when
-# the ANTHROPIC_API_KEY secret is set.
-anthropic==1.15.0
 python-multipart>=0.0.9
 # Davis's local model (app/davis/local_llm.py): llama.cpp on the CPU + the
 # Hub client that fetches the GGUF file if the image doesn't have it.

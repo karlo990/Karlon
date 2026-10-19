@@ -423,12 +423,20 @@ def test_bridge_sync_triggers_davis(dc, db):
 
 # ─────────────────────────── the model ───────────────────────────────────────
 
+def _no_state():
+    return {"city": None, "dates_text": None, "check_in": None, "check_out": None, "guests": None,
+            "stay_type": "unknown", "chosen_ref": None, "photos_for": [], "full_name": None, "id_number": None,
+            "open_questions": []}
+
+
 def _fake_local(monkeypatch, payload=None, error=None):
     """Stand in for the llama.cpp model: record each prompt, answer payload."""
     from app.davis import local_llm
     calls = []
 
-    def generate(msgs, schema):
+    def generate(msgs, schema, max_tokens=None):
+        if "dates_text" in schema.get("required", []):          # Karl's STATE step: nothing new to add
+            return _no_state(), {"model": "test.gguf"}
         calls.append({"system": msgs[0]["content"], "user": msgs[-1]["content"], "schema": schema})
         if error:
             raise RuntimeError(error)
@@ -447,7 +455,7 @@ def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
     c = calls[0]
     assert c["schema"]["required"] == ["reply"] and c["schema"]["additionalProperties"] is False
     assert persona.PERSONA["name"] in c["system"] and "KCER" in c["system"]
-    assert "KEY POINTS:" in c["user"] and "airbnb.com" not in c["user"]
+    assert "MUST GET ACROSS:" in c["user"] and "airbnb.com" not in c["user"]
     assert _davis(db)[-1]["text"].startswith("Mhoro!") and r["plan"]["llm"]["provider"] == "local"
 
 
@@ -739,22 +747,28 @@ def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monke
                               "of you are coming?"}])
     calls = []
 
-    def gen(msgs, schema):
+    def gen(msgs, schema, max_tokens=None):
+        if "dates_text" in schema.get("required", []):
+            return _no_state(), {"model": "t.gguf"}
         calls.append(msgs[-1]["content"])
         return next(answers), {"model": "t.gguf"}
     monkeypatch.setattr(local_llm.model, "generate", gen)
     _guest(db, "Hi, I need a place in Harare")
     r = _run(dc)
     assert r["status"] == "sent" and _davis(db)[-1]["text"].startswith("Mhoro Leon! Harare is a great choice")
-    assert "KEY POINTS:" in calls[0]
+    assert "MUST GET ACROSS:" in calls[0]
 
     # a reply that drops the payment number: nothing is sent, the turn runs again
     # shortly (no person is asked); after AI_RETRIES the plan's own wording goes out
     from app.davis import config
     monkeypatch.setattr(config, "AI_RETRY_SEC", 3600)          # the retry timer never fires inside the test
     bad = {"reply": "Please pay by EcoCash and send proof here."}
-    monkeypatch.setattr(local_llm.model, "generate", lambda msgs, schema: (calls.append(msgs[-1]["content"]) or bad,
-                                                                          {"model": "t.gguf"}))
+    def bad_gen(msgs, schema, max_tokens=None):
+        if "dates_text" in schema.get("required", []):
+            return _no_state(), {"model": "t.gguf"}
+        calls.append(msgs[-1]["content"])
+        return bad, {"model": "t.gguf"}
+    monkeypatch.setattr(local_llm.model, "generate", bad_gen)
     before = len(_davis(db))
     _guest(db, "how do I pay?")
     r = _run(dc)
@@ -770,7 +784,7 @@ def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monke
     assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["ai_retries"] == 0
 
     # model down: the same - retried, then answered
-    def boom(msgs, schema):
+    def boom(msgs, schema, max_tokens=None):
         raise RuntimeError("model file missing")
     monkeypatch.setattr(local_llm.model, "generate", boom)
     _guest(db, "hello?")

@@ -1,59 +1,62 @@
-"""davis/mind.py — Karl's mind: how Karl understands a conversation and how it
-is asked to answer. Used when the provider is "claude".
+"""davis/mind.py — Karl's mind: how a small open model, running on the
+Space's own CPU, understands a WhatsApp conversation and is asked to answer.
+No API, no key: llama.cpp with a pretrained 4-bit instruct model
+(local_llm.py). The design and its sources are in
+.claude/skills/karl-local-llm/SKILL.md.
 
-Why this exists. Reading the real chats (Oct 2026) showed the failures were
-not in the wording but in understanding: dates written "4november",
-"22.3.27", "From 23 to 25" were missed and asked for again; a name sent on
-its own line was not kept; dates on our own house cards were taken as the
-guest's; questions about photos, pools and bedrooms were ignored; a guest
-who wanted a monthly room was sent holiday homes. Rules can't keep up with
-how people write. So Karl now has two steps per guest turn, each one model
-call with a fixed JSON schema:
+Why. The October 2026 chats failed on understanding, not wording: dates
+written "4november", "22.3.27", "From 23 to 25" were asked for again, a name
+on its own line was dropped, our own house cards' dates were taken as the
+guest's, questions about photos, pools and bedrooms were ignored, a monthly
+room request got holiday homes. Rules alone can't keep up with how people
+write, and a 1.5B model given only the last line can't either.
 
-1. understand(): the model reads the whole recent conversation (not only the
-   last message) and writes the booking state: city, dates, party, budget,
-   chosen house, name, ID, stay type, photo requests, and the guest's
-   questions that are still unanswered. This is dialogue state tracking done
-   by a language model (ParsingDST, Wu et al., Findings of EMNLP 2023; Heck
-   et al., 2023), checked by code before anything uses it (dates must be
-   real and ahead, the house must be one we sent, and so on).
-2. The reply (engine._phrase): the model writes Karl's message from the same
-   conversation, the checked facts, what the system is doing (houses,
-   invoice) and the key points the booking needs. The guest's newest
-   messages and open questions go LAST in the prompt: models use the start
-   and end of a long input best (Liu et al., "Lost in the Middle", TACL
-   2024).
+The pipeline for one guest turn (neuro-symbolic: the model reads and writes,
+code computes and acts):
 
-What the code still decides. Which houses go out, prices, the invoice, the
-Terms PDF and live-price requests stay with policy.py and catalogue.py, and
-every reply passes policy.check_reply (no invented price, house or number).
-The model understands and speaks; code acts. This keeps a booking correct
-even when a model is wrong.
+1. Rules first (nlu.py, < 1 ms). A turn the rules fully account for
+   ("KCER 105", "ok", "Harare 21-22 Nov for 4") never waits for the model
+   (a cascade, after FrugalGPT, Chen, Zaharia & Zou 2023).
+2. STATE (model, JSON constrained by a grammar so it is always valid and
+   short: Willard & Louf 2023; llama.cpp GBNF). The model reads the recent
+   conversation and writes the booking state and the guest's unanswered
+   questions: dialogue state tracking by an LLM (Wu et al., Findings of
+   EMNLP 2023). It also copies the guest's own date words (dates_text);
+   code does the calendar (nlu.parse_dates): small models are good at
+   finding which words are the dates and bad at date arithmetic.
+3. Code checks the state (to_features), then policy.plan decides the actions
+   (houses, live prices, invoice, Terms) and the points the reply must carry.
+4. REPLY (model, grammar-constrained JSON) from the same conversation, the
+   checked facts and the plan; the guest's newest messages and questions go
+   last (Liu et al., "Lost in the Middle", TACL 2024).
+5. policy.check_reply verifies every reply (no invented price, house or
+   number, no repeat); a rejected reply is rewritten once with the reason
+   (Self-Refine, Madaan et al. 2023), then the plan's own wording is used.
 
-The communication model. Karl is designed around Shannon & Weaver (1949),
-with the feedback loop Schramm (1954) added to it:
-  source       the guest; the message is spread over several WhatsApp lines
-  noise        typos, split messages, deleted messages, system notices,
-               our own house cards, staff side-remarks: removed or labelled
-               in the transcript (transcript()), not guessed at
-  receiver     understand(): decodes the whole turn into a state
-  destination  policy.plan(): what the booking needs next
-  feedback     Karl restates what it understood (place, dates, party) so the
-               guest can correct it, and asks one clear question when
-               something is ambiguous instead of guessing (grounding, Clark &
-               Brennan 1991)
-  channel      a phone screen: short messages, never a repeated line.
+Speed on 2 CPU cores. STATE and REPLY share one system prompt and the same
+opening of the user message (date, known state, houses, conversation); only
+the TASK block at the end differs. llama.cpp keeps the evaluated prefix of
+the previous prompt and a RAM cache of earlier ones, so the reply re-reads
+only its own task block (prefix sharing, as in SGLang's RadixAttention,
+Zheng et al. 2023).
 
-Memory. The conversation cache is three layers: the recent transcript itself
-(KARL_TRANSCRIPT messages, read every turn), the booking state stored in
-davis_sessions (survives between turns), and the houses already sent to
-this guest (house_sends). Nothing is summarised away: the model reads the
-real messages, so the most recent question is always answered in context.
+Communication model (Shannon & Weaver 1949 with Schramm's 1954 feedback
+loop): source = the guest's lines; noise = typos, splits, deleted messages,
+WhatsApp notices, house cards (removed or labelled by transcript()); receiver
+= STATE; destination = policy.plan; feedback = Karl restates what it
+understood and asks one clear question when something is ambiguous
+(grounding, Clark & Brennan 1991); channel = a phone screen, short, never a
+repeated line.
+
+Memory (the conversation cache): the recent transcript itself, read every
+turn; the booking state in davis_sessions; the houses already sent
+(house_sends). Nothing is summarised away.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timedelta
 from typing import Optional
 
@@ -66,58 +69,68 @@ def _null(t: dict) -> dict:
 
 _STR, _INT, _NUM, _BOOL = {"type": "string"}, {"type": "integer"}, {"type": "number"}, {"type": "boolean"}
 
-INTENTS = ["greeting", "small_talk", "booking", "price", "availability", "photos", "amenities", "location",
-           "invoice", "payment_proof", "deposit", "terms", "complaint", "human", "opt_out", "thanks", "other"]
+INTENTS = ["greeting", "booking", "price", "photos", "amenities", "location", "invoice", "payment_proof",
+           "terms", "complaint", "human", "opt_out", "thanks", "other"]
 
-UNDERSTAND_SCHEMA = {
+# Only what the rules can't read. Every generated token costs ~0.1-0.2 s on
+# 2 CPU cores, so bedrooms, budget and the yes/no intents stay with nlu.py.
+# Field order matters for a small model: it writes them in this order, so the
+# evidence (the guest's own words) comes before the decisions.
+STATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "latest_need": _STR,
         "city": _null(_STR),
-        "areas": {"type": "array", "items": _STR},
+        "dates_text": _null(_STR),
         "check_in": _null(_STR),
         "check_out": _null(_STR),
-        "dates_assumed": _BOOL,
         "guests": _null(_INT),
-        "bedrooms": _null(_INT),
-        "budget_usd": _null(_NUM),
-        "budget_basis": _null({"type": "string", "enum": ["night", "total", "month"]}),
         "stay_type": {"type": "string", "enum": ["short_stay", "long_term_rental", "unknown"]},
         "chosen_ref": _null(_INT),
         "photos_for": {"type": "array", "items": _INT},
-        "wants_more_options": _BOOL,
         "full_name": _null(_STR),
         "id_number": _null(_STR),
         "open_questions": {"type": "array", "items": _STR},
-        "intents": {"type": "array", "items": {"type": "string", "enum": INTENTS}},
-        "mood": {"type": "string", "enum": ["neutral", "happy", "impatient", "upset"]},
     },
-    "required": ["latest_need", "city", "areas", "check_in", "check_out", "dates_assumed", "guests", "bedrooms",
-                 "budget_usd", "budget_basis", "stay_type", "chosen_ref", "photos_for", "wants_more_options",
-                 "full_name", "id_number", "open_questions", "intents", "mood"],
+    "required": ["city", "dates_text", "check_in", "check_out", "guests", "stay_type", "chosen_ref", "photos_for",
+                 "full_name", "id_number", "open_questions"],
     "additionalProperties": False,
 }
+UNDERSTAND_SCHEMA = STATE_SCHEMA            # the name the engine and tests use
 
-UNDERSTAND_SYSTEM = f"""You read a WhatsApp conversation between a guest and {persona.BRAND}, which rents furnished short-stay homes in Zimbabwe (Harare, Bulawayo, Victoria Falls, Marondera, Rusape and other towns), and you write down what the guest wants as JSON. You do not reply to the guest.
+REPLY_SCHEMA = {"type": "object", "properties": {"reply": _STR}, "required": ["reply"],
+                "additionalProperties": False}
 
-Who is who in the transcript: GUEST is the customer. KARL is our booking assistant. TEAM is our staff. [house card KCER n ...] is a house we sent, with the dates and price it is free for. [photos], [PDF] and [deleted] are attachments and notices.
 
-How to read it:
-- Read the WHOLE conversation. Guests split one thought over several messages, answer questions late, and correct themselves. The newest statement wins.
-- Take details from the guest's own words. A detail a KARL or TEAM message proposed counts only if the guest agreed to it ("ok", "yes", picking it).
-- Dates on house cards ("📅 Free 18 Oct → 20 Oct") are when that house is free. They are NOT the guest's dates unless the guest picked that house for those dates.
-- Dates: write YYYY-MM-DD. Day comes before month (22.3.27 is 22 March 2027; 4november is 4 November). A date without a year is the next one on or after TODAY. A day range without a month ("from 23 to 25") uses the month named most recently in the conversation; if none, the nearest month in which those days are still ahead, and set dates_assumed true. One night "check in 21, check out 22" means check_in 21 and check_out 22. If only a start and a number of nights is given, compute check_out. If the guest corrected a date ("sorry wrong date"), use the corrected one. Obvious typos in a year (23 3.37 after 22.3.27) mean the same year as the other date.
-- guests: the number of people staying (2 couples = 4). bedrooms: only if the guest asked for a number of bedrooms or rooms.
-- city: the town they want to stay in, lowercase. Suburbs belong to their city (Avondale, Borrowdale, Mount Pleasant are Harare; Hillside is Bulawayo); put the suburbs they named in areas.
-- budget_usd: a number only if the guest gave a budget; budget_basis "month" for a monthly rent.
-- stay_type: long_term_rental when they want to rent monthly or long term (a room to rent, rent per month, lease, "not booking"); short_stay for nights or holidays; unknown if not clear yet.
-- chosen_ref: the KCER number the guest picked to book. Only a house that was sent or that they named. Not a house they only asked about.
-- photos_for: KCER numbers the guest wants pictures of. "pics" about the house just discussed means that house.
-- full_name / id_number: only what the guest gave for the invoice (a full name on its own line after we asked for it counts). Never invent them.
-- open_questions: every question the guest asked that the conversation has NOT answered yet, in plain words, newest last. A later KARL or TEAM message that answered it removes it. Requests count as questions ("send pics", "how much deposit", "is there a pool", "where is it located").
-- latest_need: one short sentence: what the guest wants from us right now.
-- WHAT KARL ALREADY KNOWS is the state from before; keep those values unless the conversation changes them, and fill what is missing.
-Return only the JSON."""
+def _system() -> str:
+    p = persona.PERSONA
+    bullets = lambda xs: "\n".join(f"- {x}" for x in xs)     # noqa: E731
+    return f"""You are the mind of {p['name']}, the virtual booking assistant of {persona.BRAND}. {p['company']} Guests write on WhatsApp. Each request gives you the conversation and ends with a TASK: STATE or REPLY.
+
+THE TRANSCRIPT. GUEST is the customer. KARL is you. TEAM is our staff. [house card KCER n: ...] is a house we sent; its 📅 dates are when that house is free, NOT the guest's dates. [photos] and [PDF] are attachments.
+
+TASK: STATE. Write the guest's booking as JSON:
+- Read the whole conversation. Guests split one thought over several lines, answer late and correct themselves; the newest statement wins.
+- Take details from the guest's own words. Something KARL or TEAM proposed counts only if the guest agreed.
+- dates_text: copy the guest's own words for their stay dates (the corrected ones if they corrected), e.g. "in Monday 22.3.27 out Tuesday 23 3.37" or "From 23 to 25". check_in / check_out: the same as YYYY-MM-DD, day before month, the next such date on or after TODAY; null if unsure.
+- guests: people staying (2 couples = 4). city: the town, lowercase (Avondale, Borrowdale, Mount Pleasant are harare; Hillside is bulawayo).
+- stay_type: long_term_rental for a monthly rent, a room to rent, a lease or "not booking"; short_stay for nights; else unknown.
+- chosen_ref: the KCER number the guest picked to book, else null. photos_for: KCER numbers they want pictures of ("pics" about the house just discussed = that house).
+- full_name / id_number: only what the guest gave for the invoice. Never invent.
+- open_questions: each question or request of the guest that no later KARL or TEAM message answered, in a few plain words, newest last.
+- Keep WHAT KARL ALREADY KNOWS unless the conversation changes it.
+
+TASK: REPLY. Write KARL's next WhatsApp message as JSON {{"reply": "..."}}:
+{bullets(p['voice'])}
+- Answer the guest's newest questions first, from FACTS only; if FACTS don't cover it, say plainly that detail isn't in our listing. Then the next step.
+- Restate what you understood (town, dates, party, house) in a few words when it is new, so the guest can correct you. If the dates were assumed, ask the guest to confirm them.
+- Keep every KCER number, amount, date and payment detail from MUST GET ACROSS exactly.
+- Never copy the guest's sentence back, never repeat one of your earlier messages word for word.
+{bullets(p['policies'][2:6])}
+Never:
+{bullets(p['never'])}"""
+
+
+SYSTEM = _system()
 
 
 def _clean_date(v, today: date) -> Optional[date]:
@@ -156,36 +169,47 @@ def _body(m: dict) -> Optional[str]:
         return None
     low = text.lower()
     if low in ("you deleted this message", "this message was deleted"):
-        return "[deleted]"
-    if "kcer" in low and ("📅" in text or "💵" in text or (m.get("sender") or "") in (config.SENDER_CATALOGUE,
-                                                                                    "Davis (catalogue)")):
+        return None
+    card_sender = (m.get("sender") or "") in (config.SENDER_CATALOGUE, "Davis (catalogue)")
+    if "kcer" in low and ("📅" in text or "💵" in text or card_sender):
         ref = nlu.parse_option(low).get("option_ref")
-        return f"[house card KCER {ref}: {text[:200]}]" if ref else f"[house card: {text[:200]}]"
-    if (m.get("sender") or "") in (config.SENDER_CATALOGUE, "Davis (catalogue)"):
-        return f"[house card: {text[:200]}]"
-    return text[:600]
+        return f"[house card KCER {ref}: {text[:160]}]" if ref else f"[house card: {text[:160]}]"
+    if card_sender:
+        return f"[house card: {text[:160]}]"
+    return text[:config.KARL_LINE_CHARS]
 
 
-def transcript(messages: list[dict], limit: int = 0, tz_minutes: int = 0) -> list[str]:
-    """The conversation as numbered lines, oldest first, noise removed:
-    WhatsApp system notices dropped, photo bursts collapsed, house cards
+def window_start(n: int, offset: int = 0, limit: int = 0) -> int:
+    """Where the transcript starts in `messages` (n of them; `offset` = how
+    many older messages the chat has before them). The start moves in steps
+    of 8 messages, not one per message, so consecutive turns share the same
+    opening and llama.cpp's cache reuses it (the prompt grows append-only)."""
+    keep = limit or config.KARL_TRANSCRIPT
+    start_abs = max(0, offset + n - keep)
+    start_abs -= start_abs % 8
+    return max(0, start_abs - offset)
+
+
+def transcript(messages: list[dict], limit: int = 0, tz_minutes: int = 0, offset: int = 0) -> list[str]:
+    """The conversation as lines, oldest first, noise removed: WhatsApp
+    notices and deleted messages dropped, photo bursts collapsed, house cards
     labelled as ours (so their dates aren't read as the guest's)."""
     out: list[str] = []
     last = None
-    for m in messages[-(limit or config.KARL_TRANSCRIPT):]:
+    for m in messages[window_start(len(messages), offset, limit):]:
         body = _body(m)
         if body is None:
             continue
         when = ""
         try:
             ts = datetime.fromisoformat(str(m.get("created_at")).replace("Z", "+00:00"))
-            when = (ts + timedelta(minutes=tz_minutes)).strftime("%d %b %H:%M") + " "
+            when = (ts + timedelta(minutes=tz_minutes)).strftime("%d %b %H:%M")
         except (TypeError, ValueError):
             pass
         line = f"{label(m)}: {body}"
         if line == last:
             continue
-        out.append(f"[{when.strip()}] {line}" if when else line)
+        out.append(f"[{when}] {line}" if when else line)
         last = line
     return out
 
@@ -200,42 +224,99 @@ def _known(slots: dict) -> str:
 def _offer_line(o: dict) -> str:
     bits = [o.get("ref") or "", o.get("place") or "", o.get("capacity") or ""]
     if o.get("check_in"):
-        bits.append(f"{_short(o['check_in'])}→{_short(o.get('check_out'))}")
+        bits.append(f"free {_short(o['check_in'])}→{_short(o.get('check_out'))}")
     if o.get("usd_per_night"):
         bits.append(f"USD {o['usd_per_night']:g}/night")
     return " · ".join(b for b in bits if b)
 
 
-def understand_messages(messages: list[dict], slots: dict, offers: list[dict], today: date,
-                        tz_minutes: int = 0) -> list[dict]:
-    lines = transcript(messages, tz_minutes=tz_minutes)
-    sent = "\n".join("- " + _offer_line(o) for o in offers[:12]) or "none"
-    user = (f"TODAY: {today.isoformat()} ({today.strftime('%A')})\n"
+def shared_context(messages: list[dict], slots: dict, offers: list[dict], today: date, tz_minutes: int = 0,
+                   offset: int = 0) -> str:
+    """The opening of every request for this turn, identical for STATE and
+    REPLY so llama.cpp evaluates it once. The conversation comes first: it
+    only grows from one turn to the next, so the next turn re-reads just the
+    new messages. What changes every turn (date, state, houses) follows it."""
+    lines = transcript(messages, tz_minutes=tz_minutes, offset=offset)
+    sent = "\n".join("- " + _offer_line(o) for o in offers[:8]) or "none"
+    return ("CONVERSATION (oldest first):\n" + "\n".join(lines) + "\n\n"
+            f"TODAY: {today.isoformat()} ({today.strftime('%A')})\n"
             f"WHAT KARL ALREADY KNOWS: {_known(slots)}\n"
-            f"HOUSES SENT TO THIS GUEST:\n{sent}\n"
-            f"CONVERSATION (oldest first; the guest's newest messages are the last GUEST lines):\n"
-            + "\n".join(lines) + "\n\nWrite the JSON for this conversation.")
-    return [{"role": "system", "content": UNDERSTAND_SYSTEM}, {"role": "user", "content": user}]
+            f"HOUSES SENT TO THIS GUEST:\n{sent}")
 
 
-def to_features(u: dict, today: date, places: dict, offers: list[dict]) -> dict:
+def understand_messages(messages: list[dict], slots: dict, offers: list[dict], today: date,
+                        tz_minutes: int = 0, offset: int = 0) -> list[dict]:
+    user = shared_context(messages, slots, offers, today, tz_minutes, offset) + \
+        "\n\n=== TASK: STATE ===\nWrite the JSON state for this conversation."
+    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}]
+
+
+# ── when the model is needed (the cascade) ───────────────────────────────────
+
+_REQUEST = re.compile(r"\?|\b(?:pics?|pictures?|photos?|images?|amenit|pool|wifi|parking|where|what|which|how|when|"
+                      r"why|can|could|is there|are there|do you|does|send|show|rent|month|deposit|located|location|"
+                      r"near|close to|town|sorry|wrong|change|instead|actually|not)\b", re.I)
+_MONTHY = re.compile(r"\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*|\d", re.I)
+
+
+def needs_model(texts: list[str], feats: dict, stage: str) -> Optional[str]:
+    """Why this turn needs the model, or None when the rules account for it.
+    Simple turns ("ok", "thanks", "KCER 105", a clean "Harare 21-22 Nov for
+    4", a bare name or ID when one was asked for) skip the model entirely."""
+    text = " ".join(texts).strip()
+    if not text:
+        return None
+    words = len(text.split())
+    if feats.get("ack_only") or (words <= 3 and (feats.get("greeting") or feats.get("thanks")) and "?" not in text):
+        return None
+    if feats.get("option_ref") and words <= 4 and "?" not in text:
+        return None
+    if stage == "details" and (feats.get("name_like") or feats.get("id_number")) and words <= 8:
+        return None
+    if _REQUEST.search(text):
+        return "question_or_request"
+    if _MONTHY.search(text) and not (feats.get("check_in") or feats.get("guests") or feats.get("budget_usd")
+                                    or feats.get("option_ref") or feats.get("id_number") or feats.get("bedrooms")):
+        return "numbers_the_rules_missed"
+    if feats.get("check_in") and not feats.get("check_out"):
+        return "half_a_date"
+    if words > 12:
+        return "long_message"
+    if not any(feats.get(k) for k in ("city", "check_in", "guests", "option_ref", "full_name", "name_like",
+                                       "greeting", "thanks", "affirm", "negative")):
+        return "nothing_recognised"
+    return None
+
+
+# ── the model's reading, checked ─────────────────────────────────────────────
+
+def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hint: Optional[int] = None) -> dict:
     """The model's reading, checked, as features for policy.plan. Anything
-    that fails a check is dropped (the regex reading and the stored state
+    that fails a check is dropped (the rules' reading and the stored state
     still apply), so a wrong model answer can't book wrong dates or a house
-    we never sent."""
+    we never sent. Dates: the guest's own words (dates_text) through the
+    calendar code win when they give both dates; else the model's ISO dates."""
     f: dict = {"understood": True}
     if not isinstance(u, dict):
         return f
     city = (u.get("city") or "").strip().lower()
     if city:
         f["city"] = nlu.parse_city(city, places) or city
-    ci, co = _clean_date(u.get("check_in"), today), _clean_date(u.get("check_out"), today)
+    dt = str(u.get("dates_text") or "")
+    hint = month_hint or _month_for_days(dt, today)
+    parsed = nlu.parse_dates(dt, today, hint) if dt else {}
+    ci = _clean_date(parsed.get("check_in"), today) if parsed.get("check_out") else None
+    co = _clean_date(parsed.get("check_out"), today) if ci else None
+    if not (ci and co):
+        ci, co = _clean_date(u.get("check_in"), today), _clean_date(u.get("check_out"), today)
+        if parsed.get("check_in") and not ci:
+            ci = _clean_date(parsed["check_in"], today)
     if ci:
         f["check_in"] = ci.isoformat()
         if co and ci < co <= ci + timedelta(days=90):
             f["check_out"] = co.isoformat()
             f["nights"] = (co - ci).days
-    f["dates_assumed"] = bool(u.get("dates_assumed")) and bool(ci)
+    f["dates_assumed"] = bool(ci) and bool(dt) and not _MONTHY.search(re.sub(r"\d", "", dt)) and month_hint is None
     for k, lo, hi in (("guests", 1, 60), ("bedrooms", 1, 20)):
         v = u.get(k)
         if isinstance(v, int) and lo <= v <= hi:
@@ -245,7 +326,6 @@ def to_features(u: dict, today: date, places: dict, offers: list[dict]) -> dict:
         f["budget_usd"] = float(b)
         f["budget_basis"] = u.get("budget_basis") if u.get("budget_basis") in ("night", "total") else None
     f["long_term"] = u.get("stay_type") == "long_term_rental" or u.get("budget_basis") == "month"
-    sent_refs = {o.get("ref_no") for o in offers if o.get("ref_no") is not None}
     ref = u.get("chosen_ref")
     if isinstance(ref, int) and ref > 0:
         f["option_ref"] = ref
@@ -261,7 +341,7 @@ def to_features(u: dict, today: date, places: dict, offers: list[dict]) -> dict:
     ident = str(u.get("id_number") or "").strip()
     if 5 <= len(ident) <= 25 and any(c.isdigit() for c in ident):
         f["id_number"] = nlu.parse_id(ident) or ident.upper()
-    qs = [" ".join(str(q).split())[:200] for q in (u.get("open_questions") or []) if str(q).strip()]
+    qs = [" ".join(str(q).split())[:160] for q in (u.get("open_questions") or []) if str(q).strip()]
     f["open_questions"] = qs[-4:]
     if qs:
         f["question"] = True
@@ -272,13 +352,21 @@ def to_features(u: dict, today: date, places: dict, offers: list[dict]) -> dict:
                         ("thanks", "thanks")):
         if intent in intents:
             f[key] = True
-    if u.get("wants_more_options"):
-        f["more_options"] = True
-    f["latest_need"] = " ".join(str(u.get("latest_need") or "").split())[:240]
-    f["mood"] = u.get("mood") or "neutral"
-    f["areas"] = [str(a)[:40] for a in (u.get("areas") or [])][:4]
-    f["sent_refs"] = sorted(r for r in sent_refs if r is not None)
+    if qs:
+        f["latest_need"] = qs[-1]
     return f
+
+
+def _month_for_days(text: str, today: date) -> Optional[int]:
+    """A day range with no month ("From 23 to 25"): this month if the first
+    day is still ahead, else next month. The reply then asks the guest to
+    confirm (dates_assumed)."""
+    if not text or _MONTHY.search(re.sub(r"\d", "", text)):
+        return None
+    days = [int(d) for d in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", text) if 1 <= int(d) <= 31]
+    if not days:
+        return None
+    return today.month if days[0] >= today.day else (today.month % 12) + 1
 
 
 # Features the model's reading overrides; everything else it adds to (the
@@ -304,83 +392,47 @@ def merge(regex_feats: dict, model_feats: dict) -> dict:
 
 # ── the reply ────────────────────────────────────────────────────────────────
 
-def reply_system(max_words: int) -> str:
-    p = persona.PERSONA
-    bullets = lambda xs: "\n".join(f"- {x}" for x in xs)     # noqa: E731
-    voice = [v.replace("40 words", f"{max_words} words") for v in p["voice"]]
-    return (
-        f"You are {p['name']}, the virtual booking assistant for {persona.BRAND}: {p['role']}. {p['company']}\n\n"
-        f"Character:\n{bullets(p['character'])}\n\n"
-        f"Voice:\n{bullets(voice)}\n\n"
-        f"Selling:\n{bullets(p['selling'])}\n\n"
-        f"House policies:\n{bullets(p['policies'])}\n\n"
-        f"Never:\n{bullets(p['never'])}\n\n"
-        "How you communicate (Shannon and Weaver's model, with Schramm's feedback loop):\n"
-        "- The guest's message is spread over their recent lines. Read the whole conversation and answer what they "
-        "mean, not only the last line.\n"
-        "- Noise: typos, split messages, our own earlier mistakes. Understand through it. Never copy the guest's "
-        "sentence back to them, and never repeat one of your earlier messages word for word.\n"
-        "- Feedback: when you understood something new (town, dates, party size, the house), restate it in a few "
-        "words so the guest can correct you. If the dates were assumed, say which ones you took and ask them to "
-        "confirm. When something important is ambiguous, ask one clear question instead of guessing.\n"
-        "- Channel: one WhatsApp message on a phone. Short. Answer their questions first, then the one next step.\n\n"
-        "Each turn you get the booking state, FACTS (the only facts you may state), the conversation, what the "
-        "system is about to do with your reply (send houses, the invoice, the Terms PDF, check live prices), the "
-        "points this message must get across, and last, the guest's newest messages with their unanswered "
-        "questions. Answer every unanswered question you can from FACTS; if FACTS don't cover it, say plainly that "
-        "detail isn't in our listing (never 'I'll check with the team'). Keep every KCER number, amount, date, "
-        "time and payment detail from the points exactly as given. Write as KARL, to the guest.\n"
-        'Answer with JSON only: {"reply": "..."}'
-    )
-
-
-REPLY_SCHEMA = {"type": "object", "properties": {"reply": _STR}, "required": ["reply"],
-                "additionalProperties": False}
-
-
 def reply_messages(chat_name: str, messages: list[dict], plan: dict, feats: dict, today: date,
-                   max_words: int, feedback: str = "", tz_minutes: int = 0) -> list[dict]:
+                   max_words: int, feedback: str = "", tz_minutes: int = 0,
+                   slots_before: Optional[dict] = None, offers: Optional[list] = None, offset: int = 0) -> list[dict]:
+    """REPLY: the same opening as STATE (so it is not evaluated again), then
+    the facts, what the system will do, the points to carry, and last the
+    guest's newest messages and open questions."""
     from .prompts import _ACTION_TEXT, facts_text, must_include
-    lines = transcript(messages, tz_minutes=tz_minutes)
     draft = next((a["text"] for a in plan["actions"] if a["type"] == "reply"), "")
-    # The rules' "that detail isn't in our listing" is their stand-in for an
-    # answer they can't give; the model answers from FACTS itself.
+    # The rules' "that detail isn't in our listing" stands in for an answer
+    # they can't give; the model answers from FACTS itself.
     draft = draft.replace(persona.line("no_detail", next="").strip(), "").strip()
     doing = [_ACTION_TEXT[a["type"]] for a in plan["actions"] if a["type"] in _ACTION_TEXT]
-    mine = [m.get("text") for m in messages if label(m) == "KARL" and (m.get("kind") or "text") == "text"
-            and m.get("sender") in (config.SENDER, "Davis")][-4:]
+    mine = [m.get("text") for m in messages if m.get("sender") in (config.SENDER, "Davis")
+            and (m.get("kind") or "text") == "text"][-3:]
     newest, seen_out = [], False
     for m in reversed(messages):
         if m.get("direction") == "in" and (m.get("kind") or "text") == "text" and m.get("text"):
             if seen_out:
                 break
-            newest.append(" ".join(m["text"].split())[:400])
+            newest.append(" ".join(m["text"].split())[:300])
         elif m.get("direction") == "out" and (m.get("kind") or "text") == "text" and m.get("text"):
             seen_out = bool(newest)
     newest.reverse()
     questions = feats.get("open_questions") or []
     must = must_include(draft)
-    parts = [
-        f"TODAY {today.isoformat()} · GUEST {chat_name} · STAGE {plan['stage']}",
-        f"FACTS:\n{facts_text(plan['facts'])}",
-        "CONVERSATION (oldest first):\n" + "\n".join(lines),
-        "YOUR RECENT MESSAGES (don't repeat any of them word for word):\n"
-        + ("\n".join(f"- {t}" for t in mine) if mine else "- none"),
-        "THE SYSTEM WILL, right after your reply: " + ("; ".join(doing) if doing else "nothing else"),
-        f"THIS MESSAGE MUST GET ACROSS (the booking's next step): {draft}",
-    ]
+    task = [f"=== TASK: REPLY === (guest: {chat_name}, stage: {plan['stage']})",
+            f"FACTS:\n{facts_text(plan['facts'])}",
+            "YOUR LAST MESSAGES (don't repeat): " + (" | ".join(t for t in mine if t) or "none"),
+            "THE SYSTEM WILL, right after your reply: " + ("; ".join(doing) if doing else "nothing else"),
+            f"MUST GET ACROSS: {draft}"]
     if must:
-        parts.append("KEEP EXACTLY: " + " | ".join(must))
+        task.append("KEEP EXACTLY: " + " | ".join(must))
     if feats.get("dates_assumed") and (plan.get("slots") or {}).get("check_in"):
-        parts.append("THE DATES WERE ASSUMED from an incomplete message: say which dates you took and ask the "
-                     "guest to confirm.")
+        task.append("The month of the dates was assumed: say which dates you took and ask the guest to confirm.")
     if feedback:
-        parts.append(f"YOUR LAST TRY WAS REJECTED ({feedback}). Write it again and fix that.")
-    parts.append("THE GUEST'S NEWEST MESSAGES:\n" + ("\n".join(f"> {t}" for t in newest) or "> (no new message: "
-                                                     "this is a follow-up or an update from the system)"))
-    if feats.get("latest_need"):
-        parts.append(f"WHAT THEY WANT NOW: {feats['latest_need']}")
+        task.append(f"YOUR LAST TRY WAS REJECTED ({feedback}). Fix that.")
+    task.append("GUEST'S NEWEST MESSAGES:\n" + ("\n".join(f"> {t}" for t in newest) or "> (none: a follow-up or "
+                                                                                       "an update from the system)"))
     if questions:
-        parts.append("ANSWER THESE FIRST:\n" + "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)))
-    parts.append(f"Write KARL's next WhatsApp message (at most {max_words} words).")
-    return [{"role": "system", "content": reply_system(max_words)}, {"role": "user", "content": "\n\n".join(parts)}]
+        task.append("ANSWER FIRST:\n" + "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)))
+    task.append(f'Write KARL\'s reply as JSON {{"reply": "..."}}, at most {max_words} words.')
+    opening = shared_context(messages, slots_before if slots_before is not None else (plan.get("slots") or {}),
+                             offers if offers is not None else [], today, tz_minutes, offset)
+    return [{"role": "system", "content": SYSTEM}, {"role": "user", "content": opening + "\n\n" + "\n".join(task)}]

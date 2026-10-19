@@ -12,7 +12,7 @@ five screenshots.
 
 | What happened | Why | Fixed by |
 |---|---|---|
-| "From 23 to 25 for two guests" was answered with "Which dates are you looking at?" | A day range with no month was left unread. | The model reads the whole chat and resolves dates; an assumed month is confirmed with the guest. |
+| "From 23 to 25 for two guests" was answered with "Which dates are you looking at?" | A day range with no month was left unread. | The model reads the whole chat and finds the dates; code resolves them; an assumed month is confirmed with the guest. |
 | "4november" and "One" were followed by "How many nights?" four times | The message arrived just before a staff reply, so no pass ever read it. | Guest messages that no pass handled are now read too. A repeated ask becomes "Sorry, I didn't catch that…". |
 | "Lovely, Bulawayo!" and the greeting went out twice in a minute | Nothing stopped an identical line. | Karl never sends one of its recent lines word for word. |
 | Marondera: "Checking … 19–21 Oct", dates the guest never gave | The dates printed on the team's house cards were taken as the guest's dates. | House cards are labelled as ours, and their dates are ignored. |
@@ -27,85 +27,49 @@ The common cause: the old pipeline read only the newest message, with regular ex
 the wording to a 1.5B-parameter model on the Space's CPU. People write dates, names and requests in
 far more ways than rules can list.
 
-## 2. How Karl works now
+## 2. How Karl works now (all on the Space's own CPU, no API key)
 
-Each guest turn goes through these stages, in order:
+Karl runs a pretrained, 4-bit open model under llama.cpp inside the Karlcon Space. The full design,
+the model benchmark and the sources are in the project skill
+[`.claude/skills/karl-local-llm/SKILL.md`](../.claude/skills/karl-local-llm/SKILL.md). In short,
+each guest turn goes through these stages:
 
-1. **Debounce.** Wait 5 s so a guest who is still typing can finish (`DAVIS_DEBOUNCE_SEC`).
-2. **Gate.** Decide whether Karl should answer at all.
-3. **Understand** (Claude, JSON schema). The model reads the last 40 messages and writes the booking
-   state: city, dates, party size, budget, stay type, chosen house, photo requests, name, ID, and the
-   guest's unanswered questions. Code then checks every value:
-   - dates must be real and in the future;
-   - the house must exist;
-   - a name has only letters, and an ID has digits.
-4. **Plan** (`policy.py`, code). Decides the actions: send houses with photos, request live prices,
-   send the Terms PDF, create the invoice. Prices come only from the catalogue.
-5. **Reply** (Claude, JSON schema). The model writes Karl's message from:
-   - the full conversation;
-   - the checked facts;
-   - what the system is about to do;
-   - the points the booking step must carry.
-   The guest's newest messages and open questions go last in the prompt.
-6. **Check** (`check_reply`). Blocks any amount, house, number or link that isn't in the facts, and
-   any reply that repeats an earlier line. A rejected reply is rewritten once; if it fails again,
-   Karl retries, and if that still fails, the plan's own wording goes out.
-7. **Send.** Messages go to the outbox and the PC bridge delivers them to WhatsApp.
+1. **Debounce and gate.** Wait for the guest to finish typing, then decide whether to answer.
+2. **Rules first** (`nlu.py`, under 1 ms). A simple turn the rules fully explain never waits for the
+   model. This is the cascade in `mind.needs_model`.
+3. **STATE** (local model, JSON forced by a grammar). Reads the recent conversation into the booking
+   state and the guest's unanswered questions. The model copies the guest's own date words, and code
+   does the calendar. Code checks everything before use.
+4. **Plan** (`policy.py`, code). Decides houses, live prices, Terms, the invoice, and what the reply
+   must say.
+5. **REPLY** (local model, JSON forced by a grammar). Writes from the same conversation; the guest's
+   newest messages and questions go last. The prompt opening is identical to STATE's, so llama.cpp
+   doesn't process the conversation a second time.
+6. **Check.** No invented price, house or number, and no repeated line. One rewrite with the reason,
+   then the plan's own wording.
+7. **Send** through the PC bridge.
 
-**The model understands and speaks; code acts.** A wrong model reply can never book wrong dates,
+**The model reads and writes; code computes and acts.** A wrong model answer can't book wrong dates,
 quote an invented price or invoice a house that wasn't offered.
 
-### The communication model (Shannon and Weaver 1949, with Schramm's feedback loop)
-
-| Element | In Karl |
-|---|---|
-| Source and message | The guest. One thought is often spread over several WhatsApp lines, so Karl reads the whole turn and the whole chat. |
-| Noise | Typos, split messages, deleted messages, "your version of WhatsApp Web doesn't support it", photo bursts, our own house cards. `mind.transcript()` removes these or labels them instead of guessing. |
-| Receiver / decoder | `understand`: decodes the conversation into a checked state. |
-| Destination | `policy.plan`: what the booking needs next. |
-| Feedback | Karl restates what it understood ("Rusape, 23–25 Oct, 2 guests") so the guest can correct it, and asks one clear question when something is ambiguous. This is conversational grounding (Clark & Brennan 1991). |
-| Channel capacity | A phone screen: at most 60 words per reply when Claude writes it, one emoji, no repeated lines, at most 2 replies per guest turn. |
-
-### The conversation cache (memory)
-
-- **Working memory.** The real last 40 messages, read every turn. Nothing is summarised away, so
-  the newest question is always answered in its context.
-- **Booking state.** Slots, the stage and the chosen house, stored in `davis_sessions` between
-  turns. The model receives the stored state and keeps or corrects it.
-- **Offers.** The houses already sent to this guest, from `house_sends`, so "option 2", "KCER 105"
-  and "this one" resolve to a real house.
-- **Knowledge.** The persona, house rules and FAQs (`persona.py`), team notes per house, and skills
-  learned from the team's past replies.
-
-### About the "neural network architecture"
-
-We don't train or change the network inside a language model; that's done by the model's maker.
-What we control is:
-
-- **Which model.** Moving from a 1.5B model on a 2-core CPU to Claude is the biggest single gain in
-  reasoning.
-- **The system around it.** Perception (understand) → memory → planning in code → language (reply)
-  → verification (check) → feedback. That loop is what makes it reliable rather than just fluent.
+The communication model (Shannon & Weaver with Schramm's feedback), the conversation memory, and
+what we do and don't take from frontier assistants are all in the skill.
 
 ## 3. Turning it on
 
-On the Karlcon Space (Settings → Variables and secrets):
+Nothing to add: Karl uses the local model by default (`DAVIS_PROVIDER=local`), and the `Dockerfile`
+downloads it at build time. Optional Space variables:
 
-| Name | Kind | Value |
+| Variable | Default | Effect |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | secret | Your Anthropic API key. With it, Karl uses Claude automatically. |
-| `KARL_MODEL` | variable (optional) | `claude-opus-5-5` (default). `claude-sonnet-5-5` or `claude-haiku-5-5` are cheaper. |
-| `KARL_EFFORT` | variable (optional) | `low` (default) or `medium`. |
-| `KARL_MAX_WORDS` | variable (optional) | 60 (default). |
+| `KARL_UNDERSTAND` | `auto` | `auto` runs STATE only when the rules can't explain the turn; `always` runs it on every turn; `off` uses rules only. |
+| `KARL_TRANSCRIPT` | 24 | How many messages Karl reads per turn. |
+| `KARL_MAX_WORDS` | 50 | The longest reply the model may write. |
+| `DAVIS_LOCAL_MODEL_REPO` / `DAVIS_LOCAL_MODEL_FILE` | see the skill | Which GGUF model to use. Change them together with the `Dockerfile`. |
 
-With no key, Karl answers with the improved rules at once and never waits. The dashboard shows
-"no ANTHROPIC_API_KEY: rules answer". You can switch providers on the dashboard at any time
-(Claude, Local model, Ollama, Rules only). The dashboard feed shows an "understood:" line for every
-turn: what Karl took from the chat and which questions it still has to answer.
-
-**Cost.** Each guest turn makes two Claude calls. The fixed instructions are cached, so each call
-mostly pays for the conversation itself, a few thousand tokens. Check your usage on the Anthropic
-Console during the first days, and switch `KARL_MODEL` to Sonnet or Haiku if volume is high.
+The dashboard feed shows an "understood:" line for every turn: what Karl took from the chat, which
+questions it still has to answer, and why the model was asked (or "understood_by_rules" when it
+wasn't needed).
 
 ## 4. Invoices
 

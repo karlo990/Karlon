@@ -93,6 +93,11 @@ class LocalModel:
                 from llama_cpp import Llama
                 self._llm = Llama(model_path=str(path), n_ctx=config.LOCAL_CTX, n_threads=self.threads,
                                   n_threads_batch=self.threads, n_batch=256, verbose=False)
+                if config.LOCAL_CACHE_MB:
+                    # Karl's STATE and REPLY share a prompt prefix (mind.py);
+                    # this keeps evaluated prefixes so neither re-reads it.
+                    from llama_cpp import LlamaRAMCache
+                    self._llm.set_cache(LlamaRAMCache(capacity_bytes=config.LOCAL_CACHE_MB << 20))
                 self.path = str(path)
                 self.state, self.error = "ready", None
                 self.load_s = round(time.monotonic() - t0, 1)
@@ -115,7 +120,7 @@ class LocalModel:
             pass
 
     # ── generation ────────────────────────────────────────────────────────────
-    def generate(self, msgs: list[dict], schema: dict) -> tuple[dict, dict]:
+    def generate(self, msgs: list[dict], schema: dict, max_tokens: Optional[int] = None) -> tuple[dict, dict]:
         """Blocking: one JSON answer. Call from a worker thread."""
         llm = self.load()
         t0 = time.monotonic()
@@ -124,7 +129,7 @@ class LocalModel:
             out = llm.create_chat_completion(
                 messages=msgs,
                 response_format={"type": "json_object", "schema": schema},
-                temperature=config.LOCAL_TEMPERATURE, max_tokens=config.LOCAL_MAX_TOKENS)
+                temperature=config.LOCAL_TEMPERATURE, max_tokens=max_tokens or config.LOCAL_MAX_TOKENS)
         took = time.monotonic() - t0 - waited
         usage = out.get("usage") or {}
         text = out["choices"][0]["message"]["content"] or ""

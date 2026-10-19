@@ -599,6 +599,8 @@ def _numbers(text: str) -> set[str]:
         v = m.group(0).replace(",", "").rstrip(".")
         if "." in v:
             v = v.rstrip("0").rstrip(".")
+        elif len(v) > 1 and v.startswith("0") and len(v) <= 2:
+            v = v.lstrip("0") or "0"          # "08" in 2026-11-08 is the 8 of "8 Nov"
         out.add(v)
     return out
 

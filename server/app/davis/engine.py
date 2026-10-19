@@ -113,7 +113,8 @@ class Engine:
         the first guest doesn't wait for it."""
         from .local_llm import model
         if config.LOCAL_PRELOAD and model.state in ("not_loaded", "error"):
-            self._spawn(asyncio.to_thread(model.warm, prompts.messages("GUEST: Hi"), prompts.SCHEMA))
+            self._spawn(asyncio.to_thread(model.warm, mind.understand_messages([], {}, [], self._today()),
+                                          mind.STATE_SCHEMA))
 
     async def stop(self) -> None:
         for t in [self._sweeper, *self.timers.values(), *self.tasks]:
@@ -314,7 +315,9 @@ class Engine:
             "SELECT id, direction, sender, kind, text, created_at, wa_status, media_url FROM messages "
             "WHERE chat_id=? ORDER BY rowid DESC LIMIT ?",               # arrival order: see gate.speaking
             (chat_id, max(60, config.HISTORY_MESSAGES * 2))).fetchall()
+        total = conn.execute("SELECT COUNT(*) FROM messages WHERE chat_id=?", (chat_id,)).fetchone()[0]
         return {"chat_id": chat_id, "chat_name": chat["name"], "messages": [dict(r) for r in reversed(rows)],
+                "msg_offset": max(0, total - len(rows)),          # older messages not loaded (mind.window_start)
                 "session": store.get_session(conn, chat_id), "settings": settings,
                 "now": datetime.now(timezone.utc)}
 
@@ -369,10 +372,6 @@ class Engine:
             settings = store.get_settings(conn)
             if force and settings["mode"] == "off":
                 settings = {**settings, "mode": "shadow"}
-            if settings.get("provider") == "claude" and not config.ANTHROPIC_API_KEY:
-                # Claude chosen but no key on this Space: the rules answer at
-                # once instead of every reply waiting on retries.
-                settings = {**settings, "provider": "rules"}
             ctx = self._context(conn, chat_id, settings)
             if not ctx:
                 return {"status": "skipped", "reason": "no_such_chat"}
@@ -432,8 +431,15 @@ class Engine:
                 session["slots"] = nlu.merge_slots(session.get("slots") or {},
                                                    {k: v for k, v in f.items() if k in nlu.SLOT_KEYS})
             ctx["session"] = session
-            if settings.get("provider") == "claude":
-                feats = await self._understand(ctx, feats, today, places, settings)
+            ctx["slots_before"] = dict(session.get("slots") or {})       # the shared prompt prefix (mind.py)
+            ctx["month"] = month
+            if settings.get("provider") in ("local", "ollama") and config.KARL_UNDERSTAND != "off":
+                why = "always" if config.KARL_UNDERSTAND == "always" else mind.needs_model(
+                    texts, feats, session.get("stage") or "new")
+                if why:
+                    feats = await self._understand(ctx, feats, today, places, settings, why)
+                else:
+                    self.metrics.counters["understood_by_rules"] += 1
             cat = _Cat(conn, chat_id)
             plan_ = policy.plan(ctx, feats, cat, trigger=trigger)
             plan_["trigger"] = trigger
@@ -494,27 +500,28 @@ class Engine:
         return [m["text"] for m in msgs[i + 1:] if m.get("direction") == "in" and m["id"] not in turn_ids
                 and m.get("kind", "text") == "text" and m.get("text")][-8:]
 
-    async def _understand(self, ctx: dict, feats: dict, today, places: dict, settings: dict) -> dict:
+    async def _understand(self, ctx: dict, feats: dict, today, places: dict, settings: dict, why: str = "") -> dict:
         """Karl reads the whole recent conversation into the booking state
         (mind.understand_messages); the checked result is merged over the
         rules' reading of the newest messages. If the model can't answer,
         the rules' reading stands on its own."""
-        msgs = mind.understand_messages(ctx["messages"], ctx["session"].get("slots") or {}, ctx["offers"], today,
-                                        DISPLAY_TZ_OFFSET_MINUTES)
-        out, info = await self.router.complete(settings, None, msgs=msgs, schema=mind.UNDERSTAND_SCHEMA)
+        msgs = mind.understand_messages(ctx["messages"], ctx["slots_before"], ctx["offers"], today,
+                                        DISPLAY_TZ_OFFSET_MINUTES, ctx.get("msg_offset", 0))
+        out, info = await self.router.complete(settings, None, msgs=msgs, schema=mind.UNDERSTAND_SCHEMA,
+                                               max_tokens=config.KARL_STATE_MAX_TOKENS)
         if info.get("latency_ms") and not info.get("cache_hit"):
             self.metrics.llm_ms.append(info["latency_ms"])
         if not out:
             self.metrics.counters["understand_failed"] += 1
             await self.emit(ctx["chat_id"], "understand", {"error": info.get("error") or info.get("skipped")})
             return feats
-        mf = mind.to_features(out, today, places, ctx["offers"])
+        mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"))
         self.metrics.counters["understood"] += 1
         await self.emit(ctx["chat_id"], "understand", {
             "need": mf.get("latest_need"), "questions": mf.get("open_questions"),
             "state": {k: mf[k] for k in ("city", "check_in", "check_out", "guests", "budget_usd", "option_ref",
                                          "full_name", "long_term", "photos_for") if mf.get(k)},
-            "latency_ms": info.get("latency_ms")})
+            "why": why, "latency_ms": info.get("latency_ms")})
         return mind.merge(feats, mf)
 
     async def _phrase(self, ctx: dict, feats: dict, plan_: dict, cat: _Cat, settings: dict) -> dict:
@@ -534,13 +541,16 @@ class Engine:
             use_model = False          # no team note covers the question: the team answers (no model wait)
         draft = reply["text"] if reply else None
         feedback = ""
-        claude = settings.get("provider") == "claude"
-        limit = config.KARL_MAX_WORDS if claude else config.MAX_WORDS
+        karl = settings.get("provider") in ("local", "ollama")      # the worker keeps the old short prompt
+        limit = config.KARL_MAX_WORDS if karl else config.MAX_WORDS
         for attempt in range(2 if (use_model and ai_only) else (1 if use_model else 0)):
-            if claude:
+            if karl:
                 msgs = mind.reply_messages(ctx["chat_name"], ctx["messages"], plan_, feats, self._today(), limit,
-                                           feedback, DISPLAY_TZ_OFFSET_MINUTES)
-                out, info = await self.router.complete(settings, None, msgs=msgs, schema=mind.REPLY_SCHEMA)
+                                           feedback, DISPLAY_TZ_OFFSET_MINUTES,
+                                           slots_before=ctx.get("slots_before"), offers=ctx.get("offers"),
+                                           offset=ctx.get("msg_offset", 0))
+                out, info = await self.router.complete(settings, None, msgs=msgs, schema=mind.REPLY_SCHEMA,
+                                                       max_tokens=config.KARL_REPLY_MAX_TOKENS)
             else:
                 user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat(), feedback)
                 out, info = await self.router.complete(settings, user)

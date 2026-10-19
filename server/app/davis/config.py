@@ -29,32 +29,29 @@ MODE = os.environ.get("DAVIS_MODE", "shadow").strip().lower()
 if MODE not in MODES:
     MODE = "shadow"
 
-# claude — Claude through the Anthropic API (ANTHROPIC_API_KEY): reads the whole
-#          conversation into the booking state and writes every reply. The
-#          default whenever the key is set; the others stay as fallbacks.
 # local  — a small instruct model run in this server process with llama.cpp
 #          (GGUF file, CPU). No API, no key, nothing leaves the Space.
 # ollama — an Ollama server's /api/chat (e.g. on a PC with a GPU).
 # worker — the Conscious Worker Space (/api/jarvis/conscious, phi4-mini).
 # rules  — no model: the persona's fixed lines. Always available, and the
 #          fallback whenever a model is slow, down or its reply fails the guard.
-PROVIDERS = ("claude", "local", "ollama", "worker", "rules")
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
-PROVIDER = (os.environ.get("KARL_PROVIDER") or os.environ.get("DAVIS_PROVIDER")
-            or ("claude" if ANTHROPIC_API_KEY else "local")).strip().lower()
+PROVIDERS = ("local", "ollama", "worker", "rules")
+PROVIDER = (os.environ.get("KARL_PROVIDER") or os.environ.get("DAVIS_PROVIDER") or "local").strip().lower()
 if PROVIDER not in PROVIDERS:
-    PROVIDER = "claude" if ANTHROPIC_API_KEY else "local"
+    PROVIDER = "local"
 
-# Claude (provider "claude"). Two calls per guest turn: one reads the chat into
-# the booking state (understand), one writes the reply. Effort low: these are
-# short, frequent turns; the model still thinks before it answers.
-KARL_MODEL = os.environ.get("KARL_MODEL", "claude-opus-5-5")
-KARL_EFFORT = os.environ.get("KARL_EFFORT", "low") if os.environ.get("KARL_EFFORT", "low") in (
-    "low", "medium", "high", "xhigh", "max") else "low"
-KARL_MAX_TOKENS = _int("KARL_MAX_TOKENS", 8000, 1024)
-KARL_TIMEOUT_SEC = _float("KARL_TIMEOUT_SEC", 60.0, 10.0)
-KARL_TRANSCRIPT = _int("KARL_TRANSCRIPT", 40, 8)            # messages of the chat Karl reads every turn
-KARL_MAX_WORDS = _int("KARL_MAX_WORDS", 60, 20)             # a Claude reply may answer a few questions at once
+# Karl's mind (mind.py) on the local model: STATE reads the chat into the
+# booking state, REPLY writes the message. Both share one prompt prefix.
+#   auto   = STATE runs only when the rules can't account for the turn (mind.needs_model)
+#   always = STATE on every turn;  off = rules only (the model still writes replies)
+KARL_UNDERSTAND = os.environ.get("KARL_UNDERSTAND", "auto") if os.environ.get("KARL_UNDERSTAND", "auto") in (
+    "auto", "always", "off") else "auto"
+KARL_STATE_MAX_TOKENS = _int("KARL_STATE_MAX_TOKENS", 420, 120)
+KARL_REPLY_MAX_TOKENS = _int("KARL_REPLY_MAX_TOKENS", 200, 60)
+KARL_TRANSCRIPT = _int("KARL_TRANSCRIPT", 24, 6)            # messages of the chat Karl reads every turn
+KARL_LINE_CHARS = _int("KARL_LINE_CHARS", 300, 80)          # longest message line in the transcript
+KARL_MAX_WORDS = _int("KARL_MAX_WORDS", 50, 20)             # a model reply may answer a few questions at once
+LOCAL_CACHE_MB = _int("DAVIS_LOCAL_CACHE_MB", 1024, 0)      # RAM cache of evaluated prompt prefixes (0 = off)
 
 # The local model. Default: Qwen2.5 1.5B Instruct, 4-bit (about 1.1 GB, ~2 GB
 # RAM). On a 2-vCPU Space a reply takes roughly 6-12 s; 3B models write

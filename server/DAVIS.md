@@ -1,4 +1,4 @@
-> **Davis is now called Karl.** What changed and why (the October chat review, Claude, the
+> **Davis is now called Karl.** What changed and why (the October chat review, the local model, the
 > communication model, memory, invoices): see [KARL.md](KARL.md).
 
 # Davis: KarlCon Elite Retreats' WhatsApp reception and booking assistant
