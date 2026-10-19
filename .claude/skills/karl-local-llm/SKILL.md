@@ -60,7 +60,30 @@ minute on a 3B model. So the design never re-reads what it already read:
 
 ## Choosing the model
 
-<!-- BENCHMARK -->
+Measured with `tests/eval_state.py` on the October 2026 chats (7 conversations, 31 scored fields),
+2 threads, Q4_K_M, the STATE step plus the code checks, exactly as Karl uses it:
+
+| Model | Accuracy | STATE time per turn | Licence |
+|---|---|---|---|
+| **Qwen3-4B-Instruct-2507** (default, `unsloth/Qwen3-4B-Instruct-2507-GGUF`) | **94%** (29/31) | ~43 s | Apache-2.0 |
+| Phi-4-mini-instruct (`unsloth/Phi-4-mini-instruct-GGUF`) | 90% (28/31) | ~43 s | MIT |
+| Qwen2.5-3B-Instruct (`Qwen/Qwen2.5-3B-Instruct-GGUF`) | 77% (24/31) | ~25 s | Qwen research licence |
+| Qwen2.5-1.5B-Instruct (`Qwen/Qwen2.5-1.5B-Instruct-GGUF`, the old default) | 68% (21/31) | ~20 s | Apache-2.0 |
+
+The time is dominated by *writing* the JSON (about 100 tokens). On a free 2-vCPU Space, a turn that
+needs the model takes about a minute in total (STATE plus REPLY). Turns the rules explain skip the
+model and answer in seconds.
+- **To go faster** without losing accuracy, use a paid CPU upgrade for the Space; no code change
+  needed.
+- **To go faster** on free hardware, switch to Qwen2.5-3B (about half the time, less accurate).
+
+What the code checks fixed on every model:
+- invented dates (each day number must be in the guest's words);
+- invented towns (the town must be one the guest wrote; misspelt suburbs map to their city);
+- wrong party sizes (an explicit "15guests" wins);
+- missed monthly rentals;
+- copied example text (keep examples out of the prompt);
+- dropped questions (requests in the newest messages are always passed on).
 
 Change it with the Space variables `DAVIS_LOCAL_MODEL_REPO` and `DAVIS_LOCAL_MODEL_FILE`, and the
 same values in the `Dockerfile` ENV, which downloads the model at build time. Prefer Q4_K_M
