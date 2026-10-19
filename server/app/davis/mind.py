@@ -290,7 +290,67 @@ def needs_model(texts: list[str], feats: dict, stage: str) -> Optional[str]:
 
 # ── the model's reading, checked ─────────────────────────────────────────────
 
-def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hint: Optional[int] = None) -> dict:
+def _city(name: str, places: dict) -> Optional[str]:
+    """A town name as the model wrote it, mapped to a known city: exact, an
+    alias or suburb, else the closest spelling ("mountplesent" -> mount
+    pleasant -> harare)."""
+    import difflib
+    name = (name or "").strip().lower()
+    if not name:
+        return None
+    hit = nlu.parse_city(name, places)
+    if hit:
+        return hit
+    table = {c.lower(): c.lower() for c in nlu.CITIES}
+    table.update({k: v for k, v in nlu.PLACE_ALIASES.items() if v})
+    table.update({k.lower(): (v or "").lower() for k, v in (places or {}).items() if v})
+    close = difflib.get_close_matches(name, list(table), n=1, cutoff=0.8)
+    return table[close[0]] if close else name
+
+
+def _rules_cross_check(f: dict, guest_texts: list[str], today: date, places: dict) -> None:
+    """Explicit facts in the guest's own words beat the model's guesses: the
+    last stated party size ("15guests") and, when the model's town is
+    unknown, the last town the rules can read."""
+    said_guests = said_city = said_nights = None
+    words = []
+    for t in guest_texts:
+        low = " ".join((t or "").lower().split())
+        words += re.findall(r"[a-z]{4,}", low)
+        g = nlu.parse_guests(low)
+        if g:
+            said_guests = g
+        c = nlu.parse_city(low, places)
+        if c:
+            said_city = c
+        n = nlu.parse_dates(low, today).get("nights")
+        if n:
+            said_nights = n
+    if said_guests and 1 <= said_guests <= 60:
+        f["guests"] = said_guests
+    blob = " ".join(" ".join((t or "").lower().split()) for t in guest_texts)
+    if f.get("check_in"):
+        # Dates the guest never wrote are invented: each day number must be in their own words.
+        days = {int(d[8:10]) for d in (f.get("check_in"), f.get("check_out")) if d}
+        if not all(re.search(rf"(?<!\d)0?{d}(?!\d)", blob) for d in days):
+            for k in ("check_in", "check_out", "nights", "dates_assumed"):
+                f.pop(k, None)
+    if any(nlu.extract(t).get("long_term") for t in guest_texts):
+        f["long_term"] = True
+    if f.get("city") and f["city"] != said_city:
+        # A town the guest never wrote (nor anything close to it) is a guess.
+        import difflib
+        if not difflib.get_close_matches(f["city"], words, n=1, cutoff=0.75):
+            f.pop("city")
+    if said_city and not f.get("city"):
+        f["city"] = said_city
+    if f.get("check_in") and not f.get("check_out") and said_nights and said_nights <= 30:
+        co = date.fromisoformat(f["check_in"]) + timedelta(days=said_nights)
+        f["check_out"], f["nights"] = co.isoformat(), said_nights
+
+
+def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hint: Optional[int] = None,
+                guest_texts: Optional[list[str]] = None) -> dict:
     """The model's reading, checked, as features for policy.plan. Anything
     that fails a check is dropped (the rules' reading and the stored state
     still apply), so a wrong model answer can't book wrong dates or a house
@@ -299,18 +359,21 @@ def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hi
     f: dict = {"understood": True}
     if not isinstance(u, dict):
         return f
-    city = (u.get("city") or "").strip().lower()
+    city = _city(u.get("city") or "", places)
     if city:
-        f["city"] = nlu.parse_city(city, places) or city
+        f["city"] = city
     dt = str(u.get("dates_text") or "")
     hint = month_hint or _month_for_days(dt, today)
     parsed = nlu.parse_dates(dt, today, hint) if dt else {}
-    ci = _clean_date(parsed.get("check_in"), today) if parsed.get("check_out") else None
+    # The guest's own words through the calendar code first; the model's ISO
+    # dates only fill what those words don't give.
+    ci = _clean_date(parsed.get("check_in"), today)
     co = _clean_date(parsed.get("check_out"), today) if ci else None
-    if not (ci and co):
+    if not ci:
         ci, co = _clean_date(u.get("check_in"), today), _clean_date(u.get("check_out"), today)
-        if parsed.get("check_in") and not ci:
-            ci = _clean_date(parsed["check_in"], today)
+    elif not co:
+        model_co = _clean_date(u.get("check_out"), today)
+        co = model_co if model_co and ci < model_co <= ci + timedelta(days=30) else None
     if ci:
         f["check_in"] = ci.isoformat()
         if co and ci < co <= ci + timedelta(days=90):
@@ -354,6 +417,8 @@ def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hi
             f[key] = True
     if qs:
         f["latest_need"] = qs[-1]
+    if guest_texts:
+        _rules_cross_check(f, guest_texts, today, places)
     return f
 
 
@@ -361,8 +426,8 @@ def _month_for_days(text: str, today: date) -> Optional[int]:
     """A day range with no month ("From 23 to 25"): this month if the first
     day is still ahead, else next month. The reply then asks the guest to
     confirm (dates_assumed)."""
-    if not text or _MONTHY.search(re.sub(r"\d", "", text)):
-        return None
+    if not text or _MONTHY.search(re.sub(r"\d", "", text)) or re.search(r"\d{1,2}\s*[./\-]\s*\d{1,2}", text):
+        return None                          # a month is named, or written as a number (22.3.27)
     days = [int(d) for d in re.findall(r"(?<!\d)(\d{1,2})(?!\d)", text) if 1 <= int(d) <= 31]
     if not days:
         return None

@@ -242,6 +242,9 @@ def parse_dates(text: str, today: date, month_hint: Optional[int] = None) -> dic
 # ─────────────────────────── slots ───────────────────────────────────────────
 
 def parse_guests(t: str) -> Optional[int]:
+    m = re.search(r"(?<![a-z\d])" + _NUM + r"\s*couples\b", t)            # "2 couples" = 4 people
+    if m and _n(m.group(1)):
+        return 2 * _n(m.group(1))
     adults = re.search(r"(?<![a-z\d])" + _NUM + r"\s*(?:adults?|grown[- ]?ups?)\b", t)
     kids = re.search(r"(?<![a-z\d])" + _NUM + r"\s*(?:kids?|children|child|teens?|infants?|babies|baby)\b", t)
     if adults or kids:
@@ -257,7 +260,7 @@ def parse_guests(t: str) -> Optional[int]:
     if m:
         return _n(m.group(1))
     if re.search(r"\b(?:me and my|myself and my|with my) (?:wife|husband|partner|girlfriend|boyfriend|fianc[eé]e?)\b"
-                 r"|\b(?:a|for a|for the|we are a) couple\b|\bfor two\b|\bfor 2\b", t):
+                 r"|\b(?:a|for a|for the|we are a) couple\b|\bfor two\b(?!\s*(?:couples?|nights?|days?|weeks?|rooms?|bed))|\bfor 2\b(?!\s*(?:couples?|nights?|days?|weeks?|rooms?|bed))", t):
         return 2
     if re.search(r"\b(?:just me|only me|myself only|for myself|solo|alone)\b", t):
         return 1

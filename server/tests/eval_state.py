@@ -102,8 +102,8 @@ def score(u, f, exp):
             else u.get(k)
         if k == "chosen_ref":
             got = f.get("option_ref")
-        if k == "stay_type":
-            got = u.get("stay_type")
+        if k == "stay_type":                           # after the code's checks, like Karl uses it
+            got = "long_term_rental" if f.get("long_term") else u.get("stay_type")
         ok = (got == v) or (v is None and not got)
         hits += ok
         if not ok:
@@ -144,7 +144,7 @@ for name, msgs, exp in CASES:
     except ValueError:
         u = {}
     month = nlu.last_month([x["text"] for x in msgs])
-    f = mind.to_features(u, today, {}, [], month)
+    f = mind.to_features(u, today, {}, [], month, [x["text"] for x in msgs if x["direction"] == "in"])
     h, tot, miss = score(u, f, exp)
     H += h
     T += tot

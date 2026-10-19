@@ -515,7 +515,9 @@ class Engine:
             self.metrics.counters["understand_failed"] += 1
             await self.emit(ctx["chat_id"], "understand", {"error": info.get("error") or info.get("skipped")})
             return feats
-        mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"))
+        guest_texts = [m["text"] for m in ctx["messages"][-config.KARL_TRANSCRIPT:]
+                       if m.get("direction") == "in" and m.get("kind", "text") == "text" and m.get("text")]
+        mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"), guest_texts)
         self.metrics.counters["understood"] += 1
         await self.emit(ctx["chat_id"], "understand", {
             "need": mf.get("latest_need"), "questions": mf.get("open_questions"),
