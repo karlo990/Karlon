@@ -46,8 +46,14 @@ if PROVIDER not in PROVIDERS:
 #   always = STATE on every turn;  off = rules only (the model still writes replies)
 KARL_UNDERSTAND = os.environ.get("KARL_UNDERSTAND", "auto") if os.environ.get("KARL_UNDERSTAND", "auto") in (
     "auto", "always", "off") else "auto"
-KARL_STATE_MAX_TOKENS = _int("KARL_STATE_MAX_TOKENS", 420, 120)
-KARL_REPLY_MAX_TOKENS = _int("KARL_REPLY_MAX_TOKENS", 200, 60)
+KARL_STATE_MAX_TOKENS = _int("KARL_STATE_MAX_TOKENS", 300, 120)
+KARL_REPLY_MAX_TOKENS = _int("KARL_REPLY_MAX_TOKENS", 140, 60)
+# Who writes the reply on the local model (generation is ~3 tokens/s on 2 cores):
+#   auto   = the model only when the guest asked something the plan's own wording
+#            doesn't answer (open questions); booking steps use the plan's wording
+#   always = the model writes every reply
+KARL_REPLY = os.environ.get("KARL_REPLY", "auto") if os.environ.get("KARL_REPLY", "auto") in ("auto", "always") \
+    else "auto"
 KARL_TRANSCRIPT = _int("KARL_TRANSCRIPT", 24, 6)            # messages of the chat Karl reads every turn
 KARL_LINE_CHARS = _int("KARL_LINE_CHARS", 300, 80)          # longest message line in the transcript
 KARL_MAX_WORDS = _int("KARL_MAX_WORDS", 50, 20)             # a model reply may answer a few questions at once

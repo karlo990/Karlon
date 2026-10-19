@@ -446,6 +446,8 @@ def _fake_local(monkeypatch, payload=None, error=None):
 
 
 def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
+    from app.davis import config as _cfg
+    monkeypatch.setattr(_cfg, "KARL_REPLY", "always")       # this test is about the model writing the reply
     from app.davis import persona
     _setup(dc, db)
     calls = _fake_local(monkeypatch, {"reply": "Mhoro! Lovely, Harare! Which dates are you looking at, and for how many guests?"})
@@ -460,6 +462,8 @@ def test_local_model_prompt_and_guarded_reply(dc, db, monkeypatch):
 
 
 def test_model_reply_with_invented_price_is_not_sent(dc, db, monkeypatch):
+    from app.davis import config as _cfg
+    monkeypatch.setattr(_cfg, "KARL_REPLY", "always")       # this test is about the model writing the reply
     _setup(dc, db)
     _fake_local(monkeypatch, {"reply": "Great news, all homes are just USD 20 a night! Which one?"})
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
@@ -487,6 +491,8 @@ def test_no_staff_actions_anywhere(dc, db, monkeypatch):
 
 
 def test_model_down_falls_back_and_breaker_opens(dc, db, monkeypatch):
+    from app.davis import config as _cfg
+    monkeypatch.setattr(_cfg, "KARL_REPLY", "always")       # this test is about the model writing the reply
     _fake_local(monkeypatch, error="model file missing")
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "all"})
     _setup(dc, db)
@@ -740,6 +746,8 @@ def test_bulawayo_chat_dates_from_context_and_staff(dc, db):
 
 
 def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monkeypatch):
+    from app.davis import config as _cfg
+    monkeypatch.setattr(_cfg, "KARL_REPLY", "always")       # this test is about the model writing the reply
     from app.davis import local_llm
     _setup(dc, db)
     dc.put("/api/davis/settings", json={"provider": "local", "llm_for": "ai"})
@@ -772,24 +780,18 @@ def test_ai_only_mode_model_writes_and_never_sends_fixed_sentences(dc, db, monke
     before = len(_davis(db))
     _guest(db, "how do I pay?")
     r = _run(dc)
-    assert r["status"] == "retry" and len(_davis(db)) == before
-    assert "REJECTED (dropped:" in calls[-1]                                    # the retry was told why
-    s = dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]
-    assert s["ai_retries"] == 1 and s["last_inbound_id"] != _last_in(db)       # not claimed: it runs again
-    assert _run(dc)["status"] == "retry"
-    r = _run(dc)
-    assert r["status"] == "sent" and len(_davis(db)) == before + 1             # the guest is never left waiting
+    # A local model gets one try (it is slow): rejected, so the plan's own
+    # wording goes out at once; the guest never waits on retries.
+    assert r["status"] == "sent" and len(_davis(db)) == before + 1
     assert "0780563561" in _davis(db)[-1]["text"]
     assert [a.get("by") for a in r["plan"]["actions"] if a["type"] == "reply"] == ["plan"]
-    assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["ai_retries"] == 0
+    assert r["plan"]["llm"]["rejected"].startswith("dropped:")
 
-    # model down: the same - retried, then answered
+    # model down: the same - answered at once with the plan's wording
     def boom(msgs, schema, max_tokens=None):
         raise RuntimeError("model file missing")
     monkeypatch.setattr(local_llm.model, "generate", boom)
     _guest(db, "hello?")
-    assert _run(dc)["status"] == "retry"
-    _run(dc)
     assert _run(dc)["status"] == "sent" and len(_davis(db)) == before + 2
 
 

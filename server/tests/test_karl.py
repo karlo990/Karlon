@@ -82,6 +82,7 @@ def test_dates_without_a_month_are_read_and_confirmed(dc, db, monkeypatch):
                         f"Is that the right month?")
     from app.davis import config
     monkeypatch.setattr(config, "KARL_UNDERSTAND", "always")
+    monkeypatch.setattr(config, "KARL_REPLY", "always")
     _karl(dc)
     _guest(db, "Greetings", 10)
     _staff(db, "Hello! I'm Karl from KarlCon Elite Retreats 🏡 Which city would you like to stay in, and for which dates?",
@@ -178,11 +179,8 @@ def test_a_model_failure_still_answers(dc, db, monkeypatch):
     _fake_model(monkeypatch, error="model crashed")
     _karl(dc)
     _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4")
-    r = _run(dc)                                   # live: the reply is retried shortly, nothing lost
-    assert r["status"] == "retry"
-    r = _run(dc, again=True)
-    r = _run(dc, again=True)
-    assert r["status"] == "sent" and r["plan"]["stage"] == "present"     # rules read the message; plan wording
+    r = _run(dc)                                   # the rules read the message; the plan's wording goes at once
+    assert r["status"] == "sent" and r["plan"]["stage"] == "present"
 
 
 def test_monthly_room_gets_a_kind_short_stay_answer(dc, db):
@@ -287,6 +285,25 @@ def test_transcript_labels_cards_and_drops_noise():
     assert lines[-1].endswith("KARL: Which KCER would you like?")
 
 
+def test_booking_steps_use_the_plan_wording_and_questions_use_the_model(dc, db, monkeypatch):
+    """On a slow local model the reply cascade keeps booking steps instant:
+    the model writes only when the guest asked something."""
+    _setup(dc, db)
+    calls = _fake_model(monkeypatch, _understanding(city="harare", check_in=CI.isoformat(), check_out=CO.isoformat(),
+                                                     guests=4), reply="unused")
+    _karl(dc)
+    _guest(db, f"Harare {_human(CI)} to {_human(CO)} for 4 people")
+    r = _run(dc)
+    assert r["plan"]["stage"] == "present" and r["plan"]["llm"]["skipped"] == "plan_wording_enough"
+    assert not any(c["schema"].get("required") == ["reply"] for c in calls)
+    _fake_model(monkeypatch, _understanding(city="harare", check_in=CI.isoformat(), check_out=CO.isoformat(), guests=4,
+                                            open_questions=["is there parking"]),
+                reply=lambda p: "Parking isn't in our listing, sorry. Which KCER would you like me to invoice?")
+    _guest(db, "is there parking at these houses?")
+    r = _run(dc)
+    assert [a.get("by") for a in r["plan"]["actions"] if a["type"] == "reply"] == ["model"]
+
+
 def test_karl_is_the_name_everywhere(dc, db):
     from app.davis import persona
     _setup(dc, db)
@@ -295,4 +312,18 @@ def test_karl_is_the_name_everywhere(dc, db):
     assert "I'm Karl from" in _davis(db)[-1]["text"] and _davis(db)[-1]["sender"] == "Karl"
     assert persona.PERSONA["name"] == "Karl" and "Davis" not in json.dumps(persona.LINES)
 
+
+def test_party_size_and_questions_need_the_guests_words():
+    """A small model invents polite questions and a party size; both are
+    dropped unless the guest's own lines support them."""
+    from app.davis import mind
+    today = date(2026, 10, 18)
+    g = ["Goodmorning", "House in Bulawayo 3 bedroom in 18 Dec and out 20 December 2026"]
+    f = mind.to_features(_understanding(city="Bulawayo", guests=2, open_questions=["Do you need pictures?"]),
+                         today, {}, [], None, g, g[-1:])
+    assert "guests" not in f and f["open_questions"] == [] and f["city"] == "bulawayo"
+    g2 = ["we are two couples", "May I kindly have pics", "And what amenties available"]
+    f = mind.to_features(_understanding(guests=4, open_questions=["What amenities are available?"]),
+                         today, {}, [], None, g2, g2[1:])
+    assert f["guests"] == 4 and len(f["open_questions"]) == 2          # the dropped "pics" request is added back
 

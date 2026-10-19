@@ -79,17 +79,19 @@ INTENTS = ["greeting", "booking", "price", "photos", "amenities", "location", "i
 STATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "city": _null(_STR),
-        "dates_text": _null(_STR),
-        "check_in": _null(_STR),
-        "check_out": _null(_STR),
+        # Length limits are enforced by the grammar: the model can't spend
+        # tokens copying a whole message (generation is ~3 tokens/s on 2 cores).
+        "city": _null({"type": "string", "maxLength": 30}),
+        "dates_text": _null({"type": "string", "maxLength": 48}),
+        "check_in": _null({"type": "string", "maxLength": 10}),
+        "check_out": _null({"type": "string", "maxLength": 10}),
         "guests": _null(_INT),
         "stay_type": {"type": "string", "enum": ["short_stay", "long_term_rental", "unknown"]},
         "chosen_ref": _null(_INT),
-        "photos_for": {"type": "array", "items": _INT},
-        "full_name": _null(_STR),
-        "id_number": _null(_STR),
-        "open_questions": {"type": "array", "items": _STR},
+        "photos_for": {"type": "array", "items": _INT, "maxItems": 3},
+        "full_name": _null({"type": "string", "maxLength": 60}),
+        "id_number": _null({"type": "string", "maxLength": 25}),
+        "open_questions": {"type": "array", "items": {"type": "string", "maxLength": 64}, "maxItems": 3},
     },
     "required": ["city", "dates_text", "check_in", "check_out", "guests", "stay_type", "chosen_ref", "photos_for",
                  "full_name", "id_number", "open_questions"],
@@ -111,12 +113,12 @@ THE TRANSCRIPT. GUEST is the customer. KARL is you. TEAM is our staff. [house ca
 TASK: STATE. Write the guest's booking as JSON:
 - Read the whole conversation. Guests split one thought over several lines, answer late and correct themselves; the newest statement wins.
 - Take details from the guest's own words. Something KARL or TEAM proposed counts only if the guest agreed.
-- dates_text: copy, word for word, what the GUEST wrote about their stay dates (the corrected words if they corrected). null if the guest never wrote any dates; never make dates up. check_in / check_out: the same dates as YYYY-MM-DD (day before month, the next such date on or after TODAY), or null.
+- dates_text: copy, word for word and short, only the date words the GUEST wrote for their stay (the corrected words if they corrected). null if the guest never wrote any dates; never make dates up. check_in / check_out: the same dates as YYYY-MM-DD (day before month, the next such date on or after TODAY), or null.
 - guests: people staying (2 couples = 4). city: the town, lowercase (Avondale, Borrowdale, Mount Pleasant are harare; Hillside is bulawayo).
 - stay_type: long_term_rental for a monthly rent, a room to rent, a lease or "not booking"; short_stay for nights; else unknown.
 - chosen_ref: the KCER number the guest picked to book, else null. photos_for: KCER numbers they want pictures of ("pics" about the house just discussed = that house).
 - full_name / id_number: only what the guest gave for the invoice. Never invent.
-- open_questions: each question or request of the guest that no later KARL or TEAM message answered, in a few plain words, newest last.
+- open_questions: each question or request of the guest that no later KARL or TEAM message answered, in at most 8 words each, newest last.
 - Keep WHAT KARL ALREADY KNOWS unless the conversation changes it.
 
 TASK: REPLY. Write KARL's next WhatsApp message as JSON {{"reply": "..."}}:
@@ -280,6 +282,8 @@ def needs_model(texts: list[str], feats: dict, stage: str) -> Optional[str]:
         return "numbers_the_rules_missed"
     if feats.get("check_in") and not feats.get("check_out"):
         return "half_a_date"
+    if feats.get("city") and feats.get("check_in") and feats.get("check_out"):
+        return None                          # the rules read the whole booking request
     if words > 12:
         return "long_message"
     if not any(feats.get(k) for k in ("city", "check_in", "guests", "option_ref", "full_name", "name_like",
@@ -326,9 +330,16 @@ def _rules_cross_check(f: dict, guest_texts: list[str], today: date, places: dic
         n = nlu.parse_dates(low, today).get("nights")
         if n:
             said_nights = n
+    blob = " ".join(" ".join((t or "").lower().split()) for t in guest_texts)
     if said_guests and 1 <= said_guests <= 60:
         f["guests"] = said_guests
-    blob = " ".join(" ".join((t or "").lower().split()) for t in guest_texts)
+    elif f.get("guests"):
+        g = f["guests"]
+        num_words = {v: k for k, v in nlu.NUMBER_WORDS.items() if k not in ("a", "an")}
+        evidence = re.search(rf"(?<!\d){g}(?!\d)", blob) or (g in num_words and re.search(rf"\b{num_words[g]}\b", blob)) \
+            or ("couple" in blob and g in (2, 4)) or (g == 1 and re.search(r"\b(?:me|myself|alone|solo|one)\b", blob))
+        if not evidence:
+            f.pop("guests")                  # a party size the guest never gave
     if f.get("check_in"):
         # Dates the guest never wrote are invented: each day number must be in their own words.
         days = {int(d[8:10]) for d in (f.get("check_in"), f.get("check_out")) if d}
@@ -365,7 +376,14 @@ def _keep_questions(model_qs: list[str], newest: list[str]) -> list[str]:
     """Every question or request in the guest's newest messages ends up in
     the list: the model's wording when it has one that shares a word with
     it, else the guest's own words. Small models drop one of three."""
-    out = list(model_qs)
+    asked = [" ".join((t or "").split()) for t in newest if _REQUEST.search(t or "")]
+    asked_words = set(re.findall(r"[a-z]{4,}", " ".join(asked).lower()))
+    # The model's questions count only when the guest really asked something
+    # in these lines and they share a word with it (small models invent
+    # polite questions: "Can you confirm the dates?").
+    out = [q for q in model_qs if asked and (set(re.findall(r"[a-z]{4,}", q.lower())) & asked_words
+                                             or any(w[:4] in " ".join(asked).lower()
+                                                    for w in re.findall(r"[a-z]{4,}", q.lower())))]
     have = " ".join(out).lower()
     for t in newest:
         t = " ".join((t or "").split())

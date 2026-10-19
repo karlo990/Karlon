@@ -518,8 +518,13 @@ class Engine:
             return feats
         guest_texts = [m["text"] for m in ctx["messages"][-config.KARL_TRANSCRIPT:]
                        if m.get("direction") == "in" and m.get("kind", "text") == "text" and m.get("text")]
-        mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"), guest_texts,
-                              newest=ctx.get("turn_texts"))
+        try:
+            mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"), guest_texts,
+                                  newest=ctx.get("turn_texts"))
+        except Exception as e:                 # a bad reading never costs the guest a reply: the rules stand
+            self.metrics.counters["understand_failed"] += 1
+            await self.emit(ctx["chat_id"], "understand", {"error": f"checking failed: {e!r}"[:200]})
+            return feats
         self.metrics.counters["understood"] += 1
         await self.emit(ctx["chat_id"], "understand", {
             "need": mf.get("latest_need"), "questions": mf.get("open_questions"),
@@ -547,7 +552,15 @@ class Engine:
         feedback = ""
         karl = settings.get("provider") in ("local", "ollama")      # the worker keeps the old short prompt
         limit = config.KARL_MAX_WORDS if karl else config.MAX_WORDS
-        for attempt in range(2 if (use_model and ai_only) else (1 if use_model else 0)):
+        if karl and use_model and config.KARL_REPLY == "auto" and not (
+                feats.get("open_questions") or open_q or plan_.get("trigger") == "followup"):
+            # Nothing to answer beyond the booking step: the plan's wording is
+            # exact and instant; the model's time goes to guests' questions.
+            use_model = False
+            ai_only = False
+            plan_["llm"] = {"provider": settings.get("provider"), "skipped": "plan_wording_enough"}
+        attempts = (1 if karl else 2) if (use_model and ai_only) else (1 if use_model else 0)
+        for attempt in range(attempts):
             if karl:
                 msgs = mind.reply_messages(ctx["chat_name"], ctx["messages"], plan_, feats, self._today(), limit,
                                            feedback, DISPLAY_TZ_OFFSET_MINUTES,
@@ -594,7 +607,11 @@ class Engine:
                 break                                   # model down / skipped: no point retrying now
         if ai_only and use_model and reply is not None and reply.get("by") != "model":
             llm = plan_.get("llm") or {}
-            plan_["ai_failed"] = llm.get("rejected") or llm.get("error") or llm.get("skipped") or "model unavailable"
+            if karl:
+                reply["by"] = "plan"       # a local model is slow: its one try failed, the plan's wording goes now
+                self.metrics.counters["ai_fallbacks"] += 1
+            else:
+                plan_["ai_failed"] = llm.get("rejected") or llm.get("error") or llm.get("skipped") or "model unavailable"
         return plan_
 
     @staticmethod
