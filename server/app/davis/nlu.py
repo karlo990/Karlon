@@ -440,6 +440,10 @@ def extract(raw: str, today: Optional[date] = None, places: Optional[dict] = Non
                               "early check[- ]?in", "late check[- ]?out")
     f["location_query"] = _has(t, "where (?:is|are) (?:it|they|the house|this)", "location", "address", "directions",
                                "pin", "how far")
+    f["long_term"] = _has(t, "per month", "monthly", "/month", "p/m", "pm rent", "long[- ]term",
+                          "lease", "not booking", "room to rent", "rooms to rent", "to rent a room",
+                          "rent (?:a|the) room", "for rent")
+    f["photos_request"] = _has(t, "pics?", "pictures?", "photos?", "images?", "more pics")
     f["question"] = "?" in t or bool(re.match(r"(what|where|when|how|can|could|is|are|do|does|will|would|which|who)\b", t))
     # Asking about check-in times, not stating their own ("check out time 10:00am 22November").
     f["checkin_query"] = f.pop("checkin_query_raw") and (f["question"] or bool(re.search(r"\bwhat time\b", t)))

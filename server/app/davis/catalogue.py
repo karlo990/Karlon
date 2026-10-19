@@ -88,7 +88,7 @@ def find_options(conn, chat_id: str, slots: dict, n: int = 0, exclude_sent: bool
     city, ci, co = slots.get("city"), slots.get("check_in"), slots.get("check_out")
     if not (ci and co):
         return [], "no_dates"
-    rows = [r for r in _cached_offers(city, ci, co) if r.get("price_usd_per_night") or r.get("price_raw")]
+    rows = [r for r in _cached_offers(city, ci, co) if priced(r)]
     if not rows:
         return [], ("none_dated" if city_has_listings(conn, city) else "no_listings")
     flags = store.catalogue_flags(conn)
@@ -101,9 +101,19 @@ def find_options(conn, chat_id: str, slots: dict, n: int = 0, exclude_sent: bool
         rows = fresh
     guests = slots.get("guests")
     beds = slots.get("bedrooms")
+    status = "ok"
     if guests:
+        # A home that sleeps the party; else one whose size isn't listed; else
+        # the biggest, said honestly (15 guests were sent homes for 6-8).
         fits = [r for r in rows if (capacity_guests(r.get("capacity")) or 0) >= guests]
-        rows = fits or rows
+        unknown = [r for r in rows if capacity_guests(r.get("capacity")) is None]
+        if fits:
+            rows = fits
+        elif unknown:
+            rows = unknown
+        else:
+            rows = sorted(rows, key=lambda r: -(capacity_guests(r.get("capacity")) or 0))[:n]
+            status = "too_small"
     if beds:
         fits = [r for r in rows if (capacity_bedrooms(r.get("capacity")) or 0) >= beds]
         rows = fits or rows
@@ -112,10 +122,22 @@ def find_options(conn, chat_id: str, slots: dict, n: int = 0, exclude_sent: bool
         per_night = budget / slots["nights"] if slots.get("budget_basis") == "total" and slots.get("nights") else budget
         within = [r for r in rows if r.get("price_usd_per_night") and r["price_usd_per_night"] <= per_night * 1.1]
         rows = within or sorted(rows, key=lambda r: r.get("price_usd_per_night") or 1e9)
+    if status == "too_small":
+        return rows[:n], status
     rows.sort(key=lambda r: (not flags.get(r["url"], {}).get("featured"),
                              not r.get("images"),
                              -_rating(r)))
-    return rows[:n], "ok"
+    return rows[:n], status
+
+
+def priced(r: dict) -> bool:
+    """A real price for the dates: USD per night, or a shown price with an
+    amount above zero ("Pay $0 today" is a payment plan, not a price)."""
+    if r.get("price_usd_per_night"):
+        return r["price_usd_per_night"] > 0
+    raw = r.get("price_raw") or ""
+    return any(float(x.replace(",", "")) > 0 for x in re.findall(r"\d[\d,]*(?:\.\d+)?", raw)) \
+        and not re.search(r"pay\s*\$?\s*0\b", raw, re.I)
 
 
 def compact_card(listing: dict, option: int = 1, of: int = 1) -> str:
@@ -137,7 +159,7 @@ def compact_card(listing: dict, option: int = 1, of: int = 1) -> str:
     if usd:
         due = amount_due(usd, nights)
         lines.append(f"💵 USD {usd:,.2f}/night" + (f" · USD {due:,.2f} {fee_label()}" if due else ""))
-    elif listing.get("price_raw"):
+    elif listing.get("price_raw") and priced(listing):
         lines.append(f"💵 {listing['price_raw']}")
     if listing.get("rating"):
         lines.append(f"⭐ {listing['rating']}")

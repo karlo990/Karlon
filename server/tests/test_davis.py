@@ -71,7 +71,7 @@ def _run(client, **params):
 
 
 def _davis(db, since=None):
-    rows = db.execute("SELECT * FROM messages WHERE chat_id=? AND sender LIKE 'Davis%' ORDER BY rowid",
+    rows = db.execute("SELECT * FROM messages WHERE chat_id=? AND sender LIKE 'Karl%' ORDER BY rowid",
                       (GUEST,)).fetchall()
     return [dict(r) for r in rows]
 
@@ -154,8 +154,8 @@ def test_full_booking_flow_live(dc, db):
     r = _run(dc)
     assert r["plan"]["stage"] == "present"
     msgs = _davis(db)[1:]
-    texts = [m for m in msgs if m["sender"] == "Davis"]
-    cards = [m for m in msgs if m["sender"] == "Davis (catalogue)" and m["kind"] == "text"]
+    texts = [m for m in msgs if m["sender"] == "Karl"]
+    cards = [m for m in msgs if m["sender"] == "Karl (catalogue)" and m["kind"] == "text"]
     photos = [m for m in msgs if m["kind"] == "image"]
     assert len(texts) == 1 and len(cards) == 3 and len(photos) == 9           # 3 options × 3 photos
     assert texts[0]["created_at"] < cards[0]["created_at"]                   # intro first
@@ -163,7 +163,7 @@ def test_full_booking_flow_live(dc, db):
     assert "KCER 103" not in " ".join(c["text"] for c in cards)              # sleeps 2: not for 4 people
     assert "airbnb" not in " ".join(m["text"] or "" for m in msgs).lower()
     sends = db.execute("SELECT * FROM house_sends WHERE chat_id=? ORDER BY option_no", (GUEST,)).fetchall()
-    assert [s["sent_by"] for s in sends] == ["Davis (catalogue)"] * 3 and all(s["offer_id"] for s in sends)
+    assert [s["sent_by"] for s in sends] == ["Karl (catalogue)"] * 3 and all(s["offer_id"] for s in sends)
 
     _guest(db, "I'll take option 2")
     r = _run(dc)
@@ -183,11 +183,11 @@ def test_full_booking_flow_live(dc, db):
     assert r["plan"]["stage"] == "invoice" and r["invoice_id"]
     inv = db.execute("SELECT * FROM invoices WHERE id=?", (r["invoice_id"],)).fetchone()
     assert (inv["guest_name"], inv["id_number"], inv["created_by"], inv["chat_id"]) == \
-        ("Lynford Takudzwa Tapfumaneyi", "63-1234567 X 42", "Davis", GUEST)
+        ("Lynford Takudzwa Tapfumaneyi", "63-1234567 X 42", "Karl", GUEST)
     assert inv["property_name"] == choice["ref"] and inv["rate"] == choice["usd_per_night"]
     assert (inv["check_in"], inv["check_out"], inv["status"]) == (CI.isoformat(), CO.isoformat(), "pending")
     terms = db.execute("SELECT * FROM messages WHERE chat_id=? AND kind='document'", (GUEST,)).fetchall()
-    assert len(terms) == 1 and terms[0]["wa_status"] == "documents" and terms[0]["sender"] == "Davis (documents)"
+    assert len(terms) == 1 and terms[0]["wa_status"] == "documents" and terms[0]["sender"] == "Karl (documents)"
 
     _guest(db, "I have paid, here is the proof")
     r = _run(dc)
@@ -262,7 +262,7 @@ def test_complaint_and_person_request_handled_by_davis(dc, db):
     _guest(db, "can I speak to a manager")
     _run(dc)
     text = _davis(db)[-1]["text"]
-    assert "Davis" in text and "everything" in text and "contact you" not in text
+    assert "Karl" in text and "everything" in text and "contact you" not in text
 
 
 def test_hidden_and_featured_houses(dc, db):
@@ -298,7 +298,7 @@ def test_shadow_mode_drafts_then_staff_approve(dc, db):
     assert ok.status_code == 200 and ok.json()["replied"]
     sent = _davis(db)
     assert sent[0]["text"] == "Here you go! Which KCER do you like?"
-    assert sum(1 for m in sent if m["sender"] == "Davis (catalogue)" and m["kind"] == "text") == 3
+    assert sum(1 for m in sent if m["sender"] == "Karl (catalogue)" and m["kind"] == "text") == 3
 
 
 # ─────────────────────────── live prices (refresh) ───────────────────────────
@@ -319,12 +319,12 @@ def test_no_prices_for_dates_requests_live_prices_then_sends(dc, db):
                                                      _house(8, ci=CI, co=CO, job=job["id"], usd=80.0)]})
     dc.post(f"/api/houses/refresh/{job['id']}/complete", json={"pushed": 2})
     for _ in range(50):                                   # the hook runs on the engine's loop
-        if any(m["sender"] == "Davis (catalogue)" for m in _davis(db)):
+        if any(m["sender"] == "Karl (catalogue)" for m in _davis(db)):
             break
         time.sleep(0.1)
     msgs = _davis(db)
-    assert sum(1 for m in msgs if m["sender"] == "Davis (catalogue)" and m["kind"] == "text") == 2
-    assert sum(1 for m in msgs if m["sender"] == "Davis") == 2          # "checking" + "here are": the turn's cap
+    assert sum(1 for m in msgs if m["sender"] == "Karl (catalogue)" and m["kind"] == "text") == 2
+    assert sum(1 for m in msgs if m["sender"] == "Karl") == 2          # "checking" + "here are": the turn's cap
     assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["stage"] == "present"
 
 
@@ -345,14 +345,14 @@ def test_houses_go_out_before_the_scraper_finishes(dc, db):
     dc.get("/api/houses/refresh/pending")                 # the scraper takes the job (in progress)
     dc.post("/api/houses/ingest", json={"listings": [_house(11, job=job), _house(12, job=job)]})
     time.sleep(0.5)
-    assert not any(m["sender"] == "Davis (catalogue)" for m in _davis(db))   # 2 < EARLY_PRESENT: wait
+    assert not any(m["sender"] == "Karl (catalogue)" for m in _davis(db))   # 2 < EARLY_PRESENT: wait
     dc.post("/api/houses/ingest", json={"listings": [_house(13, job=job, usd=95.0)]})
-    assert _wait(lambda: sum(m["sender"] == "Davis (catalogue)" and m["kind"] == "text" for m in _davis(db)) == 3)
+    assert _wait(lambda: sum(m["sender"] == "Karl (catalogue)" and m["kind"] == "text" for m in _davis(db)) == 3)
     assert dc.get(f"/api/houses/refresh/{job}").json()["status"] == "in_progress"
     assert dc.get(f"/api/davis/sessions/{GUEST}").json()["session"]["stage"] == "present"
     dc.post(f"/api/houses/refresh/{job}/complete", json={"pushed": 3})
     time.sleep(0.3)
-    assert sum(m["sender"] == "Davis" for m in _davis(db)) == 2           # nothing repeated at completion
+    assert sum(m["sender"] == "Karl" for m in _davis(db)) == 2           # nothing repeated at completion
 
 
 def test_late_prices_are_requested_again_then_other_dates_offered(dc, db):
@@ -367,7 +367,7 @@ def test_late_prices_are_requested_again_then_other_dates_offered(dc, db):
     r = _run(dc, trigger="refresh_timeout")              # still nothing: the guest hears it plainly
     text = _davis(db)[-1]["text"]
     assert r["plan"]["stage"] == "qualify" and "couldn't get live prices" in text and "team" not in text.lower()
-    assert sum(m["sender"] == "Davis" for m in _davis(db)) == 2           # "checking" + the outcome
+    assert sum(m["sender"] == "Karl" for m in _davis(db)) == 2           # "checking" + the outcome
 
 
 def test_quiet_guest_gets_one_followup(dc, db):
@@ -486,7 +486,7 @@ def test_model_down_falls_back_and_breaker_opens(dc, db, monkeypatch):
         _guest(db, "Hi")
         _run(dc)
         assert "city" in _davis(db)[-1]["text"].lower()               # the persona's line still goes out
-        db.execute("DELETE FROM messages WHERE sender LIKE 'Davis%'")
+        db.execute("DELETE FROM messages WHERE sender LIKE 'Karl%'")
         db.execute("UPDATE davis_sessions SET last_inbound_id=NULL")
         db.commit()
     st = dc.get("/api/davis/status").json()
@@ -580,7 +580,7 @@ def test_ecocash_number_is_given_and_no_other(dc, db, monkeypatch):
     for t in ("KCER 102", "Leon Moyo 63-1234567 X 42"):
         _guest(db, t)
         r = _run(dc)
-    sent = [m["text"] for m in _davis(db) if m["sender"] == "Davis"]
+    sent = [m["text"] for m in _davis(db) if m["sender"] == "Karl"]
     assert r["plan"]["stage"] == "invoice" and "EcoCash 0780563561 (Karl Muzunze)" in sent[-1]
     _guest(db, "where do I pay?")
     _run(dc)
@@ -792,7 +792,8 @@ def test_persona_lines_fit_the_word_limit():
                   summary="KCER 1234, 28 Dec–2 Jan, USD 6,252.50 total", money="USD 6,252.50",
                   total_word=" total", start="28 Dec",
                   notes="KCER 1234 has wifi, pool, solar backup; KCER 1235 has wifi, borehole",
-                  next="Please send your full name and ID number for the invoice.")
+                  next="Please send your full name and ID number for the invoice.",
+                  refs="KCER 1234 and KCER 1235", guests=15, most=8)
     for key in persona.LINES:
         assert _words(persona.line(key, **sample)) <= 40, key
 
@@ -820,7 +821,7 @@ def test_dashboard_is_locked_by_the_karlon_password(dc, db, monkeypatch):
     _setup(dc, db)
     del dc.headers["X-Davis-Token"]
     page = dc.get("/davis")
-    assert page.status_code == 200 and 'class="locked"' in page.text and "Davis is locked" in page.text
+    assert page.status_code == 200 and 'class="locked"' in page.text and "Karl is locked" in page.text
     for path in ("/api/davis/status", "/api/davis/sessions", "/api/davis/drafts", "/api/davis/events",
                  f"/api/davis/sessions/{GUEST}", "/api/davis/catalogue"):
         assert dc.get(path).status_code == 401, path                 # no guest data without the password

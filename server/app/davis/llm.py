@@ -127,7 +127,7 @@ class WorkerProvider(_HTTPProvider):
         body = {"calls": [{"call_id": "davis", "messages": self._messages(msgs, schema),
                            "options": {"temperature": 0.2, "num_predict": 120},
                            "deadline_sec": config.LLM_TIMEOUT_SEC,
-                           "context_meta": {"role_label": "Davis"}}]}
+                           "context_meta": {"role_label": "Karl"}}]}
         data = await self._post(self.url, body, {"X-API-Key": config.WORKER_KEY} if config.WORKER_KEY else {})
         res = (data.get("results") or [{}])[0]
         if res.get("error") or res.get("timed_out"):
@@ -149,6 +149,52 @@ class OllamaProvider(_HTTPProvider):
         return _parse_json((data.get("message") or {}).get("content", "")), {"model": self.model}
 
 
+class ClaudeProvider:
+    """Claude through the Anthropic API. JSON comes back in the schema asked
+    for (structured outputs); the system prompt is cached, so only each
+    turn's conversation is new input."""
+    name = "claude"
+
+    def __init__(self, model: str) -> None:
+        self.model = model if (model or "").startswith("claude") else config.KARL_MODEL
+        self._client = None
+
+    def client(self):
+        if self._client is None:
+            import anthropic
+            self._client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY, max_retries=2,
+                                                    timeout=config.KARL_TIMEOUT_SEC)
+        return self._client
+
+    async def complete(self, msgs: list[dict], schema: dict) -> tuple[dict, dict]:
+        import anthropic
+        if not config.ANTHROPIC_API_KEY:
+            raise LLMError("no ANTHROPIC_API_KEY")
+        system, rest = msgs[0]["content"], msgs[1:]
+        try:
+            r = await self.client().messages.create(
+                model=self.model, max_tokens=config.KARL_MAX_TOKENS,
+                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                messages=rest,
+                output_config={"effort": config.KARL_EFFORT, "format": {"type": "json_schema", "schema": schema}})
+        except anthropic.RateLimitError:
+            raise LLMError("claude: rate limited")
+        except anthropic.AuthenticationError:
+            raise LLMError("claude: bad ANTHROPIC_API_KEY")
+        except anthropic.APIStatusError as e:
+            raise LLMError(f"claude: {e.status_code} {getattr(e, 'message', '')}"[:200])
+        except anthropic.APIConnectionError:
+            raise LLMError("claude: connection")
+        if r.stop_reason == "refusal":
+            raise LLMError("claude: refused")
+        if r.stop_reason == "max_tokens":
+            raise LLMError("claude: ran out of tokens")
+        text = next((b.text for b in r.content if b.type == "text"), "")
+        u = r.usage
+        return _parse_json(text), {"model": self.model, "prompt_tokens": u.input_tokens, "output_tokens": u.output_tokens,
+                                   "cache_read_tokens": getattr(u, "cache_read_input_tokens", None)}
+
+
 class Router:
     """Picks the configured provider, applies breaker + cache, never raises:
     returns (result or None, info) and the caller falls back to rules."""
@@ -168,6 +214,8 @@ class Router:
                 self._providers[key] = WorkerProvider()
             elif name == "ollama":
                 self._providers[key] = OllamaProvider(model)
+            elif name == "claude":
+                self._providers[key] = ClaudeProvider(model)
             else:
                 raise LLMError(f"unknown provider {name}")
         return self._providers[key]
@@ -175,8 +223,13 @@ class Router:
     def breaker(self, name: str) -> Breaker:
         return self.breakers.setdefault(name, Breaker())
 
-    async def complete(self, settings: dict, user: str) -> tuple[Optional[dict], dict]:
+    async def complete(self, settings: dict, user: Optional[str], msgs: Optional[list[dict]] = None,
+                       schema: Optional[dict] = None) -> tuple[Optional[dict], dict]:
+        """user: one turn for prompts.messages (the local persona prompt); or
+        msgs + schema built by the caller (mind.py, for Claude)."""
         name = settings.get("provider") or "rules"
+        msgs = msgs or prompts.messages(user or "")
+        schema = schema or prompts.SCHEMA
         info: dict = {"provider": name}
         if name == "rules":
             return None, info
@@ -185,7 +238,8 @@ class Router:
             self.stats["breaker_skips"] += 1
             info["skipped"] = "breaker_open"
             return None, info
-        key = hashlib.sha256(f"{name}|{settings.get('model')}|{user}".encode()).hexdigest()
+        key = hashlib.sha256(f"{name}|{settings.get('model')}|{json.dumps(msgs, sort_keys=True)}|"
+                             f"{json.dumps(schema, sort_keys=True)}".encode()).hexdigest()
         hit = self._cache.get(key)
         if hit and time.monotonic() - hit[0] < max(config.CACHE_TTL_SEC, 300):
             self.stats["cache_hits"] += 1
@@ -194,8 +248,8 @@ class Router:
         self.stats["calls"] += 1
         try:
             p = self._provider(name, settings.get("model") or config.OLLAMA_MODEL)
-            out, meta = await asyncio.wait_for(p.complete(prompts.messages(user), prompts.SCHEMA),
-                                               timeout=config.LLM_TIMEOUT_SEC + 5)
+            limit = config.KARL_TIMEOUT_SEC if name == "claude" else config.LLM_TIMEOUT_SEC
+            out, meta = await asyncio.wait_for(p.complete(msgs, schema), timeout=limit + 5)
         except (LLMError, asyncio.TimeoutError, Exception) as e:     # never let a provider break a chat
             br.fail()
             self.stats["errors"] += 1

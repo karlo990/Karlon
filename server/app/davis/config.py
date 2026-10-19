@@ -1,4 +1,5 @@
-"""davis/config.py — Davis's knobs. Env vars give the defaults; the dashboard
+"""davis/config.py — Karl's knobs (the assistant was called Davis; the
+package and the /api/davis URLs keep that name so nothing that calls them breaks). Env vars give the defaults; the dashboard
 can change mode / provider / model at runtime (stored in davis_settings, so a
 change survives a restart until the Space rebuild wipes the DB)."""
 
@@ -28,16 +29,32 @@ MODE = os.environ.get("DAVIS_MODE", "shadow").strip().lower()
 if MODE not in MODES:
     MODE = "shadow"
 
+# claude — Claude through the Anthropic API (ANTHROPIC_API_KEY): reads the whole
+#          conversation into the booking state and writes every reply. The
+#          default whenever the key is set; the others stay as fallbacks.
 # local  — a small instruct model run in this server process with llama.cpp
 #          (GGUF file, CPU). No API, no key, nothing leaves the Space.
 # ollama — an Ollama server's /api/chat (e.g. on a PC with a GPU).
 # worker — the Conscious Worker Space (/api/jarvis/conscious, phi4-mini).
 # rules  — no model: the persona's fixed lines. Always available, and the
 #          fallback whenever a model is slow, down or its reply fails the guard.
-PROVIDERS = ("local", "ollama", "worker", "rules")
-PROVIDER = os.environ.get("DAVIS_PROVIDER", "local").strip().lower()
+PROVIDERS = ("claude", "local", "ollama", "worker", "rules")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+PROVIDER = (os.environ.get("KARL_PROVIDER") or os.environ.get("DAVIS_PROVIDER")
+            or ("claude" if ANTHROPIC_API_KEY else "local")).strip().lower()
 if PROVIDER not in PROVIDERS:
-    PROVIDER = "local"
+    PROVIDER = "claude" if ANTHROPIC_API_KEY else "local"
+
+# Claude (provider "claude"). Two calls per guest turn: one reads the chat into
+# the booking state (understand), one writes the reply. Effort low: these are
+# short, frequent turns; the model still thinks before it answers.
+KARL_MODEL = os.environ.get("KARL_MODEL", "claude-opus-5-5")
+KARL_EFFORT = os.environ.get("KARL_EFFORT", "low") if os.environ.get("KARL_EFFORT", "low") in (
+    "low", "medium", "high", "xhigh", "max") else "low"
+KARL_MAX_TOKENS = _int("KARL_MAX_TOKENS", 8000, 1024)
+KARL_TIMEOUT_SEC = _float("KARL_TIMEOUT_SEC", 60.0, 10.0)
+KARL_TRANSCRIPT = _int("KARL_TRANSCRIPT", 40, 8)            # messages of the chat Karl reads every turn
+KARL_MAX_WORDS = _int("KARL_MAX_WORDS", 60, 20)             # a Claude reply may answer a few questions at once
 
 # The local model. Default: Qwen2.5 1.5B Instruct, 4-bit (about 1.1 GB, ~2 GB
 # RAM). On a 2-vCPU Space a reply takes roughly 6-12 s; 3B models write
@@ -68,6 +85,7 @@ MAX_REPLIES_PER_TURN = _int("DAVIS_MAX_REPLIES_PER_TURN", 2, 1)  # then wait for
 SERVICE_FEE_PCT = _float("DAVIS_SERVICE_FEE_PCT", 15.0)
 OPTIONS_PER_SEND = _int("DAVIS_OPTIONS_PER_SEND", 3, 1)
 IMAGES_PER_OPTION = _int("DAVIS_IMAGES_PER_OPTION", 3, 1)
+IMAGES_PER_PHOTO_REQUEST = _int("DAVIS_IMAGES_PER_PHOTO_REQUEST", 8, 1)   # "send pics": more than the card had
 
 # ── when Davis stays quiet ─────────────────────────────────────────────────
 DEBOUNCE_SEC = _float("DAVIS_DEBOUNCE_SEC", 5.0)            # let the guest finish typing (speed to lead)
@@ -117,9 +135,11 @@ ONLY_CHATS = [c.strip() for c in os.environ.get("DAVIS_ONLY_CHATS", "").split(",
 ADMIN_TOKEN = os.environ.get("DAVIS_ADMIN_TOKEN", "")
 
 # Sender names on what Davis queues. Every one starts with "Davis", which is
-# how Davis tells its own messages from staff replies.
-SENDER = "Davis"
-SENDER_CATALOGUE = "Davis (catalogue)"
-SENDER_DOCUMENTS = "Davis (documents)"
+# how Karl tells its own messages from staff replies ("Front Desk", the
+# owner's phone). Messages from before the rename say "Davis": still Karl's.
+NAME = "Karl"
+SENDER = "Karl"
+SENDER_CATALOGUE = "Karl (catalogue)"
+SENDER_DOCUMENTS = "Karl (documents)"
 
 from .persona import BRAND  # noqa: E402

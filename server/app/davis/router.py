@@ -220,6 +220,8 @@ def _status() -> dict:
                    "refresh_timeout_minutes": config.REFRESH_TIMEOUT_MINUTES,
                    "followup_hours": config.FOLLOWUP_HOURS, "followup_max": config.FOLLOWUP_MAX},
         "local_model": local_model.status(), "lock_configured": bool(_secrets()),
+        "claude": {"configured": bool(config.ANTHROPIC_API_KEY), "model": config.KARL_MODEL,
+                   "effort": config.KARL_EFFORT, "max_words": config.KARL_MAX_WORDS},
         "modes": config.MODES, "providers": config.PROVIDERS,
     }
 

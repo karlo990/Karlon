@@ -32,7 +32,7 @@ from ..config import DISPLAY_TZ_OFFSET_MINUTES
 from ..database import get_db
 from ..models import HouseRefreshRequestIn, InvoiceCreateIn, serialize_message
 from ..ws_manager import manager
-from . import catalogue, config, gate, llm, nlu, policy, prompts, skills, store
+from . import catalogue, config, gate, llm, mind, nlu, policy, prompts, skills, store
 
 
 def _pct(values, p: float) -> Optional[int]:
@@ -369,6 +369,10 @@ class Engine:
             settings = store.get_settings(conn)
             if force and settings["mode"] == "off":
                 settings = {**settings, "mode": "shadow"}
+            if settings.get("provider") == "claude" and not config.ANTHROPIC_API_KEY:
+                # Claude chosen but no key on this Space: the rules answer at
+                # once instead of every reply waiting on retries.
+                settings = {**settings, "provider": "rules"}
             ctx = self._context(conn, chat_id, settings)
             if not ctx:
                 return {"status": "skipped", "reason": "no_such_chat"}
@@ -391,9 +395,10 @@ class Engine:
                            and m.get("kind", "text") == "text" and m.get("text")]
                 session["slots"] = policy.seed_slots(history, today, places)
             # Dates the team already agreed in the chat ("let me use 21 to 22") count too.
+            # Not the dates printed on house cards: those say when a house is free.
             month = nlu.last_month(context)
             for m in recent:
-                if m.get("direction") == "out":
+                if m.get("direction") == "out" and not _is_card(m.get("text")):
                     f = nlu.extract(m["text"], today, places, month)
                     if f.get("check_in") and f.get("check_out") and not feats.get("check_in"):
                         session["slots"] = nlu.merge_slots(session.get("slots") or {},
@@ -419,12 +424,21 @@ class Engine:
                 "features": {k: v for k, v in feats.items() if v and k not in ("texts", "words", "empty")}}, log=True)
 
             ctx["offers"] = catalogue.offered(conn, chat_id)
+            # Guest messages no pass answered (a staff reply came first) still
+            # count: "4november" sent before the team's reply is not lost.
+            missed = self._missed_guest_texts(msgs, prev_inbound, {m["id"] for m in guest_turn})
+            for t in missed:
+                f = nlu.extract(t, today, places, month)
+                session["slots"] = nlu.merge_slots(session.get("slots") or {},
+                                                   {k: v for k, v in f.items() if k in nlu.SLOT_KEYS})
             ctx["session"] = session
+            if settings.get("provider") == "claude":
+                feats = await self._understand(ctx, feats, today, places, settings)
             cat = _Cat(conn, chat_id)
             plan_ = policy.plan(ctx, feats, cat, trigger=trigger)
             plan_["trigger"] = trigger
             plan_ = await self._phrase(ctx, feats, plan_, cat, settings)
-            plan_["actions"] = self._cap(plan_["actions"], msgs)
+            plan_["actions"] = self._cap(plan_["actions"], msgs, plan_.get("intent") or "")
             plan_["inbound_id"] = latest_in["id"] if latest_in else None
             plan_["guest_text"] = " / ".join(texts)[:300]
 
@@ -470,6 +484,39 @@ class Engine:
         finally:
             conn.close()
 
+    @staticmethod
+    def _missed_guest_texts(msgs: list[dict], last_id: Optional[str], turn_ids: set) -> list[str]:
+        if not last_id:
+            return []
+        i = next((k for k, m in enumerate(msgs) if m.get("id") == last_id), None)
+        if i is None:
+            return []
+        return [m["text"] for m in msgs[i + 1:] if m.get("direction") == "in" and m["id"] not in turn_ids
+                and m.get("kind", "text") == "text" and m.get("text")][-8:]
+
+    async def _understand(self, ctx: dict, feats: dict, today, places: dict, settings: dict) -> dict:
+        """Karl reads the whole recent conversation into the booking state
+        (mind.understand_messages); the checked result is merged over the
+        rules' reading of the newest messages. If the model can't answer,
+        the rules' reading stands on its own."""
+        msgs = mind.understand_messages(ctx["messages"], ctx["session"].get("slots") or {}, ctx["offers"], today,
+                                        DISPLAY_TZ_OFFSET_MINUTES)
+        out, info = await self.router.complete(settings, None, msgs=msgs, schema=mind.UNDERSTAND_SCHEMA)
+        if info.get("latency_ms") and not info.get("cache_hit"):
+            self.metrics.llm_ms.append(info["latency_ms"])
+        if not out:
+            self.metrics.counters["understand_failed"] += 1
+            await self.emit(ctx["chat_id"], "understand", {"error": info.get("error") or info.get("skipped")})
+            return feats
+        mf = mind.to_features(out, today, places, ctx["offers"])
+        self.metrics.counters["understood"] += 1
+        await self.emit(ctx["chat_id"], "understand", {
+            "need": mf.get("latest_need"), "questions": mf.get("open_questions"),
+            "state": {k: mf[k] for k in ("city", "check_in", "check_out", "guests", "budget_usd", "option_ref",
+                                         "full_name", "long_term", "photos_for") if mf.get(k)},
+            "latency_ms": info.get("latency_ms")})
+        return mind.merge(feats, mf)
+
     async def _phrase(self, ctx: dict, feats: dict, plan_: dict, cat: _Cat, settings: dict) -> dict:
         """The model writes the reply. In "ai" mode (the default) it writes every
         reply itself from the conversation and the plan's key points; a reply
@@ -487,18 +534,27 @@ class Engine:
             use_model = False          # no team note covers the question: the team answers (no model wait)
         draft = reply["text"] if reply else None
         feedback = ""
+        claude = settings.get("provider") == "claude"
+        limit = config.KARL_MAX_WORDS if claude else config.MAX_WORDS
         for attempt in range(2 if (use_model and ai_only) else (1 if use_model else 0)):
-            user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat(), feedback)
-            out, info = await self.router.complete(settings, user)
+            if claude:
+                msgs = mind.reply_messages(ctx["chat_name"], ctx["messages"], plan_, feats, self._today(), limit,
+                                           feedback, DISPLAY_TZ_OFFSET_MINUTES)
+                out, info = await self.router.complete(settings, None, msgs=msgs, schema=mind.REPLY_SCHEMA)
+            else:
+                user = prompts.user_turn(ctx["chat_name"], ctx["messages"], plan_, self._today().isoformat(), feedback)
+                out, info = await self.router.complete(settings, user)
             plan_["llm"] = {k: info.get(k) for k in ("provider", "model", "latency_ms", "cache_hit", "error",
                                                        "skipped", "prompt_tokens", "output_tokens",
                                                        "tokens_per_s", "queued_s") if info.get(k) is not None}
             if info.get("latency_ms") and not info.get("cache_hit"):
                 self.metrics.llm_ms.append(info["latency_ms"])
             if out:
-                text = nlu.clip_words(str(out.get("reply") or "").strip(), config.MAX_WORDS)
+                text = nlu.clip_words(str(out.get("reply") or "").strip(), limit)
                 problem = policy.check_reply(text, plan_["facts"], draft, keep_draft=not open_q and not ai_only,
-                                             keep_numbers=ai_only and not open_q)
+                                             keep_numbers=ai_only and not open_q, max_words=limit)
+                if not problem and _repeats(text, ctx["messages"]):
+                    problem = "repeats_an_earlier_message"
                 if not problem and ai_only:
                     missed = [m for m in prompts.must_include(draft) if not prompts.covers(text, m)]
                     if missed:
@@ -508,16 +564,18 @@ class Engine:
                     problem = "answer_not_grounded_in_note"
                 if problem:
                     self.router.stats["rejected"] += 1
+                    reply["max_words"] = limit
                     plan_["llm"]["rejected"] = problem
                     feedback = problem
                 else:
                     reply["text"] = text
                     reply["by"] = "model"
+                    reply["max_words"] = limit
                     plan_["llm"].pop("rejected", None)
                 if reply.get("by") == "model":
                     break
             elif "ran out of tokens" in str(info.get("error") or ""):
-                feedback = f"too long: at most {config.MAX_WORDS} words"   # a shorter try can work
+                feedback = f"too long: at most {limit} words"   # a shorter try can work
             else:
                 break                                   # model down / skipped: no point retrying now
         if ai_only and use_model and reply is not None and reply.get("by") != "model":
@@ -526,11 +584,18 @@ class Engine:
         return plan_
 
     @staticmethod
-    def _cap(actions: list[dict], msgs: list[dict]) -> list[dict]:
+    def _cap(actions: list[dict], msgs: list[dict], intent: str = "") -> list[dict]:
+        """At most MAX_REPLIES_PER_TURN replies per guest turn, and never the
+        same booking question twice in a row (the chats showed the same
+        greeting twice in a minute and "How many nights?" four times): a
+        repeated ask becomes "Sorry, I didn't catch that" + the ask, and is
+        dropped if even that was said already."""
         left = max(0, config.MAX_REPLIES_PER_TURN - gate.davis_replies_this_turn(msgs))
         out = []
         for a in actions:
             if a["type"] == "reply":
+                if a.get("text") and not any(x["type"] == "send_options" for x in actions):
+                    a["text"] = _dedupe(a["text"], msgs, intent) or ""
                 if left <= 0 or not a.get("text", "").strip():
                     continue
                 left -= 1
@@ -560,7 +625,8 @@ class Engine:
                     conn.execute(
                         "INSERT INTO messages (id, chat_id, sender, kind, text, poll_id, created_at, direction, "
                         "wa_status) VALUES (?, ?, ?, 'text', ?, NULL, ?, 'out', 'pending')",
-                        (mid, chat_id, config.SENDER, nlu.clip_words(a["text"], config.MAX_WORDS), t.isoformat()))
+                        (mid, chat_id, config.SENDER, nlu.clip_words(a["text"], a.get("max_words") or config.MAX_WORDS),
+                         t.isoformat()))
                     conn.commit()
                     new_ids.append(mid)
                     t += timedelta(milliseconds=50)
@@ -572,7 +638,8 @@ class Engine:
                     opts = a["options"]
                     ids = houses.queue_listings(conn, chat_id, [o["url"] for o in opts],
                                                 [o.get("offer_id") for o in opts], sender=config.SENDER_CATALOGUE,
-                                                max_images=config.IMAGES_PER_OPTION, builder=catalogue.compact_card,
+                                                max_images=a.get("max_images") or config.IMAGES_PER_OPTION,
+                                                builder=catalogue.compact_card,
                                                 start=t)
                     new_ids += ids
                     t += timedelta(seconds=len(opts) + 1)
@@ -652,6 +719,41 @@ class Engine:
             conn.close()
         await self.emit(d["chat_id"], "draft_sent", {"draft_id": draft_id, **done})
         return {"ok": True, **done}
+
+
+def _norm(text: Optional[str]) -> str:
+    return " ".join("".join(ch for ch in (text or "").lower() if ch.isalnum() or ch.isspace()).split())
+
+
+def _repeats(text: str, msgs: list[dict], last: int = 6) -> bool:
+    """The same words as one of Karl's last few text replies in this chat."""
+    mine = [m for m in msgs if m.get("direction") == "out" and gate.is_reply_sender(m.get("sender"))
+            and m.get("kind", "text") == "text"][-last:]
+    n = _norm(text)
+    return bool(n) and any(_norm(m.get("text")) == n for m in mine)
+
+
+# Booking asks that can come out word for word again; answers to complaints
+# and open questions may repeat (the guest asked again).
+_REPEAT_SENSITIVE = {"qualify", "present", "searching", "collect_details", "followup", "invoice", "price", "faq",
+                     "payment_info", "location", "photos"}
+
+
+def _dedupe(text: str, msgs: list[dict], intent: str) -> Optional[str]:
+    if intent not in _REPEAT_SENSITIVE or not _repeats(text, msgs):
+        return text
+    import re
+    from .persona import line as L
+    t = re.sub(r"^Hello[^!]{0,40}! I'm Karl from [^🏡]*🏡\s*", "", text).strip()   # never greet twice
+    if t == text.strip() or _repeats(t, msgs):
+        t = L("not_caught") + t
+    return None if _repeats(t, msgs) else t
+
+
+def _is_card(text: Optional[str]) -> bool:
+    """A house card (ours or the team's): its dates are when the house is free."""
+    t = (text or "").lower()
+    return "kcer" in t and ("📅" in (text or "") or "💵" in (text or "") or "free " in t)
 
 
 def _brief(a: dict) -> dict:

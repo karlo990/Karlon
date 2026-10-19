@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Davis · KarlCon Elite Retreats</title>
+<title>Karl · KarlCon Elite Retreats</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -186,7 +186,7 @@ body.locked #lock{display:flex}
 <div id="lock" role="dialog" aria-modal="true" aria-labelledby="lockTitle">
   <form id="lockForm" autocomplete="on">
     <div class="logo">D</div>
-    <h2 id="lockTitle">Davis is locked</h2>
+    <h2 id="lockTitle">Karl is locked</h2>
     <p id="lockMsg">Enter the Karlon password to open the dashboard.</p>
     <input type="password" id="lockPw" name="password" autocomplete="current-password" placeholder="Karlon password" required>
     <button class="btn gold" type="submit" id="lockBtn">Unlock</button>
@@ -196,7 +196,7 @@ body.locked #lock{display:flex}
 <header>
   <div class="brand">
     <div class="logo">D</div>
-    <div><h1>Davis</h1><small>KarlCon Elite Retreats · reception &amp; booking assistant</small></div>
+    <div><h1>Karl</h1><small>KarlCon Elite Retreats · reception &amp; booking assistant</small></div>
   </div>
   <div class="controls">
     <div class="seg" id="modeSeg" role="group" aria-label="Mode">
@@ -258,7 +258,7 @@ body.locked #lock{display:flex}
     <!-- right -->
     <section class="feedcol" style="display:flex;flex-direction:column;gap:12px">
       <div class="panel try">
-        <div class="ph"><h2>Try Davis</h2><span class="chip">nothing is sent</span></div>
+        <div class="ph"><h2>Try Karl</h2><span class="chip">nothing is sent</span></div>
         <div class="pb">
           <textarea id="tryText" placeholder="e.g. Hi, a house in Borrowdale 11–14 Dec for 4 people, budget $150 a night"></textarea>
           <div class="row" style="margin-top:6px;justify-content:space-between">
@@ -309,7 +309,7 @@ function renderStatus(){
   const st = s.settings, m = s.metrics, c = m.counters || {};
   document.querySelectorAll("#modeSeg button").forEach(b => b.classList.toggle("on", b.dataset.mode === st.mode));
   const prov = $("#provider");
-  if (!prov.options.length) s.providers.forEach(p => prov.add(new Option(p === "local" ? "Local model" :
+  if (!prov.options.length) s.providers.forEach(p => prov.add(new Option(p === "claude" ? "Claude (reads the whole chat)" : p === "local" ? "Local model" :
     p === "worker" ? "Conscious Worker" : p === "ollama" ? "Ollama" : "Rules only", p)));
   if (document.activeElement !== prov) prov.value = st.provider;
   if (document.activeElement !== $("#model")) $("#model").value = st.model;
@@ -325,7 +325,7 @@ function renderStatus(){
     ["Invoices", c.invoices || 0], ["Follow-ups", c.followups || 0],
     ["Speed to lead", lat(m.speed_to_lead_s, "s")], ["Pipeline", lat(m.pipeline_ms, "ms")],
     ["Model", lat(m.llm_ms, "ms")],
-    ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : st.provider === "local" ? "model " + esc(s.local_model.state) : (s.llm.stats.errors||0) + " err"}</span>`],
+    ["Provider", `${esc(st.provider)} <span>${br && br.open ? "breaker OPEN" : st.provider === "local" ? "model " + esc(s.local_model.state) : st.provider === "claude" && s.claude && !s.claude.configured ? "no ANTHROPIC_API_KEY: rules answer" : (s.llm.stats.errors||0) + " err"}</span>`],
   ];
   $("#kpis").innerHTML = kp.map(([l, v]) => `<div class="kpi"><label>${l}</label><b>${v}</b></div>`).join("");
   const f = s.funnel, top = Math.max(1, ...STAGES.map(k => f[k] || 0));
@@ -355,7 +355,7 @@ function renderSessions(){
       <div class="top"><span class="name">${esc(s.chat_name || s.chat_id)}</span><span class="when">${ago(s.last_at)}</span></div>
       <div class="last">${s.last_direction === "out" ? "↳ " : ""}${esc(s.last_text)}</div>
       <div class="chips"><span class="chip st">${esc(STAGE_LABEL[s.stage] || s.stage)}</span>${flags.join("")}</div></div></div>`;
-  }).join("") : `<div class="empty-note">No conversations yet.<br>Davis starts a session when a guest writes.</div>`;
+  }).join("") : `<div class="empty-note">No conversations yet.<br>Karl starts a session when a guest writes.</div>`;
 }
 
 /* ── conversation detail ───────────────────────────────────────── */
@@ -365,9 +365,9 @@ function bubble(m){
   if (m.kind === "image") return {img: m.media_url, out: m.direction === "out"};
   if (m.direction === "in") return `<div class="msg in">${t}${time}</div>`;
   if (m.kind === "document") return `<div class="msg doc">📄 ${t}${time}</div>`;
-  if (sender === "Davis"){ const w = words(m.text);
+  if (sender === "Karl" || sender === "Davis"){ const w = words(m.text);
     return `<div class="msg davis"><span class="wc ${w > 40 ? "over" : ""}">${w}w</span>${t}${time}</div>`; }
-  if (sender.startsWith("Davis")) return `<div class="msg cat">${t}${time}</div>`;
+  if (sender.startsWith("Davis") || sender.startsWith("Karl (")) return `<div class="msg cat">${t}${time}</div>`;
   return `<div class="msg staff">${t}${time}</div>`;
 }
 function renderThread(msgs){
@@ -400,20 +400,20 @@ const SLOTS = [["city","City"],["check_in","Check-in"],["check_out","Check-out"]
   ["budget_usd","Budget USD"],["full_name","Full name"],["id_number","ID / passport"]];
 function renderDetail(){
   const box = $("#tab-chat"), d = state.detail;
-  if (!d){ box.innerHTML = `<div class="empty-note">Pick a conversation to see what Davis knows and plans.</div>`; return; }
+  if (!d){ box.innerHTML = `<div class="empty-note">Pick a conversation to see what Karl knows and plans.</div>`; return; }
   const s = d.session, slots = s.slots || {};
   const pending = (d.drafts || []).filter(x => x.status === "pending");
   box.innerHTML = `
     <div class="ph"><div class="row"><div class="av">${esc(initials(d.chat.name))}</div>
       <div><b>${esc(d.chat.name)}</b><div class="chips"><span class="chip st">${esc(STAGE_LABEL[s.stage] || s.stage)}</span>
-      ${s.handoff ? `<span class="chip err">taken over: Davis muted</span>` : ""}
+      ${s.handoff ? `<span class="chip err">taken over: Karl muted</span>` : ""}
       ${s.paused ? `<span class="chip err">paused</span>` : ""}${s.opted_out ? `<span class="chip err">opted out</span>` : ""}
       ${s.refresh_job_id ? `<span class="chip vio">fetching live homes · request #${s.refresh_job_id}</span>` : ""}
       ${s.followups ? `<span class="chip">followed up</span>` : ""}</div></div></div>
       <div class="row">
         <button class="btn sm" data-act="run">Run now</button>
         <button class="btn sm" data-act="pause">${s.paused ? "Resume" : "Pause"}</button>
-        <button class="btn sm" data-act="handoff" title="Mute Davis in this chat while you handle it">${s.handoff ? "Give back to Davis" : "Take over"}</button>
+        <button class="btn sm" data-act="handoff" title="Mute Karl in this chat while you handle it">${s.handoff ? "Give back to Karl" : "Take over"}</button>
         <button class="btn sm danger" data-act="reset">Reset</button>
       </div></div>
     ${pending.length ? `<div class="sec"><h3>Waiting for approval</h3>${pending.map(draftCard).join("")}</div>` : ""}
@@ -424,14 +424,14 @@ function renderDetail(){
       <div class="slot ${s.invoice_id ? "" : "empty"}"><label>Invoice</label><div>${s.invoice_id ? "created" : "—"}</div></div></div></div>
     ${d.offers.length ? `<div class="sec"><h3>Houses sent to this guest</h3><div class="row">${d.offers.map(o =>
       `<span class="chip st">#${o.option_no || "?"} ${esc(o.ref)} · ${esc(o.place || "")}${o.usd_per_night ? " · USD " + o.usd_per_night : ""}</span>`).join("")}</div></div>` : ""}
-    <div class="sec"><h3>Davis's decisions</h3>${(d.events || []).slice(0, 14).map(evRow).join("") || `<div class="empty-note">No events yet.</div>`}</div>`;
+    <div class="sec"><h3>Karl's decisions</h3>${(d.events || []).slice(0, 14).map(evRow).join("") || `<div class="empty-note">No events yet.</div>`}</div>`;
   const th = $("#thread"); if (th) th.scrollTop = th.scrollHeight;
 }
 
 /* ── drafts tab ────────────────────────────────────────────────── */
 function renderDrafts(){
   $("#tab-drafts").innerHTML = state.drafts.length ? `<div class="pb">${state.drafts.map(draftCard).join("")}</div>`
-    : `<div class="empty-note">No drafts waiting.${state.status && state.status.settings.mode === "shadow" ? "" : "<br>Drafts appear in SHADOW mode: Davis writes, you approve."}</div>`;
+    : `<div class="empty-note">No drafts waiting.${state.status && state.status.settings.mode === "shadow" ? "" : "<br>Drafts appear in SHADOW mode: Karl writes, you approve."}</div>`;
 }
 
 /* ── catalogue tab ─────────────────────────────────────────────── */
@@ -439,7 +439,7 @@ async function loadRequests(){
   try { state.reqs = (await api("/api/davis/requests?limit=12")).requests; } catch (x) { return; }
   const icon = {pending: "⏳", in_progress: "🔎", done: "✅", error: "⚠️"};
   $("#reqList").innerHTML = state.reqs.length ? state.reqs.map(r => `<div>${icon[r.status] || "·"} #${r.id} ${esc(r.location)} ${esc(r.check_in)} → ${esc(r.check_out)} · ${esc(r.status.replace("_", " "))} · ${r.pushed_count} home${r.pushed_count === 1 ? "" : "s"}${r.guests_waiting ? ` · ${r.guests_waiting} guest${r.guests_waiting === 1 ? "" : "s"} waiting` : ""}${r.error_message ? " · " + esc(r.error_message) : ""}</div>`).join("")
-    : `No requests yet. Davis asks automatically when a guest gives a city and dates.`;
+    : `No requests yet. Karl asks automatically when a guest gives a city and dates.`;
 }
 async function loadCatalogue(){
   const city = $("#catCity").value || "all";
@@ -461,10 +461,10 @@ function renderCatalogue(){
         <div class="small">${esc(h.capacity || "size unknown")}${h.rating ? " · ⭐ " + esc(h.rating) : ""}</div>
         <div class="small mono">${h.usd_per_night ? "USD " + h.usd_per_night + "/night (last seen)" : "no price yet"}</div>
         <div class="small mono">${h.offers} dated offer${h.offers === 1 ? "" : "s"}${h.next_check_in ? " · from " + esc(h.next_check_in) : ""} · sent to ${h.sent_to_chats}</div>
-        <input type="text" data-note placeholder="Team note Davis may quote (wifi, pool…)" value="${esc(h.note || "")}">
+        <input type="text" data-note placeholder="Team note Karl may quote (wifi, pool…)" value="${esc(h.note || "")}">
         <div class="toggles"><label><input type="checkbox" data-flag="featured" ${h.featured ? "checked" : ""}> featured</label>
         <label><input type="checkbox" data-flag="hidden" ${h.hidden ? "checked" : ""}> hidden</label></div></div></div>`).join("")
-    : `<div class="empty-note">No houses yet. They arrive live: when a guest gives a city and dates, Davis asks the Airbnb scraper for exactly those dates (or use “Fetch homes” above).</div>`;
+    : `<div class="empty-note">No houses yet. They arrive live: when a guest gives a city and dates, Karl asks the Airbnb scraper for exactly those dates (or use “Fetch homes” above).</div>`;
 }
 
 /* ── skills tab ────────────────────────────────────────────────── */
@@ -473,10 +473,10 @@ function renderSkills(){
   const box = $("#tab-skills"), list = state.skills || [];
   if (box.contains(document.activeElement) && document.activeElement.tagName !== "BUTTON") return;
   box.innerHTML = `<div class="pb">
-    <p class="mono" style="color:var(--dim);font-size:12px;margin:0 0 10px">When a guest asks something no FAQ or house note answers, Davis reuses how your team answered a similar question in another chat. Learned answers never contain numbers, links or another guest's name.</p>
+    <p class="mono" style="color:var(--dim);font-size:12px;margin:0 0 10px">When a guest asks something no FAQ or house note answers, Karl reuses how your team answered a similar question in another chat. Learned answers never contain numbers, links or another guest's name.</p>
     <div class="skill-add">
       <input type="text" id="skQ" placeholder="Guest's question, e.g. Do you allow pets?">
-      <textarea id="skA" rows="2" placeholder="Davis's answer (max 40 words)"></textarea>
+      <textarea id="skA" rows="2" placeholder="Karl's answer (max 40 words)"></textarea>
       <div class="row" style="justify-content:space-between"><span class="chip" id="skW">0/40 words</span>
         <div class="row"><button class="btn" data-sk="learn">Learn from chats now</button><button class="btn gold" data-sk="add">Add skill</button></div></div>
     </div>
@@ -503,7 +503,7 @@ function renderSettings(){
     <div class="limits"><label>Fixed by the Space's environment</label>
       Max words per message: <b>${L.max_words}</b><br>Replies per guest turn: <b>${L.max_replies_per_turn}</b><br>
       Wait for typing to stop: <b>${L.debounce_sec}s</b><br>Answers messages up to: <b>${Math.round(L.fresh_minutes / 1440 * 10) / 10} days old</b><br>
-      Step back after staff reply: <b>${L.human_quiet_minutes ? L.human_quiet_minutes + " min" : "never (Davis has the last word)"}</b><br>Conversations at once: <b>${L.concurrency}</b><br>
+      Step back after staff reply: <b>${L.human_quiet_minutes ? L.human_quiet_minutes + " min" : "never (Karl has the last word)"}</b><br>Conversations at once: <b>${L.concurrency}</b><br>
       Houses per send: <b>${L.options_per_send}</b> × <b>${L.images_per_option}</b> photos<br>
       Local model: <b>${esc(s.local_model.file)}</b><br>State: <b>${esc(s.local_model.state)}</b>${s.local_model.error ? ` <span style="color:var(--err)">${esc(s.local_model.error)}</span>` : ""}<br>
       Threads: <b>${s.local_model.threads}</b>${s.local_model.load_s != null ? ` · loaded in <b>${s.local_model.load_s}s</b>` : ""}<br>
@@ -517,6 +517,7 @@ function evText(e){
   const d = e.detail || {};
   if (e.kind === "inbound") return `“${d.text || ""}”` + (d.features ? "  " + Object.keys(d.features).filter(k => k !== "ack_only" && k !== "has_image").slice(0, 8).join(" ") : "");
   if (e.kind === "plan") return `${d.status} · ${d.stage} · ${(d.actions || []).map(a => a.type === "reply" ? `reply(${a.by}): ${a.text}` : a.type).join(" | ")}${d.llm && d.llm.latency_ms ? `  [${d.llm.provider} ${d.llm.latency_ms}ms${d.llm.rejected ? " rejected:" + d.llm.rejected : ""}${d.llm.error ? " err:" + d.llm.error : ""}]` : ""}`;
+  if (e.kind === "understand") return d.error ? `couldn't read the chat: ${d.error}` : `understood: ${d.need || ""}${d.state ? "  " + Object.entries(d.state).map(([k, v]) => k + "=" + v).join(" ") : ""}${(d.questions || []).length ? "  · to answer: " + d.questions.join(" | ") : ""}`;
   if (e.kind === "skip") return `${d.reason}${d.text ? " · “" + d.text + "”" : ""}`;
   return typeof d === "string" ? d : JSON.stringify(d);
 }
@@ -555,12 +556,12 @@ function connect(){
 
 /* ── events ────────────────────────────────────────────────────── */
 $("#modeSeg").addEventListener("click", async e => { const b = e.target.closest("button"); if (!b) return;
-  if (b.dataset.mode === "live" && !confirm("Go LIVE? Davis will reply to guests on WhatsApp by itself.")) return;
+  if (b.dataset.mode === "live" && !confirm("Go LIVE? Karl will reply to guests on WhatsApp by itself.")) return;
   await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({mode: b.dataset.mode})}); toast("Mode: " + b.dataset.mode.toUpperCase()); loadStatus(); });
 $("#provider").addEventListener("change", async e => { try { await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({provider: e.target.value})}); toast("Provider saved"); } catch (x) {} loadStatus(); });
 $("#model").addEventListener("change", async e => { await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({model: e.target.value.trim()})}); toast("Model saved"); loadStatus(); });
 $("#pauseBtn").addEventListener("click", async () => { const p = !state.status.settings.paused;
-  await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({paused: p})}); toast(p ? "Davis paused for every chat" : "Davis resumed"); loadStatus(); });
+  await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({paused: p})}); toast(p ? "Karl paused for every chat" : "Karl resumed"); loadStatus(); });
 $("#lockNow").addEventListener("click", async () => { await fetch("/api/davis/lock", {method: "POST", credentials: "same-origin"});
   location.reload(); });
 $("#convSearch").addEventListener("input", renderSessions);
@@ -598,10 +599,10 @@ document.addEventListener("click", async e => {
   if (dEl && e.target.matches("[data-discard]")){ await api(`/api/davis/drafts/${dEl.dataset.draft}/discard`, {method: "POST"}); toast("Discarded"); refreshAll(); return; }
   const act = e.target.closest("[data-act]");
   if (act && state.detail){ const id = encodeURIComponent(state.selected), s = state.detail.session;
-    if (act.dataset.act === "run"){ const r = await api(`/api/davis/sessions/${id}/run?again=true`, {method: "POST"}); toast(r.status === "skipped" ? "Davis would stay quiet: " + r.reason : "Davis " + r.status); }
+    if (act.dataset.act === "run"){ const r = await api(`/api/davis/sessions/${id}/run?again=true`, {method: "POST"}); toast(r.status === "skipped" ? "Karl would stay quiet: " + r.reason : "Karl " + r.status); }
     if (act.dataset.act === "pause") await api(`/api/davis/sessions/${id}/pause`, {method: "POST", body: JSON.stringify({paused: !s.paused})});
     if (act.dataset.act === "handoff") await api(`/api/davis/sessions/${id}/handoff`, {method: "POST", body: JSON.stringify({active: !s.handoff})});
-    if (act.dataset.act === "reset" && confirm("Forget what Davis knows about this booking?")) await api(`/api/davis/sessions/${id}/reset`, {method: "POST"});
+    if (act.dataset.act === "reset" && confirm("Forget what Karl knows about this booking?")) await api(`/api/davis/sessions/${id}/reset`, {method: "POST"});
     refreshAll(); return; }
   if (e.target.id === "saveSettings"){ const lines = id => $(id).value.split(/[\n,]/).map(x => x.trim()).filter(Boolean);
     await api("/api/davis/settings", {method: "PUT", body: JSON.stringify({only_chats: lines("#setOnly"), ignore_chats: lines("#setIgnore"),

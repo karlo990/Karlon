@@ -20,7 +20,16 @@ from . import config
 
 
 def is_davis(sender: Optional[str]) -> bool:
-    return (sender or "").strip().lower().startswith("davis")
+    """One of the assistant's own messages: "Karl", "Karl (catalogue)",
+    "Karl (documents)", or "Davis…" from before the rename. Not "Karl
+    Muzunze" or any other person called Karl."""
+    s = (sender or "").strip().lower()
+    return s.startswith("davis") or s == "karl" or s.startswith("karl (")
+
+
+def is_reply_sender(sender: Optional[str]) -> bool:
+    """The assistant's own text replies (not its house cards or documents)."""
+    return (sender or "").strip() in (config.SENDER, "Davis")
 
 
 def parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -68,7 +77,7 @@ def davis_replies_this_turn(messages: list[dict]) -> int:
     cards, photos and documents ride along with a reply; they don't count)."""
     i = latest_inbound_index(messages)
     after = messages[i + 1:] if i is not None else messages
-    return sum(1 for m in after if m.get("direction") == "out" and m.get("sender") == config.SENDER
+    return sum(1 for m in after if m.get("direction") == "out" and is_reply_sender(m.get("sender"))
                and m.get("kind", "text") == "text")
 
 
@@ -164,7 +173,7 @@ def decide(ctx: dict, turn_feats: dict, resume: bool = False) -> dict:
         return no("reply_limit_reached")
     if not resume and turn_feats.get("ack_only"):
         last_davis = next((m for m in reversed(msgs[:i]) if m.get("direction") == "out"
-                           and m.get("sender") == config.SENDER and m.get("text")), None)
+                           and is_reply_sender(m.get("sender")) and m.get("text")), None)
         if not (last_davis and last_davis["text"].rstrip().endswith("?")):
             return no("acknowledgement_only")
     return {"respond": True, "reason": "resume" if resume else "guest_waiting"}

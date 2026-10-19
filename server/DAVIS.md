@@ -1,3 +1,6 @@
+> **Davis is now called Karl.** What changed and why (the October chat review, Claude, the
+> communication model, memory, invoices): see [KARL.md](KARL.md).
+
 # Davis: KarlCon Elite Retreats' WhatsApp reception and booking assistant
 
 Davis reads every guest message that reaches Karlon from WhatsApp. It decides whether to answer, and then moves

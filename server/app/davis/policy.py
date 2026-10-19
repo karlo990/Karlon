@@ -24,7 +24,7 @@ import re
 from typing import Callable, Optional
 
 from . import config, nlu, persona
-from .catalogue import fee_label
+from .catalogue import capacity_guests as catalogue_guests, fee_label
 from .persona import line as L
 
 STAGES = ("new", "qualify", "searching", "present", "details", "invoice", "payment", "opted_out")
@@ -181,6 +181,11 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
     if feats.get("payment_claim") or (feats.get("has_image") and stage in ("invoice", "payment")):
         reply(L("payment", hi=hi), "thank the guest for the proof; confirmation follows once it reflects", "payment")
         return done("payment")
+    if feats.get("long_term") and not s.get("choice") and stage in ("new", "qualify", "present", "searching") \
+            and not feats.get("explicit_choice"):
+        # A monthly room or long lease: not what we do. Said kindly, once; no search.
+        reply(L("long_term"), "explain kindly that we only do short stays of a few nights; no houses", "long_term")
+        return done("qualify")
 
     prefix = ""
     if feats.get("bot_question"):
@@ -223,6 +228,17 @@ def plan(ctx: dict, feats: dict, cat, trigger: str = "message") -> dict:
             and slots.get("check_out"):
         return _present(ctx, slots, cat, actions, say, done, out, resumed=True,
                         timed_out=trigger == "refresh_timeout", tries=s.get("refresh_tries") or 0)
+
+    # ── photos of a house ("pics", "can I see KCER 105?") ────────────────────
+    photos = _photo_houses(feats, offers, slots, stage, s, cat) if trigger == "message" else []
+    if photos:
+        actions.append({"type": "send_options", "options": photos, "max_images": config.IMAGES_PER_PHOTO_REQUEST,
+                        "photos": True})
+        if not feats.get("explicit_choice"):
+            refs = " and ".join(h["ref"] for h in photos)
+            say(L("photos", refs=refs, next=nxt("present" if stage in ("new", "qualify") else stage)),
+                "send the photos they asked for, answer their other questions, then the next step", "photos")
+            return done(stage if stage not in ("new", "qualify") else "present")
 
     # ── a house picked (or asked about) ──────────────────────────────────────
     choice = cat.resolve_choice(feats, offers, slots, stage)
@@ -388,6 +404,28 @@ def _price_line(o: dict) -> str:
     return line
 
 
+def _photo_houses(feats: dict, offers: list[dict], slots: dict, stage: str, s: dict, cat) -> list[dict]:
+    """The houses whose photos the guest asked for: the KCERs they named,
+    else the house being discussed (chosen, or the only one just sent),
+    else the last batch sent (up to 3)."""
+    refs = list(feats.get("photos_for") or [])
+    if not refs and feats.get("photos_request"):
+        current = s.get("choice")
+        latest = [o for o in offers if offers and o.get("sent_at") == offers[0].get("sent_at")]
+        if feats.get("option_ref"):
+            refs = [feats["option_ref"]]
+        elif current and current.get("ref_no"):
+            refs = [current["ref_no"]]
+        else:
+            refs = [o["ref_no"] for o in latest[:3] if o.get("ref_no")]
+    out = []
+    for r in refs[:3]:
+        h = cat.resolve_choice({"option_ref": r}, offers, slots, stage)
+        if h and h.get("url") and all(h["url"] != o["url"] for o in out):
+            out.append(h)
+    return out
+
+
 def _present(ctx, slots, cat, actions, say, done, out, resumed: bool, timed_out: bool = False,
              tries: int = 0) -> dict:
     city, when = _city(slots), _when(slots.get("check_in"), slots.get("check_out"))
@@ -401,6 +439,12 @@ def _present(ctx, slots, cat, actions, say, done, out, resumed: bool, timed_out:
                 "confirm price and ask name and ID", "collect_details")
             return done("details")
     options, status = cat.find_options(slots, True)
+    if status == "too_small" and options:
+        actions.append({"type": "send_options", "options": options})
+        most = max((catalogue_guests(o.get("capacity")) or 0) for o in options)
+        say(L("too_small", city=city, when=when, guests=slots.get("guests"), most=most or "fewer"),
+            "say no single home sleeps the whole party; send the biggest; offer two homes", "present")
+        return done("present")
     if status == "ok":
         actions.append({"type": "send_options", "options": options})
         party = f" for {slots['guests']} guest{'s' if slots['guests'] != 1 else ''}" if slots.get("guests") else ""
@@ -560,7 +604,7 @@ def _numbers(text: str) -> set[str]:
 
 
 def check_reply(text: str, facts: dict, draft: Optional[str] = None, keep_draft: bool = False,
-                keep_numbers: bool = False) -> Optional[str]:
+                keep_numbers: bool = False, max_words: Optional[int] = None) -> Optional[str]:
     """Why a model-written reply can't be sent (None = fine). Guards against
     the classic failures of a small model: invented prices, dates or houses,
     writing as the guest, dropping what the draft had to say, links,
@@ -588,7 +632,7 @@ def check_reply(text: str, facts: dict, draft: Optional[str] = None, keep_draft:
         missing = sorted(_numbers(draft) - _numbers(text))
         if missing:
             return "dropped:" + ",".join(missing[:3])           # e.g. the EcoCash number or the total
-    if nlu.word_count(text) > config.MAX_WORDS:
+    if nlu.word_count(text) > (max_words or config.MAX_WORDS):
         return "too_long"
     if re.search(r"https?://|www\.|airbnb", text, re.I):
         return "link_or_platform"

@@ -83,7 +83,8 @@ def facts_text(facts: dict, focus: bool = False) -> str:
 def _who(m: dict) -> str:
     if m.get("direction") == "in":
         return "GUEST"
-    return "DAVIS" if (m.get("sender") or "").startswith("Davis") else "TEAM"
+    from .gate import is_davis
+    return "KARL" if is_davis(m.get("sender")) else "TEAM"
 
 
 _MUST = [r"EcoCash \d+ \([^)]*\)", r"Reg\. No\. [\d/]+", r"KCER \d+", r"USD [\d,]+(?:\.\d+)?", r"\d{1,2}:\d{2} [AP]M",
@@ -144,7 +145,7 @@ def user_turn(chat_name: str, history: list[dict], plan: dict, today: str, feedb
         f"KEY POINTS: {draft}\n"
         + (f"MUST INCLUDE EXACTLY: {' | '.join(must_include(draft))}\n" if must_include(draft) else "")
         + (f"YOUR LAST ANSWER WAS REJECTED ({feedback}). Write it again and fix that.\n" if feedback else "")
-        + "Write DAVIS's next WhatsApp message to the guest."
+        + "Write KARL's next WhatsApp message to the guest."
     )
 
 
