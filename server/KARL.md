@@ -63,6 +63,7 @@ downloads it at build time. Optional Space variables:
 | Variable | Default | Effect |
 |---|---|---|
 | `KARL_UNDERSTAND` | `auto` | `auto` runs STATE only when the rules can't explain the turn; `always` runs it on every turn; `off` uses rules only. |
+| `KARL_REPLY` | `auto` | `auto` lets the model write only when the guest asked something; `always` writes every reply with the model (slow on a free Space). |
 | `KARL_TRANSCRIPT` | 24 | How many messages Karl reads per turn. |
 | `KARL_MAX_WORDS` | 50 | The longest reply the model may write. |
 | `DAVIS_LOCAL_MODEL_REPO` / `DAVIS_LOCAL_MODEL_FILE` | see the skill | Which GGUF model to use. Change them together with the `Dockerfile`. |

@@ -68,14 +68,27 @@ Measured with `tests/eval_state.py` on the October 2026 chats (7 conversations, 
 | **Qwen3-4B-Instruct-2507** (default, `unsloth/Qwen3-4B-Instruct-2507-GGUF`) | **94%** (29/31) | ~43 s | Apache-2.0 |
 | Phi-4-mini-instruct (`unsloth/Phi-4-mini-instruct-GGUF`) | 90% (28/31) | ~43 s | MIT |
 | Qwen2.5-3B-Instruct (`Qwen/Qwen2.5-3B-Instruct-GGUF`) | 77% (24/31) | ~25 s | Qwen research licence |
+| Qwen3-1.7B (`unsloth/Qwen3-1.7B-GGUF`) | 71% (22/31) | ~22 s | Apache-2.0 |
 | Qwen2.5-1.5B-Instruct (`Qwen/Qwen2.5-1.5B-Instruct-GGUF`, the old default) | 68% (21/31) | ~20 s | Apache-2.0 |
 
-The time is dominated by *writing* the JSON (about 100 tokens). On a free 2-vCPU Space, a turn that
-needs the model takes about a minute in total (STATE plus REPLY). Turns the rules explain skip the
-model and answer in seconds.
-- **To go faster** without losing accuracy, use a paid CPU upgrade for the Space; no code change
-  needed.
-- **To go faster** on free hardware, switch to Qwen2.5-3B (about half the time, less accurate).
+The time is dominated by *writing* the JSON (about 100 tokens). Qwen3-1.7B is twice as fast but
+misses the guest's questions (pool, bedrooms, pics) and half-dates ("23 to 25"), which is exactly
+why the model runs at all, so it is not the default.
+
+A real end-to-end run through the engine (Qwen3-4B, 2 threads, `e2e` test of the December chat):
+- warm-up at Space start: ~78 s, once;
+- a dates-only turn with no town: ~58 s (STATE only; the plan's wording is the reply);
+- town plus dates: instant (the rules explain it, no model);
+- "pics / amenities / closer to town": ~196 s (STATE ~100 s plus REPLY ~96 s). The reply was
+  grounded: "KCER 101 in Hillside (10 min from CBD) has wifi, solar backup, secure parking…".
+
+The **reply cascade** (`KARL_REPLY=auto`) only asks the model to write when the guest has open
+questions; otherwise the plan's own wording goes out at once. A failed or rejected model reply
+falls back to the plan's wording after one attempt (no retries on local).
+- **To go faster** without losing accuracy, use a paid CPU upgrade for the Space (8 vCPU is
+  roughly 3–4× faster); no code change needed.
+- **To go faster** on free hardware, switch to Qwen2.5-3B (about half the time, less accurate,
+  research licence) or Qwen3-1.7B (Apache-2.0, less accurate).
 
 What the code checks fixed on every model:
 - invented dates (each day number must be in the guest's words);
