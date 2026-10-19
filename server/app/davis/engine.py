@@ -432,6 +432,7 @@ class Engine:
                                                    {k: v for k, v in f.items() if k in nlu.SLOT_KEYS})
             ctx["session"] = session
             ctx["slots_before"] = dict(session.get("slots") or {})       # the shared prompt prefix (mind.py)
+            ctx["turn_texts"] = texts
             ctx["month"] = month
             if settings.get("provider") in ("local", "ollama") and config.KARL_UNDERSTAND != "off":
                 why = "always" if config.KARL_UNDERSTAND == "always" else mind.needs_model(
@@ -517,7 +518,8 @@ class Engine:
             return feats
         guest_texts = [m["text"] for m in ctx["messages"][-config.KARL_TRANSCRIPT:]
                        if m.get("direction") == "in" and m.get("kind", "text") == "text" and m.get("text")]
-        mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"), guest_texts)
+        mf = mind.to_features(out, today, places, ctx["offers"], ctx.get("month"), guest_texts,
+                              newest=ctx.get("turn_texts"))
         self.metrics.counters["understood"] += 1
         await self.emit(ctx["chat_id"], "understand", {
             "need": mf.get("latest_need"), "questions": mf.get("open_questions"),

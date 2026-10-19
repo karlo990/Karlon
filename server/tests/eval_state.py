@@ -144,7 +144,12 @@ for name, msgs, exp in CASES:
     except ValueError:
         u = {}
     month = nlu.last_month([x["text"] for x in msgs])
-    f = mind.to_features(u, today, {}, [], month, [x["text"] for x in msgs if x["direction"] == "in"])
+    newest = []
+    for x in reversed(msgs):
+        if x["direction"] != "in":
+            break
+        newest.insert(0, x["text"])
+    f = mind.to_features(u, today, {}, [], month, [x["text"] for x in msgs if x["direction"] == "in"], newest)
     h, tot, miss = score(u, f, exp)
     H += h
     T += tot

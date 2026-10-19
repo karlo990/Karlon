@@ -361,8 +361,27 @@ def _rules_cross_check(f: dict, guest_texts: list[str], today: date, places: dic
         f["check_out"], f["nights"] = co.isoformat(), said_nights
 
 
+def _keep_questions(model_qs: list[str], newest: list[str]) -> list[str]:
+    """Every question or request in the guest's newest messages ends up in
+    the list: the model's wording when it has one that shares a word with
+    it, else the guest's own words. Small models drop one of three."""
+    out = list(model_qs)
+    have = " ".join(out).lower()
+    for t in newest:
+        t = " ".join((t or "").split())
+        if not t or not _REQUEST.search(t):
+            continue
+        words = [w for w in re.findall(r"[a-z]{4,}", t.lower()) if w not in ("what", "where", "when", "which",
+                                                                            "there", "this", "that", "with", "have",
+                                                                            "kindly", "please", "want")]
+        if words and not any((w[:3] if len(w) <= 4 else w[:5]) in have for w in words):
+            out.append(t[:160])
+            have += " " + t.lower()
+    return out
+
+
 def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hint: Optional[int] = None,
-                guest_texts: Optional[list[str]] = None) -> dict:
+                guest_texts: Optional[list[str]] = None, newest: Optional[list[str]] = None) -> dict:
     """The model's reading, checked, as features for policy.plan. Anything
     that fails a check is dropped (the rules' reading and the stored state
     still apply), so a wrong model answer can't book wrong dates or a house
@@ -417,6 +436,7 @@ def to_features(u: dict, today: date, places: dict, offers: list[dict], month_hi
     if 5 <= len(ident) <= 25 and any(c.isdigit() for c in ident):
         f["id_number"] = nlu.parse_id(ident) or ident.upper()
     qs = [" ".join(str(q).split())[:160] for q in (u.get("open_questions") or []) if str(q).strip()]
+    qs = _keep_questions(qs, newest or [])
     f["open_questions"] = qs[-4:]
     if qs:
         f["question"] = True
