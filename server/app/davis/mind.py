@@ -337,6 +337,18 @@ def _rules_cross_check(f: dict, guest_texts: list[str], today: date, places: dic
                 f.pop(k, None)
     if any(nlu.extract(t).get("long_term") for t in guest_texts):
         f["long_term"] = True
+    if not f.get("check_in"):
+        # The model's dates were missing or rejected: the calendar rules read
+        # the guest's own messages ("4november" stays 4 November).
+        month = nlu.last_month(guest_texts)
+        for t in guest_texts:
+            d = nlu.parse_dates(" ".join((t or "").lower().split()), today, month)
+            if d.get("check_in"):
+                f["check_in"] = d["check_in"]
+                f.pop("check_out", None)
+                if d.get("check_out"):
+                    f["check_out"] = d["check_out"]
+                    f["nights"] = (date.fromisoformat(d["check_out"]) - date.fromisoformat(d["check_in"])).days
     if f.get("city") and f["city"] != said_city:
         # A town the guest never wrote (nor anything close to it) is a guess.
         import difflib
