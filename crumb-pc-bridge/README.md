@@ -38,7 +38,9 @@ powershell -ExecutionPolicy Bypass -File .\install_crumb.ps1 -BridgeToken "the-s
 .\crumb_status.ps1            # what it's doing
 .\crumb_status.ps1 -Follow    # live log
 .\crumb_status.ps1 -Restart   # fresh start
-.\crumb_status.ps1 -Pause     # stop until -Resume
+.\crumb_status.ps1 -Pause     # stop, and stay stopped after a restart, until -Resume
+.\crumb_status.ps1 -Kill      # the same, at once (no clean WhatsApp close)
+.\crumb_status.ps1 -Resume    # start again
 python crumb_login.py         # scan the QR again (login expired)
 .\uninstall_crumb.ps1         # remove it (the login and files are kept)
 ```
