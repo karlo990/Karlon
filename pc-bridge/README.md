@@ -40,7 +40,8 @@ powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon   # Adm
 .\karlon_status.ps1            # running? headless or window? memory, network, lid, last log lines
 .\karlon_status.ps1 -Follow    # live log
 .\karlon_status.ps1 -Restart   # fresh start of all three (browsers closed cleanly)
-.\karlon_status.ps1 -Pause     # stop and stay stopped   (-Resume to start again)
+.\karlon_status.ps1 -Pause     # stop, and stay stopped after a restart (-Resume to start again)
+.\karlon_status.ps1 -Kill      # the same, at once (no clean WhatsApp close)
 powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1 # remove it, settings restored
 ```
 

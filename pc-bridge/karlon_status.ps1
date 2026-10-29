@@ -6,14 +6,16 @@
   .\karlon_status.ps1             # tasks, processes, memory, network, power, last log lines
   .\karlon_status.ps1 -Follow     # live log (Ctrl+C to leave; Karlon keeps running)
   .\karlon_status.ps1 -Restart    # fresh start of the WhatsApp bridge, invoices and scraper
-  .\karlon_status.ps1 -Pause      # stop it and keep it stopped (tasks disabled)
-  .\karlon_status.ps1 -Resume     # enable the tasks again and start
+  .\karlon_status.ps1 -Pause      # stop it and keep it stopped, restarts included
+  .\karlon_status.ps1 -Kill       # the same, without waiting: Karlon's processes end at once
+  .\karlon_status.ps1 -Resume     # start again (and at every sign-in, as before)
 #>
 [CmdletBinding()]
 param(
     [switch]$Follow,
     [switch]$Restart,
     [switch]$Pause,
+    [switch]$Kill,
     [switch]$Resume,
     [int]$Lines = 25
 )
@@ -22,6 +24,7 @@ $TaskPath = '\Karlon\'
 $Reg      = Get-ItemProperty -Path 'HKCU:\Software\Karlon' -ErrorAction SilentlyContinue
 $StateDir = if ($env:KARLON_STATE_DIR) { $env:KARLON_STATE_DIR } elseif ($Reg.StateDir) { $Reg.StateDir } else { Join-Path $HOME '.karlon' }
 $Beat     = Join-Path $StateDir 'supervisor.json'
+$RunKey   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 
 function Read-Beat {
     if (-not (Test-Path $Beat)) { return $null }
@@ -53,18 +56,54 @@ if ($Restart) {
     Write-Host 'Restart requested - each process closes its browser and starts fresh within ~1 minute.' -ForegroundColor Cyan
     return
 }
-if ($Pause) {
+function Stop-KarlonProcesses {
+    # Only Karlon's: Crumb's bridge and its browser on the same PC are left alone.
+    $left = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        ($_.CommandLine -match 'karlon_supervisor|wa_bridge\.py|invoice_worker\.py|airbnb_parallel_system\.py') -or
+        ($_.Name -match 'chrom' -and $_.CommandLine -notmatch '\\\.crumb\\' -and
+            ($_.ExecutablePath -match 'ms-playwright' -or $_.CommandLine -match '\\\.karlon\\wa_session'))
+    })
+    foreach ($p in $left) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }
+    return $left.Count
+}
+
+if ($Pause -or $Kill) {
     Need-Admin
     Get-ScheduledTask -TaskPath $TaskPath -ErrorAction SilentlyContinue | Disable-ScheduledTask | Out-Null
+    # the sign-in fallback would start it again after a restart: park it until -Resume
+    $run = (Get-ItemProperty -Path $RunKey -Name 'Karlon' -ErrorAction SilentlyContinue).Karlon
+    if ($run) {
+        # (New-Item -Force on an existing key would wipe Karlon's install settings)
+        if (-not (Test-Path 'HKCU:\Software\Karlon')) { New-Item -Path 'HKCU:\Software\Karlon' | Out-Null }
+        Set-ItemProperty -Path 'HKCU:\Software\Karlon' -Name 'PausedRun' -Value $run
+        Remove-ItemProperty -Path $RunKey -Name 'Karlon' -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
     New-Item -ItemType File -Force -Path (Join-Path $StateDir 'stop.request') | Out-Null
+    if ($Kill) {
+        Get-ScheduledTask -TaskPath $TaskPath -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
+        $n = Stop-KarlonProcesses
+        Write-Host "Killed: $n Karlon process(es) ended, tasks disabled. Start again with: .\karlon_status.ps1 -Resume" -ForegroundColor Green
+        return
+    }
     Write-Host 'Pausing: tasks disabled, asking Karlon to stop (WhatsApp closes its browser cleanly)...' -ForegroundColor Cyan
-    if (Wait-Stopped) { Write-Host 'Stopped. Start again with: .\karlon_status.ps1 -Resume' -ForegroundColor Green }
-    else { Write-Host 'Still running after 90 s; ending the tasks.' -ForegroundColor Yellow; Get-ScheduledTask -TaskPath $TaskPath | Stop-ScheduledTask }
+    if (-not (Wait-Stopped)) {
+        Write-Host 'Still running after 90 s; ending it.' -ForegroundColor Yellow
+        Get-ScheduledTask -TaskPath $TaskPath -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue
+    }
+    $n = Stop-KarlonProcesses
+    if ($n) { Write-Host "  closed $n leftover process(es)" }
+    Write-Host 'Stopped, and stays stopped after a restart. Start again with: .\karlon_status.ps1 -Resume' -ForegroundColor Green
     return
 }
 if ($Resume) {
     Need-Admin
     Remove-Item (Join-Path $StateDir 'stop.request') -ErrorAction SilentlyContinue
+    $parked = (Get-ItemProperty -Path 'HKCU:\Software\Karlon' -Name 'PausedRun' -ErrorAction SilentlyContinue).PausedRun
+    if ($parked) {
+        Set-ItemProperty -Path $RunKey -Name 'Karlon' -Value $parked
+        Remove-ItemProperty -Path 'HKCU:\Software\Karlon' -Name 'PausedRun' -ErrorAction SilentlyContinue
+    }
     $tasks = @(Get-ScheduledTask -TaskPath $TaskPath -ErrorAction SilentlyContinue)
     if (-not $tasks) { Write-Host 'Karlon is not installed. Run .\install_karlon.ps1' -ForegroundColor Yellow; return }
     $tasks | Enable-ScheduledTask | Out-Null
