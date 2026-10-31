@@ -2,3 +2,7 @@ pc-bridge/
 server/
 android_app/
 .claude/
+crumb-space/
+crumb-pc-bridge/
+*.zip
+karlon-reserve-test.apk
