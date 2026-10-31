@@ -10,7 +10,7 @@
         },
         {
           "key": "Content-Disposition",
-          "value": "attachment; filename=\"karlon.apk\""
+          "value": "attachment; filename=\"karshapp.apk\""
         },
         {
           "key": "Cache-Control",
@@ -49,6 +49,13 @@
     {
       "source": "/(.*)",
       "destination": "/$1"
+    }
+  ],
+  "redirects": [
+    {
+      "source": "/karlon.apk",
+      "destination": "/karshapp.apk",
+      "permanent": false
     }
   ]
 }

@@ -1,6 +1,8 @@
 <resources>
-    <!-- KARLCON Elite Retreats brand palette, sampled directly from the
-         logo (gold + brown) and the marketing site (deep retreat green). -->
+    <!-- KarShApp palette: pink, white and green (the badge's retreat green). -->
+    <color name="karshapp_white">#FFFFFF</color>
+    <color name="karshapp_pink">#D6336C</color>
+    <color name="karshapp_blush">#FFF5F8</color>
     <color name="karlon_gold">#C9962E</color>
     <color name="karlon_gold_light">#E8B84D</color>
     <color name="karlon_brown">#6B4A23</color>

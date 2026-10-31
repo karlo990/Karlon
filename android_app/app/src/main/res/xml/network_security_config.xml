@@ -8,7 +8,7 @@
   here. Instead we use a base-config that permits cleartext everywhere,
   which mirrors android:usesCleartextTraffic="true" already set in the
   manifest — fine for talking to your own PC on a trusted LAN/dev network.
-  If you later put Karlon behind HTTPS (recommended for anything beyond
+  If you later put the KarShApp server behind HTTPS (recommended for anything beyond
   your own LAN), delete this file and the manifest attribute entirely.
 -->
 <network-security-config>
