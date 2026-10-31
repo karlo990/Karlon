@@ -42,6 +42,7 @@ from ..config import (
     DEFAULT_STAY_NIGHTS,
     REFRESH_JOB_STALE_MINUTES,
 )
+from .. import davis
 from ..database import get_db
 from ..models import HouseRefreshCompleteIn, HouseRefreshRequestIn
 
@@ -187,4 +188,5 @@ def complete_job(job_id: int, body: HouseRefreshCompleteIn):
     conn.commit()
     row = conn.execute("SELECT * FROM refresh_jobs WHERE id=?", (job_id,)).fetchone()
     conn.close()
+    davis.notify_refresh_done(job_id)      # guests Davis promised live prices to
     return _job(row)

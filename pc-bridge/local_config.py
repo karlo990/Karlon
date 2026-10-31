@@ -11,6 +11,7 @@ nothing here is secret.
 """
 
 import os
+from pathlib import Path
 
 
 def _int_env(name: str, default: int, minimum: int = 1) -> int:
@@ -77,6 +78,13 @@ AIRBNB_RESCRAPE_HOURS = _int_env("AIRBNB_RESCRAPE_HOURS", 12)
 AIRBNB_CITY_WORKERS = _int_env("AIRBNB_CITY_WORKERS", 3)          # cities searched at the same time
 AIRBNB_CYCLE_REST_SECONDS = _int_env("AIRBNB_CYCLE_REST_SECONDS", 300, minimum=0)
 
+# On demand only (default): the scraper fetches homes just for the city and
+# dates a guest asks for (Davis or the dashboard requests them); no timed
+# sweeps of every city. 1 = also run the old full sweep of AIRBNB_CITIES.
+AIRBNB_FULL_SWEEP = os.environ.get("AIRBNB_FULL_SWEEP", "0").strip().lower() in ("1", "true", "yes", "on")
+AIRBNB_ONDEMAND_PARALLEL = _int_env("AIRBNB_ONDEMAND_PARALLEL", 2)   # guests' requests worked at once
+AIRBNB_ONDEMAND_POLL_SEC = _int_env("AIRBNB_ONDEMAND_POLL_SEC", 5)   # how fast a new request is picked up
+
 # ── Reservations (Reserve button in the app → airbnb_reserve.py) ──────────
 # TEST MODE unless AIRBNB_RESERVE_LIVE=1: every step runs (listing, Reserve,
 # card/total checks, message to host) except the final "Request to book"
@@ -88,6 +96,82 @@ AIRBNB_RESERVE_LIVE = os.environ.get("AIRBNB_RESERVE_LIVE", "0").strip().lower()
 AIRBNB_RESERVE_MAX_TOTAL_USD = _int_env("AIRBNB_RESERVE_MAX_TOTAL_USD", 0, minimum=0)
 # How often the scraper asks the server for a queued reservation.
 AIRBNB_RESERVE_POLL_SEC = _int_env("AIRBNB_RESERVE_POLL_SEC", 15, minimum=5)
+
+# ── Always-on running (karlon_supervisor.py, install_karlon.ps1) ──────────
+# Restart a process when it and its browsers together use more than this many
+# MB (0 = no cap). A WhatsApp Web tab grows for days; a restart is the only
+# real way to give that memory back.
+KARLON_WA_MAX_MB      = _int_env("KARLON_WA_MAX_MB", 2500, minimum=0)
+KARLON_SCRAPER_MAX_MB = _int_env("KARLON_SCRAPER_MAX_MB", 3000, minimum=0)
+KARLON_INVOICE_MAX_MB = _int_env("KARLON_INVOICE_MAX_MB", 1200, minimum=0)
+# Fresh start for each process after this many hours up (0 = never), one at a time.
+KARLON_RECYCLE_HOURS  = _int_env("KARLON_RECYCLE_HOURS", 24, minimum=0)
+# The network was down at least this long → restart the browser processes
+# once it's back, instead of trusting pages that sat through the outage.
+KARLON_OUTAGE_RESTART_SEC = _int_env("KARLON_OUTAGE_RESTART_SEC", 180, minimum=0)
+# The whole PC is using this % of its memory → restart the biggest process.
+KARLON_SYS_MEM_PCT    = _int_env("KARLON_SYS_MEM_PCT", 92)
+# Stop Windows idle-sleeping while the supervisor runs (1 = on).
+KARLON_KEEP_AWAKE     = os.environ.get("KARLON_KEEP_AWAKE", "1").strip() not in ("0", "false", "no", "off")
+
+# ── Headless after a one-time visible login (python karlon_login.py) ──────
+# WhatsApp and Airbnb need a person once (QR scan, Airbnb login); after that
+# the saved login lets them run headless, in the background, with no window.
+#   auto (default) = headless once that app's login is saved, a visible window
+#                    while it isn't (or after it expires);
+#   1 = always headless;  0 = always a visible window.
+KARLON_WA_HEADLESS     = os.environ.get("KARLON_WA_HEADLESS", "auto").strip().lower()
+KARLON_AIRBNB_HEADLESS = os.environ.get("KARLON_AIRBNB_HEADLESS", "auto").strip().lower()
+
+
+def headless_choice(setting: str, login_saved: bool) -> bool:
+    if setting in ("1", "true", "yes", "on"):
+        return True
+    if setting in ("0", "false", "no", "off"):
+        return False
+    return bool(login_saved)
+
+
+def wa_session_dir() -> str:
+    """Where the WhatsApp login (the Chromium profile) is kept. It used to be
+    ./wa_session, relative to wherever the script was started, so every
+    unzip of a new version into a new folder started logged out. Now:
+    WA_SESSION_DIR if set, else ~/.karlon/wa_session (the same place whatever
+    folder the scripts run from). An existing ./wa_session is still used when
+    there is no home-folder session yet, so old setups keep their login."""
+    env = os.environ.get("WA_SESSION_DIR", "").strip()
+    if env:
+        return str(Path(env).expanduser().resolve())
+    home = Path.home() / ".karlon" / "wa_session"
+    legacy = Path("./wa_session")
+    if not home.exists() and legacy.exists():
+        return str(legacy.resolve())
+    return str(home)
+
+
+def wa_login_marker(session_dir: str | None = None) -> Path:
+    """Written by wa_bridge.py when the chat list shows (logged in), removed
+    when WhatsApp asks for the QR code again (logged out)."""
+    return Path(session_dir or wa_session_dir()) / "karlon_logged_in"
+
+
+# The scraper's saved Airbnb login (cookies + localStorage), relative to the
+# pc-bridge folder like the rest of airbnb_data/.
+AIRBNB_AUTH_STATE_FILE = os.path.join("./airbnb_data", "auth_state.json")
+
+# Flags for every Chromium the scripts start. The first three stop Chromium
+# slowing a tab down when its window is minimised, covered or the lid is
+# closed (WhatsApp Web would otherwise only check for messages about once a
+# minute); the cache cap keeps the profile from growing without limit.
+CHROMIUM_ARGS = [
+    "--disable-background-timer-throttling",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disk-cache-size=104857600",
+    "--no-first-run",
+    "--no-default-browser-check",
+] + os.environ.get("KARLON_CHROMIUM_ARGS", "").split()
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 LOG_DIR = os.environ.get("LOG_DIR", "./logs")

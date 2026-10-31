@@ -6,7 +6,7 @@ renderer to the Karlon server. Run them together with
 
 ```
 pip install -r requirements.txt      # + `playwright install chromium`, LibreOffice for invoices
-python -m pytest tests               # 77 tests (server: 33), no WhatsApp/Airbnb/network needed
+python -m pytest tests               # 114 tests, no WhatsApp/Airbnb/network needed
 ```
 
 | file | role |
@@ -15,10 +15,140 @@ python -m pytest tests               # 77 tests (server: 33), no WhatsApp/Airbnb
 | `invoice_worker.py` | pending invoice → KARLCON-layout PDF (Chromium; LibreOffice/Word fallback) → upload |
 | `airbnb_parallel_system.py` | listing scraper → `/api/houses/ingest`; books queued reservations |
 | `airbnb_reserve.py` | the Airbnb booking steps behind the app's Reserve button |
-| `karlon_supervisor.py` | starts the three above, restarts them with backoff |
+| `karlon_supervisor.py` | starts the three above, restarts them with backoff; watchdog for memory, hangs, network |
+| `karlon_care.py` | process-tree killing (job objects), browser profile/temp cleanup, lock, heartbeat |
+| `install_karlon.ps1` | makes it all part of Windows: power-on + sign-in tasks, lid, sleep, Wi-Fi, registry |
+| `karlon_login.py` | the one-time visible logins (WhatsApp QR, Airbnb); after that both run headless |
+| `karlon_status.ps1` / `uninstall_karlon.ps1` | see / restart / pause it; remove it and restore settings |
 | `karlon_client.py` | shared HTTP session: pooling, retries, timeouts, optional auth |
 | `local_config.py` | the one place URLs, cadences and paths live |
 | `wa_clean.py` | good-vs-bad data rules (names, notices, times); identical copy in `server/app/` |
+
+## Always on: part of Windows (install_karlon.ps1)
+
+WhatsApp and Airbnb need a person once: scan the QR, log in to Airbnb. After
+that the saved logins let them run **headless** (no window, in the background)
+inside your signed-in Windows session; `-AutoLogon` signs you in by itself after
+a restart (and locks the screen), so it also runs when nobody is at the laptop.
+Invoices never need a login (the PDFs are always printed by a headless
+browser). In PowerShell, in this folder:
+
+```
+Unblock-File .\*.ps1                                            # files from a zip are marked "from the internet"
+python karlon_login.py                                          # once: WhatsApp QR, then Airbnb login; Enter when done
+powershell -ExecutionPolicy Bypass -File .\install_karlon.ps1 -AutoLogon   # Administrator, then your Windows password
+.\karlon_status.ps1            # running? headless or window? memory, network, lid, last log lines
+.\karlon_status.ps1 -Follow    # live log
+.\karlon_status.ps1 -Restart   # fresh start of all three (browsers closed cleanly)
+.\karlon_status.ps1 -Pause     # stop, and stay stopped after a restart (-Resume to start again)
+.\karlon_status.ps1 -Kill      # the same, at once (no clean WhatsApp close)
+powershell -ExecutionPolicy Bypass -File .\uninstall_karlon.ps1 # remove it, settings restored
+```
+
+`karlon_login.py` pauses Karlon, opens a visible WhatsApp window (scan the QR;
+when your chats show, press Enter), then a visible Airbnb window (log in, press
+Enter), saves both logins (`~/.karlon/wa_session`, `airbnb_data/auth_state.json`)
+and starts Karlon again. `--only wa` / `--only airbnb` for one of them.
+
+Headless is automatic (`KARLON_WA_HEADLESS` / `KARLON_AIRBNB_HEADLESS` = `auto`):
+headless while the login is saved, a visible window when it isn't. If WhatsApp
+is unlinked or Airbnb's login expires, that app forgets the saved login and
+opens a window at your next sign-in (or run `karlon_login.py` again). Set `1` to
+always run headless, `0` to always show the window. A headless WhatsApp uses
+the full browser in its new headless mode with a normal browser name (a
+"HeadlessChrome" name makes WhatsApp Web refuse to load); the scraper re-saves
+its Airbnb cookies after every cycle so the login stays fresh.
+
+Options: `-AutoLogon` (Windows signs in by itself after a restart; the screen
+locks 40 s later, `-NoLockAfterAutoLogon` to skip that), `-KeepAwakeOnBattery`
+(never sleep on battery either), `-KarlonUrl <url>` (saved as your user's
+`KARLON_URL`), `-NoPowerChanges`, `-NoUpdateRebootBlock`, `-Python <path>`.
+
+**Why not start before sign-in?** Chrome locks its saved logins (cookies) with
+a key Windows unlocks only for a signed-in user (DPAPI). A browser started by a
+"run whether signed in or not" task can't read them: WhatsApp looks logged out,
+and Chrome can replace that key so the profile stays logged out afterwards
+too. An earlier version had such a "Karlon Boot" task; the installer now stops
+and removes it, and the supervisor never runs WhatsApp or the scraper outside
+your session.
+
+**Continuous**
+- *Karlon* task: starts at sign-in, in your session, browsers headless. With
+  `-AutoLogon`, a restart (power cut, Windows Update) signs in by itself and
+  *Karlon Lock* locks the screen; Karlon keeps running behind the lock.
+- Restarted 1 min after any crash (999 times), no time limit, run on
+  battery, started again when the network connects or the PC wakes, checked
+  every 5 min. Only one copy ever runs (a lock file); a copy that stops
+  answering for 3 min is killed and replaced. A registry Run entry starts it at
+  sign-in too if the Task Scheduler is off.
+- Lid: "do nothing" when closed (plugged in and on battery). Sleep and
+  hibernate: never when plugged in. While Karlon runs it also tells Windows not
+  to idle-sleep (`powercfg /requests` shows it). Fast Startup is turned off, and
+  Windows Update won't restart the PC by itself while you're signed in. Wi-Fi:
+  maximum performance, and Windows may not switch the adapter off. Everything
+  changed is saved first (`~/.karlon/install_backup.json`) and put back by the
+  uninstaller.
+
+**Durable**
+- Wi-Fi drop: the supervisor sees the server is unreachable and holds every
+  restart until it's back (checks at 5 s ... 60 s), so nothing crash-loops while
+  offline. Processes that sat through an outage of 3 min or more
+  (`KARLON_OUTAGE_RESTART_SEC`) get a fresh browser once it's back.
+- Hung: WhatsApp silent for 30 min, scraper for 60 min -> restarted.
+- Each process and every browser it starts run in a Windows *job object*: a
+  restart (or the supervisor itself dying) kills the whole tree. No orphan
+  chrome.exe keeps the WhatsApp profile locked.
+- Before WhatsApp starts: any browser still holding its profile is closed and
+  Chromium's stale lock files (left by a power cut) are removed.
+
+**Efficient**
+- Memory: a process using more than `KARLON_WA_MAX_MB` (2500),
+  `KARLON_SCRAPER_MAX_MB` (3000) or `KARLON_INVOICE_MAX_MB` (1200), browsers
+  included, is restarted; so is the biggest one if the PC reaches
+  `KARLON_SYS_MEM_PCT` (92%). Each gets a fresh start after
+  `KARLON_RECYCLE_HOURS` (24) up, one at a time. WhatsApp closes its browser
+  itself first (45 s), so the login is saved cleanly.
+- Browser: caches (Cache, Code Cache, GPU/shader caches, crash dumps) cleared
+  once a day before WhatsApp starts; the login (IndexedDB, Local Storage,
+  Cookies, Service Worker) is never touched. Disk cache capped at 100 MB.
+  Chromium is told not to slow a minimised, covered or lid-closed window.
+- Every 30 min: leftover Playwright temp profiles in %TEMP% (not in use, idle
+  1 h+), orphan Playwright browsers, and logs/screenshots older than 14 days.
+- One log, `logs/karlon_supervisor.log`, rolled over at 10 MB (5 kept).
+  State every 15 s in `~/.karlon/supervisor.json`.
+
+Settings like `AIRBNB_RESERVE_LIVE` must be saved for your user so the task
+sees them (`[Environment]::SetEnvironmentVariable("AIRBNB_RESERVE_LIVE","1","User")`),
+then `.\karlon_status.ps1 -Pause` and `-Resume`.
+
+
+## First start, login and "no chats"
+
+`wa_bridge.py` opens WhatsApp Web in a visible browser window and waits for
+whatever it shows first, saying what it is waiting for:
+
+| WhatsApp shows | the bridge |
+|---|---|
+| the login page / QR code | tells you to scan it (WhatsApp on the phone > Settings > Linked devices > Link a device) and waits up to `WA_LOGIN_TIMEOUT` (600 s) |
+| "WhatsApp is open in another window" | clicks **Use here** |
+| a loading screen | waits up to `WA_LOAD_TIMEOUT` (300 s) |
+| the chat list, still empty | waits up to `WA_CHATS_TIMEOUT` (180 s) for chats; a newly linked phone can take a few minutes |
+
+If it still can't get there it saves a screenshot and the page text to
+`logs/wa_launch_failed_*.png/.txt` and exits, and the supervisor restarts it. A
+pass that finds 0 chats says why ("logged out", "still loading", …) and saves
+`logs/wa_empty_sidebar_*.png` once.
+
+**Where the login is kept.** The browser profile (your WhatsApp login) is in
+`~/.karlon/wa_session` (for example `C:\Users\Administrator\.karlon\wa_session`),
+the same place whichever folder the scripts run from, so unzipping an update
+into a new folder no longer logs you out. Set `WA_SESSION_DIR` to move it. An
+older `./wa_session` is still used if there is no home-folder session yet. To
+switch an old folder over, delete its `wa_session` and scan once.
+
+If the browser won't open at all, an earlier Chromium is probably still running
+on that session folder. End `chrome.exe` / `chromium` in Task Manager and start
+again.
 
 ## Syncing chats: one JSON snapshot per chat
 
@@ -177,15 +307,22 @@ Most of this lives on the server, so it also helps older app builds:
 Only "sent first, per guest" needs the app to say which chat it is asking about
 (`chat_id`).
 
-## Airbnb scraper: every city, 10 listings each
+## Airbnb scraper: homes for the dates guests ask for
 
-`airbnb_parallel_system.py` sweeps the 20 cities in `ZIMBABWE_CITIES` (or
-`AIRBNB_CITIES="Harare,Bulawayo"`), `AIRBNB_CITY_WORKERS` (3) at a time. Per
-city it takes `AIRBNB_LISTINGS_PER_CITY` (10) listings: new ones first, then
-any not refreshed for `AIRBNB_RESCRAPE_HOURS` (12). A city's listings are
-scraped and pushed as soon as its search finishes, so each city fills the app
-on its own. Houses wiped by a Space restart are pushed again on the next
-refresh. Cycles rest `AIRBNB_CYCLE_REST_SECONDS` (300).
+By default (`AIRBNB_FULL_SWEEP=0`) the scraper works **on demand only**. When a
+guest gives Davis a city and dates with no prices yet, the server queues a live
+request; the scraper picks it up within `AIRBNB_ONDEMAND_POLL_SEC` (5 s), works
+`AIRBNB_ONDEMAND_PARALLEL` (2) requests at once, searches Airbnb for exactly that
+city and those dates, and pushes each home as soon as it's priced. Davis sends
+the first 3 straight away. The Davis dashboard's Catalogue tab lists the requests
+and can queue one by hand ("Fetch homes"). While idle it keeps the Airbnb login
+and the exchange rate fresh every 30 minutes and prints a line every 10.
+
+`AIRBNB_FULL_SWEEP=1` adds the old timed sweep: the 20 cities in
+`ZIMBABWE_CITIES` (or `AIRBNB_CITIES="Harare,Bulawayo"`), `AIRBNB_CITY_WORKERS`
+(3) at a time, `AIRBNB_LISTINGS_PER_CITY` (10) listings each (new ones first,
+then any not refreshed for `AIRBNB_RESCRAPE_HOURS`, 12), resting
+`AIRBNB_CYCLE_REST_SECONDS` (300) between cycles.
 
 ## Reserve button: booking a house on Airbnb from the app
 

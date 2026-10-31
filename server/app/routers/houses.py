@@ -315,6 +315,15 @@ def ingest_listings(body: HouseIngestIn, background: BackgroundTasks):
 
     _purge_expired_offers(conn)
     conn.commit()
+    # A guest waiting on a live request sees the first homes as soon as a few
+    # are priced, not after the scraper has finished all of them.
+    from .. import davis
+    from ..davis.config import EARLY_PRESENT
+    for job_id in {i.refresh_job_id for i in body.listings if i.refresh_job_id is not None}:
+        row = conn.execute("SELECT pushed_count FROM refresh_jobs WHERE id=? AND status='in_progress'",
+                           (job_id,)).fetchone()
+        if row and (row["pushed_count"] or 0) >= EARLY_PRESENT:
+            davis.notify_refresh_done(job_id, early=True)
     conn.close()
     return {"ingested": len(body.listings), "offers": offers}
 
@@ -522,6 +531,66 @@ def build_listing_message(listing: dict, option: int = 1, of: int = 1) -> str:
 build_listing_caption = build_listing_message
 
 
+def queue_listings(conn, chat_id: str, listing_ids: list[str], offer_ids: Optional[list] = None,
+                   sender: str = "Front Desk", max_images: int = 5, builder=None,
+                   start: Optional[datetime] = None) -> list[str]:
+    """Queue, per listing, a details message (builder, default
+    build_listing_message) followed by its photos, as outbound WhatsApp
+    messages, and record each send in house_sends. Shared by POST /send (the
+    app) and Davis. Returns the queued message ids, in delivery order."""
+    builder = builder or build_listing_message
+    now = start or datetime.now(timezone.utc)
+    max_imgs = max(1, min(max_images, 10))
+    queued_ids: list[str] = []
+    batch_id, batch_at = str(uuid.uuid4()), now.isoformat()
+
+    for n, listing_id in enumerate(listing_ids):
+        row = conn.execute("SELECT * FROM house_listings WHERE id=?", (listing_id,)).fetchone()
+        if not row:
+            continue
+        offer = None
+        if offer_ids and n < len(offer_ids) and offer_ids[n]:
+            offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (offer_ids[n],)).fetchone()
+        listing = _row_to_listing(row, offer)
+        details = builder(listing, option=n + 1, of=len(listing_ids))
+        # Remember exactly what this guest was offered (the dated offer, so the
+        # invoice can quote the same dates and price).
+        conn.execute(
+            "INSERT INTO house_sends (chat_id, listing_url, offer_id, option_no, batch_id, sent_by, sent_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (chat_id, row["id"], listing.get("offer_id"), n + 1, batch_id, sender, batch_at),
+        )
+
+        # Details text first, then the photos (no captions). created_at is
+        # nudged a few ms per message so the outbox (ORDER BY created_at)
+        # delivers them in exactly this order.
+        msg_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO messages "
+            "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
+            "direction, wa_status) "
+            "VALUES (?, ?, ?, 'text', ?, NULL, ?, NULL, NULL, 'out', 'pending')",
+            (msg_id, chat_id, sender, details, now.isoformat()),
+        )
+        queued_ids.append(msg_id)
+
+        for i, img_url in enumerate(listing["images"][:max_imgs]):
+            msg_id = str(uuid.uuid4())
+            ts = (now + timedelta(milliseconds=i + 1)).isoformat()
+            conn.execute(
+                "INSERT INTO messages "
+                "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
+                "direction, wa_status) "
+                "VALUES (?, ?, ?, 'image', NULL, NULL, ?, ?, 'image', 'out', 'pending')",
+                (msg_id, chat_id, sender, ts, img_url),
+            )
+            queued_ids.append(msg_id)
+        now = now + timedelta(seconds=1)
+
+    conn.commit()
+    return queued_ids
+
+
 @router.post("/send")
 async def send_listings(body: HouseSendIn):
     """Queue, per chosen listing, a details message (see build_listing_message)
@@ -536,55 +605,8 @@ async def send_listings(body: HouseSendIn):
         conn.close()
         raise HTTPException(400, "no listings selected")
 
-    now = datetime.now(timezone.utc)
-    max_imgs = max(1, min(body.max_images_per_listing, 10))
-    queued_ids: list[str] = []
-    batch_id, batch_at = str(uuid.uuid4()), now.isoformat()
-
-    for n, listing_id in enumerate(body.listing_ids):
-        row = conn.execute("SELECT * FROM house_listings WHERE id=?", (listing_id,)).fetchone()
-        if not row:
-            continue
-        offer = None
-        if body.offer_ids and n < len(body.offer_ids) and body.offer_ids[n]:
-            offer = conn.execute("SELECT * FROM listing_offers WHERE id=?", (body.offer_ids[n],)).fetchone()
-        listing = _row_to_listing(row, offer)
-        details = build_listing_message(listing, option=n + 1, of=len(body.listing_ids))
-        # Remember exactly what this guest was offered (the dated offer, so the
-        # invoice can quote the same dates and price).
-        conn.execute(
-            "INSERT INTO house_sends (chat_id, listing_url, offer_id, option_no, batch_id, sent_by, sent_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (body.chat_id, row["id"], listing.get("offer_id"), n + 1, batch_id, body.sender, batch_at),
-        )
-
-        # Details text first, then the photos (no captions). created_at is
-        # nudged a few ms per message so the outbox (ORDER BY created_at)
-        # delivers them in exactly this order.
-        msg_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO messages "
-            "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
-            "direction, wa_status) "
-            "VALUES (?, ?, ?, 'text', ?, NULL, ?, NULL, NULL, 'out', 'pending')",
-            (msg_id, body.chat_id, body.sender, details, now.isoformat()),
-        )
-        queued_ids.append(msg_id)
-
-        for i, img_url in enumerate(listing["images"][:max_imgs]):
-            msg_id = str(uuid.uuid4())
-            ts = (now + timedelta(milliseconds=i + 1)).isoformat()
-            conn.execute(
-                "INSERT INTO messages "
-                "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
-                "direction, wa_status) "
-                "VALUES (?, ?, ?, 'image', NULL, NULL, ?, ?, 'image', 'out', 'pending')",
-                (msg_id, body.chat_id, body.sender, ts, img_url),
-            )
-            queued_ids.append(msg_id)
-        now = now + timedelta(seconds=1)
-
-    conn.commit()
+    queued_ids = queue_listings(conn, body.chat_id, body.listing_ids, body.offer_ids,
+                                body.sender, body.max_images_per_listing)
 
     if not queued_ids:
         conn.close()

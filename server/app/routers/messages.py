@@ -10,6 +10,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi import Query
 
 from ..config import MEDIA_DIR, MEDIA_KIND_BY_EXT, TERMS_PDF_PATH
+from .. import davis
 from ..database import get_db
 from ..models import ImportMessagesIn, SendMessageIn, serialize_message
 from ..wa_clean import is_system_notice, is_time_only, to_utc_iso
@@ -238,10 +239,44 @@ async def import_image(
     conn.close()
 
     await manager.broadcast(chat_id, {"type": "message", "data": msg})
+    if resolved_direction == "in":
+        davis.notify_inbound(chat_id)        # a guest's photo (e.g. proof of payment)
     return msg
 
 
 # ─────────────────────────── send static T&Cs doc ─────────────────────────────
+
+TERMS_CAPTION = "KARLCON Elite Retreats — Terms & Conditions"
+
+
+def queue_terms(conn, chat_id: str, sender: str = "Front Desk"):
+    """Queue the Terms & Conditions PDF for one chat (or return the copy
+    still waiting to be sent, so a second tap never sends the guest two).
+    Returns (message row, newly_queued). Raises FileNotFoundError when the
+    PDF isn't on the server. Shared by POST /send-terms and Davis."""
+    if not TERMS_PDF_PATH.exists():
+        raise FileNotFoundError(str(TERMS_PDF_PATH))
+    media_url = f"/static/documents/{TERMS_PDF_PATH.name}"
+    queued = conn.execute(
+        "SELECT * FROM messages WHERE chat_id=? AND direction='out' AND media_url=? "
+        "AND wa_status IN ('documents','pending') ORDER BY created_at LIMIT 1",
+        (chat_id, media_url),
+    ).fetchone()
+    if queued:
+        return queued, False
+
+    msg_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO messages "
+        "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
+        "direction, wa_status) "
+        "VALUES (?, ?, ?, 'document', ?, NULL, ?, ?, 'document', 'out', 'documents')",
+        (msg_id, chat_id, sender, TERMS_CAPTION, now, media_url),
+    )
+    conn.commit()
+    return conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone(), True
+
 
 @router.post("/{chat_id}/send-terms")
 async def send_terms(chat_id: str):
@@ -260,44 +295,20 @@ async def send_terms(chat_id: str):
         conn.close()
         raise HTTPException(404, "chat not found")
 
-    if not TERMS_PDF_PATH.exists():
+    try:
+        row, created = queue_terms(conn, chat_id)
+    except FileNotFoundError:
         conn.close()
         raise HTTPException(
             500,
             "Terms & Conditions PDF not found on server "
             f"(expected at {TERMS_PDF_PATH}); upload it before sending.",
         )
-
-    media_url = f"/static/documents/{TERMS_PDF_PATH.name}"
-    caption = "KARLCON Elite Retreats — Terms & Conditions"
-    # Tapping the button again while the PDF is still waiting to be sent
-    # returns the queued one instead of sending the guest two copies.
-    queued = conn.execute(
-        "SELECT * FROM messages WHERE chat_id=? AND direction='out' AND media_url=? "
-        "AND wa_status IN ('documents','pending') ORDER BY created_at LIMIT 1",
-        (chat_id, media_url),
-    ).fetchone()
-    if queued:
-        msg = serialize_message(conn, queued)
-        conn.close()
-        return msg
-
-    msg_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
-        "INSERT INTO messages "
-        "(id, chat_id, sender, kind, text, poll_id, created_at, media_url, media_type, "
-        "direction, wa_status) "
-        "VALUES (?, ?, 'Front Desk', 'document', ?, NULL, ?, ?, 'document', 'out', 'documents')",
-        (msg_id, chat_id, caption, now, media_url),
-    )
-    conn.commit()
-    msg = serialize_message(
-        conn, conn.execute("SELECT * FROM messages WHERE id=?", (msg_id,)).fetchone()
-    )
+    msg = serialize_message(conn, row)
     conn.close()
 
-    await manager.broadcast(chat_id, {"type": "message", "data": msg})
+    if created:
+        await manager.broadcast(chat_id, {"type": "message", "data": msg})
     return msg
 
 
@@ -420,6 +431,8 @@ async def import_messages(chat_id: str, body: ImportMessagesIn):
     if corrected_ids:
         # Tell open app/web screens to re-fetch so bubbles jump to the right side.
         await manager.broadcast(chat_id, {"type": "refresh", "data": {"corrected": corrected_ids}})
+    if imported:
+        davis.notify_inbound(chat_id)
 
     return {"imported": imported, "skipped": skipped, "corrected": corrected}
 

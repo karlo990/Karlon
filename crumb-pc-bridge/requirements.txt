@@ -1,0 +1,5 @@
+requests>=2.31
+urllib3>=2
+playwright>=1.40
+psutil>=5.9
+pytest>=8

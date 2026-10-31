@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.example.karlon.ui.theme.KarlonGold
 
 /**
  * Apple-style "frosted glass" surface — the look used across iOS/visionOS
@@ -37,7 +38,7 @@ import androidx.compose.ui.unit.dp
  */
 fun Modifier.glassSurface(
     shape: Shape = RoundedCornerShape(20.dp),
-    tint: Color = Color.White,
+    tint: Color = KarlonGold,
     tintAlpha: Float = 0.06f,
     borderAlpha: Float = 0.14f,
 ): Modifier = this
@@ -62,7 +63,7 @@ fun Modifier.glassSurface(
 fun GlassCard(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(20.dp),
-    tint: Color = Color.White,
+    tint: Color = KarlonGold,
     tintAlpha: Float = 0.06f,
     content: @Composable () -> Unit,
 ) {
@@ -81,7 +82,7 @@ fun GlassCard(
 fun AnimatedGlassCard(
     modifier: Modifier = Modifier,
     shape: Shape = RoundedCornerShape(20.dp),
-    tint: Color = Color.White,
+    tint: Color = KarlonGold,
     tintAlpha: Float = 0.06f,
     riseDistance: Dp = 14.dp,
     content: @Composable () -> Unit,

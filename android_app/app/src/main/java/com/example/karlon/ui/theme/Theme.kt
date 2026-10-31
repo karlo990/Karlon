@@ -10,16 +10,32 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-// App is now always-dark by design (iOS-style dark interface, matches the
-// reference screenshots) — light scheme kept only as a fallback so nothing
-// breaks if isSystemInDarkTheme() is ever forced off.
+// KarShApp is light by design: white with pink and green. The dark scheme
+// is kept only as a fallback.
 private val DarkColors = darkColorScheme(
     primary = KarlonGold,
-    onPrimary = KarlonBgBase,
-    primaryContainer = KarlonBrown,
-    onPrimaryContainer = KarlonGold,
+    onPrimary = Color.White,
+    primaryContainer = KarlonGoldDim,
+    onPrimaryContainer = Color.White,
     secondary = KarlonRingGlow,
-    onSecondary = KarlonBgBase,
+    onSecondary = Color.White,
+    background = Color(0xFF121014),
+    onBackground = Color(0xFFF5F2F6),
+    surface = Color(0xFF1C191E),
+    onSurface = Color(0xFFF5F2F6),
+    surfaceVariant = Color(0xFF2A2530),
+    onSurfaceVariant = Color(0xFFBDB6C2),
+    error = KarlonError,
+)
+
+private val LightColors = lightColorScheme(
+    primary = KarlonGold,
+    onPrimary = Color.White,
+    primaryContainer = KarlonBrown,
+    onPrimaryContainer = KarlonBrownDark,
+    secondary = KarlonBrandGreen,
+    onSecondary = Color.White,
+    tertiary = KarlonRingGlow,
     background = KarlonBgBase,
     onBackground = KarlonTextPrimary,
     surface = KarlonBgElevated,
@@ -30,25 +46,9 @@ private val DarkColors = darkColorScheme(
     error = KarlonError,
 )
 
-private val LightColors = lightColorScheme(
-    primary = KarlonGoldDim,
-    onPrimary = Color.White,
-    primaryContainer = KarlonGold,
-    onPrimaryContainer = KarlonBrownDark,
-    secondary = KarlonRingGlow,
-    onSecondary = Color.White,
-    background = Color(0xFFF7F3EC),
-    onBackground = Color(0xFF26201A),
-    surface = Color.White,
-    onSurface = Color(0xFF26201A),
-    surfaceVariant = Color(0xFFEDE6D8),
-    onSurfaceVariant = Color(0xFF5B5148),
-    error = KarlonError,
-)
-
 @Composable
 fun KarlonTheme(
-    darkTheme: Boolean = true,
+    darkTheme: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = if (darkTheme) DarkColors else LightColors

@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -15,9 +17,20 @@ from .routers import chat_view       # customer-facing chat view
 from .routers import chat_sync       # one chat snapshot per sync (wa_bridge)
 from .routers import reservations    # Reserve in the app -> PC books on Airbnb
 from . import auth                   # KARLON_PASSWORD (HF Space secret)
+from .davis import router as davis_router   # Davis: WhatsApp reception + booking assistant
+from .davis.engine import engine as davis_engine
 
 init_db()
-app = FastAPI(title="Karlon")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await davis_engine.start()
+    yield
+    await davis_engine.stop()
+
+
+app = FastAPI(title="Karlon", lifespan=lifespan)
 # Password gate for the HTML pages only ("/" and "/chat/..."); APIs stay open.
 app.add_middleware(auth.KarlonAuthMiddleware)
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
@@ -38,6 +51,8 @@ app.include_router(reservations.router)
 app.include_router(house_refresh.router)
 app.include_router(customer_replies.router)   # POST /api/reply/{chat_id}
 app.include_router(chat_view.router)
+app.include_router(davis_router.router)       # /davis page + its lock (open)
+app.include_router(davis_router.api)          # /api/davis/* (behind the Karlon password)
 
 @app.get("/api/health")
 def health(): return {"status": "ok", "service": "karlon"}

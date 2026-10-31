@@ -331,7 +331,7 @@ private fun InvoiceForm(
                 enabled = form.canSubmit,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = KarlonGold,
-                    contentColor = Color(0xFF1A1204),
+                    contentColor = Color.White,
                     disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
                 ),
             ) {
@@ -344,7 +344,7 @@ private fun InvoiceForm(
                         CircularProgressIndicator(
                             modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
-                            color = Color(0xFF1A1204),
+                            color = Color.White,
                         )
                     } else {
                         Text("Generate invoice", fontWeight = FontWeight.Bold)

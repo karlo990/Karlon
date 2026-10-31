@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Crumb's Kitchen</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<style>
+@font-face{font-family:Shrikhand;src:url('/fonts/shrikhand-latin.woff2') format('woff2');font-display:swap}
+@font-face{font-family:Bricolage;src:url('/fonts/bricolage-grotesque-latin.woff2') format('woff2');font-weight:200 800;font-display:swap}
+:root{
+  --cream:#fffaf0;--butter:#f9edbe;--ink:#46251f;--ink-2:#6e4a40;--ink-3:#9a7a6f;--red:#a52a20;--red-2:#8a2019;
+  --pink:#f2c7c4;--lilac:#d8cce9;--line:#46251f;--ok:#2f6b3a;--ok-bg:#dcefd9;--warn-bg:#fbe3b8;--bad-bg:#f6d2cd;
+  --shadow:4px 4px 0 var(--ink);--radius:18px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--cream);color:var(--ink);font:16px/1.45 Bricolage,Arial,sans-serif}
+a{color:var(--red)}
+button,input,textarea,select{font:inherit;color:inherit}
+.wrap{max-width:1180px;margin:0 auto;padding:0 16px 48px}
+.strip{background:var(--red);color:var(--cream);font-weight:700;font-size:13px;padding:7px 16px;display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}
+header.top{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:22px 0 18px;border-bottom:2px solid var(--line);flex-wrap:wrap}
+.logo{font:400 34px/0.9 Shrikhand,Georgia,serif;color:var(--red);letter-spacing:-.5px}
+.logo small{display:block;font:700 12px Bricolage;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);margin-top:8px}
+.pill{display:inline-flex;align-items:center;gap:8px;border:2px solid var(--line);border-radius:999px;padding:7px 14px;background:var(--cream);font-weight:700;font-size:14px}
+.pill .dot{width:9px;height:9px;border-radius:50%;background:var(--ink-3)}
+.pill.on .dot{background:var(--ok)} .pill.off .dot{background:var(--red)}
+.btn{white-space:nowrap;border:2px solid var(--line);border-radius:999px;background:var(--cream);padding:9px 18px;font-weight:700;cursor:pointer;box-shadow:var(--shadow);transition:transform .08s,box-shadow .08s}
+.btn:hover{transform:translate(-1px,-1px);box-shadow:5px 5px 0 var(--ink)} .btn:active{transform:translate(3px,3px);box-shadow:1px 1px 0 var(--ink)}
+.btn.red{background:var(--red);color:var(--cream)} .btn.butter{background:var(--butter)} .btn.sm{padding:5px 12px;font-size:13px;box-shadow:2px 2px 0 var(--ink)}
+.btn:disabled{opacity:.5;cursor:default;transform:none}
+nav.tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}
+nav.tabs button{border:2px solid var(--line);border-radius:999px;background:transparent;padding:7px 16px;font-weight:700;cursor:pointer}
+nav.tabs button.on{background:var(--ink);color:var(--cream)}
+h1.big{font:400 clamp(34px,6vw,56px)/1 Shrikhand,Georgia,serif;margin:8px 0 4px;letter-spacing:-1px}
+h1.big em{color:var(--red);font-style:normal}
+h2{font:400 26px/1.1 Shrikhand,Georgia,serif;margin:0 0 12px}
+.eyebrow{font-weight:800;font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-2)}
+.card{background:var(--cream);border:2px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}
+.card.butter{background:var(--butter)} .card.pink{background:var(--pink)} .card.lilac{background:var(--lilac)}
+.grid{display:grid;gap:18px}
+.kpis{grid-template-columns:repeat(auto-fill,minmax(170px,1fr))}
+.kpi label{display:block;font-weight:800;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2)}
+.kpi b{display:block;font:400 38px/1.1 Shrikhand,Georgia,serif;margin-top:6px;font-variant-numeric:tabular-nums}
+.kpi span{font-size:13px;color:var(--ink-2)}
+.two{grid-template-columns:minmax(0,1fr) minmax(0,1.6fr)} @media (max-width:820px){.two{grid-template-columns:1fr}}
+.list{display:flex;flex-direction:column;gap:8px;max-height:560px;overflow:auto;padding:2px 6px 6px 2px}
+.row{border:2px solid var(--line);border-radius:14px;padding:10px 12px;background:var(--cream);cursor:pointer;text-align:left;width:100%}
+.row:hover,.row.on{background:var(--butter)}
+.row .q{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .m{font-size:12px;color:var(--ink-2)}
+.chat{display:flex;flex-direction:column;gap:10px;max-height:560px;overflow:auto;padding-right:6px}
+.bubble{max-width:82%;border:2px solid var(--line);border-radius:16px;padding:10px 14px;white-space:pre-wrap}
+.bubble.user{align-self:flex-end;background:var(--cream)} .bubble.assistant{align-self:flex-start;background:var(--butter)}
+.bubble small{display:block;margin-top:6px;font-size:11px;color:var(--ink-2)}
+.chip{display:inline-flex;align-items:center;gap:6px;border:1.5px solid var(--line);border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700;white-space:nowrap}
+.chip.ok{background:var(--ok-bg)} .chip.warn{background:var(--warn-bg)} .chip.bad{background:var(--bad-bg)}
+.feed{font-size:14px;display:flex;flex-direction:column;gap:6px;max-height:420px;overflow:auto}
+.feed div{border-bottom:1.5px dashed rgba(70,37,31,.35);padding-bottom:6px}
+.feed time{font-weight:700;margin-right:6px;font-variant-numeric:tabular-nums}
+label.f{display:block;font-weight:800;font-size:13px;margin:12px 0 6px}
+input[type=text],input[type=password],textarea{width:100%;border:2px solid var(--line);border-radius:14px;background:var(--cream);padding:10px 12px}
+textarea{min-height:90px;resize:vertical}
+.switch{display:inline-flex;align-items:center;gap:10px;font-weight:700;cursor:pointer}
+.switch input{width:20px;height:20px;accent-color:var(--red)}
+table{width:100%;border-collapse:separate;border-spacing:0 6px;font-size:14px}
+th{text-align:left;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);padding:0 10px}
+td{background:var(--cream);border-top:2px solid var(--line);border-bottom:2px solid var(--line);padding:9px 10px;vertical-align:top}
+td:first-child{border-left:2px solid var(--line);border-radius:12px 0 0 12px} td:last-child{border-right:2px solid var(--line);border-radius:0 12px 12px 0}
+code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:13px;background:var(--butter);padding:1px 6px;border-radius:6px}
+.method{font:800 11px ui-monospace,monospace;border:1.5px solid var(--line);border-radius:6px;padding:2px 6px}
+.empty{padding:26px;text-align:center;color:var(--ink-2)}
+.note{font-size:13px;color:var(--ink-2)}
+.checks li{margin:6px 0}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--ink);color:var(--cream);padding:10px 18px;border-radius:999px;font-weight:700;display:none;z-index:50}
+/* lock */
+.lock{position:fixed;inset:0;z-index:40;display:flex;align-items:center;justify-content:center;background:rgba(255,250,240,.55);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);padding:16px}
+.lock .card{max-width:380px;width:100%;text-align:center}
+.lock .logo{font-size:40px}
+body.locked main{filter:blur(6px);pointer-events:none;user-select:none}
+.wa-row{display:flex;gap:10px;align-items:center}
+.ava{flex:none;width:40px;height:40px;border-radius:50%;border:2px solid var(--line);background:var(--pink);display:flex;align-items:center;justify-content:center;font-weight:800;overflow:hidden}
+.ava img{width:100%;height:100%;object-fit:cover}
+.wa-row .txt{min-width:0;flex:1}
+.bubble.in{align-self:flex-start;background:var(--cream)} .bubble.out{align-self:flex-end;background:var(--butter)} .bubble.phone{background:var(--lilac)}
+.wa-head{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-bottom:10px}
+.wa-send{display:flex;gap:10px;margin-top:12px;align-items:flex-end} .wa-send textarea{min-height:52px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body class="locked">
+<div class="strip"><span>Crumb's kitchen · the back room of Sunday Crumb</span><span id="ver">—</span></div>
+
+<div class="lock" id="lock">
+  <form class="card" id="lockForm">
+    <div class="logo">sunday crumb.</div>
+    <p class="eyebrow" style="margin-top:14px">Crumb's kitchen</p>
+    <p id="lockMsg">Staff only. Enter the kitchen password.</p>
+    <input type="password" id="pw" placeholder="Password" autocomplete="current-password" aria-label="Password">
+    <p style="margin:14px 0 0"><button class="btn red" type="submit">Come on in ↗</button></p>
+  </form>
+</div>
+
+<main class="wrap">
+  <header class="top">
+    <div class="logo">sunday<br>crumb.<small>Crumb's kitchen</small></div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <span class="pill" id="pillModel"><span class="dot"></span><span>model</span></span>
+      <span class="pill" id="pillCheck"><span class="dot"></span><span>person check</span></span>
+      <span class="pill" id="pillReady"><span class="dot"></span><span>chat</span></span>
+      <span class="pill" id="pillWa"><span class="dot"></span><span>WhatsApp</span></span>
+      <a class="btn sm" href="/" target="_blank" rel="noopener">Open the bakery ↗</a>
+      <button class="btn sm" id="lockBtn" type="button">Lock</button>
+    </div>
+  </header>
+
+  <p class="eyebrow" style="margin-top:22px">Your imaginary neighbourhood bakery's assistant</p>
+  <h1 class="big">How's <em>Crumb</em> doing?</h1>
+
+  <nav class="tabs" aria-label="Sections">
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="chats">Conversations</button>
+    <button data-tab="wa">WhatsApp</button>
+    <button data-tab="try">Try Crumb</button>
+    <button data-tab="settings">Settings</button>
+    <button data-tab="endpoints">Endpoints</button>
+    <button data-tab="setup">Setup</button>
+  </nav>
+
+  <section id="tab-overview">
+    <div class="grid kpis" id="kpis"></div>
+    <div class="grid two" style="margin-top:18px">
+      <div class="card butter"><h2>What people ask</h2><div class="list" id="recent"></div></div>
+      <div class="card"><h2>Live from the counter</h2><div class="feed" id="feed"></div></div>
+    </div>
+  </section>
+
+  <section id="tab-chats" hidden>
+    <div class="grid two">
+      <div class="card butter"><h2>Conversations</h2><div class="list" id="convList"></div></div>
+      <div class="card"><h2 id="convTitle">Pick a conversation</h2><div class="chat" id="convChat"><div class="empty">Choose one on the left to read it.</div></div></div>
+    </div>
+  </section>
+
+  <section id="tab-wa" hidden>
+    <div class="grid two">
+      <div class="card butter">
+        <h2>WhatsApp chats</h2>
+        <p class="note" id="waLine">—</p>
+        <div class="list" id="waList"></div>
+      </div>
+      <div class="card">
+        <div class="wa-head"><h2 id="waTitle" style="margin:0">Pick a chat</h2>
+          <div id="waTools" hidden style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <label class="switch"><input type="checkbox" id="waAuto"> Crumb answers here</label>
+            <button class="btn sm" type="button" id="waAnswer">Let Crumb answer now</button>
+          </div></div>
+        <p class="note" id="waWhy"></p>
+        <div class="chat" id="waChat"><div class="empty">Chats from the PC bridge show here.</div></div>
+        <form class="wa-send" id="waSend" hidden><textarea id="waText" maxlength="2000" placeholder="Write as the bakery. Crumb steps back for a while after you do."></textarea>
+          <button class="btn red" type="submit">Send ↗</button></form>
+      </div>
+    </div>
+  </section>
+
+  <section id="tab-try" hidden>
+    <div class="grid two">
+      <div class="card pink">
+        <h2>Ask Crumb anything</h2>
+        <p class="note">Test replies here before visitors see them. Nothing is logged or counted.</p>
+        <form id="tryForm"><textarea id="tryQ" placeholder="e.g. What should I try first?"></textarea>
+        <p><button class="btn red" type="submit" id="tryBtn">Ask ↗</button></p></form>
+      </div>
+      <div class="card"><h2>Crumb says</h2><div class="chat" id="tryOut"><div class="empty">Crumb's answer appears here.</div></div></div>
+    </div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <form class="card" id="setForm">
+      <h2>How Crumb greets people</h2>
+      <label class="switch"><input type="checkbox" id="sReady"> Chat switched on</label><br>
+      <label class="switch" style="margin-top:8px"><input type="checkbox" id="sWa"> Crumb answers WhatsApp messages (through the PC bridge)</label>
+      <label class="f" for="sGreeting">Greeting</label><input type="text" id="sGreeting" maxlength="300">
+      <label class="f" for="sNotice">Notice under the chat</label><input type="text" id="sNotice" maxlength="300">
+      <label class="f" for="sSuggestions">Suggested questions (one per line, up to 6)</label><textarea id="sSuggestions"></textarea>
+      <label class="f" for="sNotes">Kitchen notes: extra facts Crumb may use (specials, news)</label>
+      <textarea id="sNotes" maxlength="4000" placeholder="e.g. This week only: a raspberry version of Roll with it, R40."></textarea>
+      <p class="note">Settings reset when the Space restarts. Permanent facts belong in <code>crumb/knowledge.py</code>.</p>
+      <p><button class="btn red" type="submit">Save settings</button></p>
+    </form>
+  </section>
+
+  <section id="tab-endpoints" hidden>
+    <div class="card">
+      <h2>Every endpoint, live and coming</h2>
+      <p class="note">Planned endpoints already answer with <code>501</code> and their contract, so the site can be built against them now. Full docs at <a href="/docs" target="_blank" rel="noopener">/docs</a>.</p>
+      <table><thead><tr><th>Status</th><th>Method</th><th>Path</th><th>What it does</th></tr></thead><tbody id="epRows"></tbody></table>
+    </div>
+  </section>
+
+  <section id="tab-setup" hidden>
+    <div class="grid two">
+      <div class="card butter"><h2>Kitchen checklist</h2><ul class="checks" id="checks"></ul></div>
+      <div class="card"><h2>Limits</h2><div id="limits"></div></div>
+    </div>
+  </section>
+</main>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const toast = (m) => { const t = $("#toast"); t.textContent = m; t.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(() => t.style.display = "none", 2600); };
+const ago = iso => { const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000); return s < 60 ? `${s|0}s` : s < 3600 ? `${(s/60)|0}m` : s < 86400 ? `${(s/3600)|0}h` : `${(s/86400)|0}d`; };
+const state = {tab: "overview", status: null, conv: null, wa: null};
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {credentials: "include", headers: {"Content-Type": "application/json"}, ...opts});
+  if (r.status === 403) { showLock("Locked again. Enter the kitchen password."); throw Error("locked"); }
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(data.detail || data.error || "Something went wrong"); throw Error("http " + r.status); }
+  return data;
+}
+function showLock(msg) { document.body.classList.add("locked"); $("#lock").hidden = false; if (msg) $("#lockMsg").textContent = msg; $("#pw").focus(); }
+function hideLock() { document.body.classList.remove("locked"); $("#lock").hidden = true; }
+
+$("#lockForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const r = await fetch("/api/admin/unlock", {method: "POST", credentials: "include", headers: {"Content-Type": "application/json"}, body: JSON.stringify({password: $("#pw").value})});
+  if (r.ok) { $("#pw").value = ""; hideLock(); refresh(); } else { const d = await r.json().catch(() => ({})); $("#lockMsg").textContent = d.detail === "no password configured" ? "Set the CRUMB_ADMIN_PASSWORD secret on the Space first." : "That's not it. Try again."; }
+});
+$("#lockBtn").addEventListener("click", async () => { await fetch("/api/admin/lock", {method: "POST", credentials: "include"}); showLock("Locked. See you soon."); });
+
+document.querySelectorAll("nav.tabs button").forEach(b => b.addEventListener("click", () => {
+  state.tab = b.dataset.tab;
+  document.querySelectorAll("nav.tabs button").forEach(x => x.classList.toggle("on", x === b));
+  ["overview","chats","wa","try","settings","endpoints","setup"].forEach(t => $("#tab-" + t).hidden = t !== state.tab);
+  if (state.tab === "chats") loadConversations();
+  if (state.tab === "wa") loadWa();
+  if (state.tab === "endpoints") loadEndpoints();
+  if (state.tab === "settings") fillSettings();
+}));
+
+function pill(el, on, text) { el.classList.toggle("on", on); el.classList.toggle("off", !on); el.lastElementChild.textContent = text; }
+
+function renderStatus() {
+  const s = state.status, st = s.stats, c = s.config;
+  $("#ver").textContent = `v${c.version} · up ${Math.round(s.uptime_s / 60)} min`;
+  pill($("#pillModel"), c.model_configured, c.model_configured ? `${c.model} · ${c.effort}` : "offline answers");
+  pill($("#pillCheck"), c.person_check, c.person_check ? "person check on" : "person check off");
+  pill($("#pillReady"), s.settings.ready, s.settings.ready ? "chat on" : "chat off");
+  const w = s.whatsapp;
+  pill($("#pillWa"), w.bridge_online, !w.configured ? "WhatsApp off" : w.bridge_online ? "WhatsApp bridge on" : "bridge offline");
+  const src = st.by_source || {};
+  const tiles = [
+    ["Questions", st.questions, `${st.today} model replies today · cap ${c.daily_limit}`],
+    ["Conversations", st.conversations, "since the last restart"],
+    ["Reply time", st.latency_ms_p50 != null ? (st.latency_ms_p50 / 1000).toFixed(1) + "s" : "—", st.latency_ms_p95 != null ? `p95 ${(st.latency_ms_p95/1000).toFixed(1)}s` : "no model replies yet"],
+    ["Written by Claude", src.model || 0, `${src.offline || 0} offline · ${src.refusal || 0} declined`],
+    ["Person checks", st.sessions_ok, `${st.sessions_failed} failed`],
+    ["Slow down notes", st.rate_limited, `${st.errors} errors`],
+    ["Tokens", (st.tokens_in + st.tokens_out).toLocaleString(), `${st.tokens_in.toLocaleString()} in · ${st.tokens_out.toLocaleString()} out`],
+    ["Feedback", `${st.feedback_up}/${st.feedback_down}`, "thumbs up / down"],
+    ["WhatsApp", w.crumb_replies, `replies to ${w.received} messages · ${w.chats} chats${w.failed ? ` · ${w.failed} not sent` : ""}`],
+  ];
+  $("#kpis").innerHTML = tiles.map(([l, v, sub], i) => `<div class="card kpi ${["butter","","pink","lilac"][i % 4]}"><label>${esc(l)}</label><b>${esc(v)}</b><span>${esc(sub)}</span></div>`).join("");
+  renderSetup();
+}
+
+function sourceChip(src) {
+  const map = {model: ["ok", "Claude"], offline: ["warn", "offline answer"], refusal: ["bad", "declined"], error: ["bad", "error"]};
+  const [cls, label] = map[src] || ["", src || ""];
+  return src ? `<span class="chip ${cls}">${esc(label)}</span>` : "";
+}
+
+async function loadOverview() {
+  const [convs, events] = await Promise.all([api("/api/admin/conversations?limit=12"), api("/api/admin/events?limit=40")]);
+  $("#recent").innerHTML = convs.length ? convs.map(c => `<button class="row" data-conv="${esc(c.id)}"><div class="q">${esc(c.last_question || "…")}</div><div class="m">${esc(c.turns)} question${c.turns == 1 ? "" : "s"} · ${ago(c.updated_at)} ago</div></button>`).join("") : `<div class="empty">No questions yet. Open the bakery and ask Crumb something!</div>`;
+  const label = {session_ok: "person check passed", session_failed: "person check failed", chat: "answered", rate_limited: "asked to slow down", error: "answered with a fallback", settings: "settings saved",
+    wa_in: "WhatsApp message", wa_reply: "answered on WhatsApp", wa_manual: "you wrote on WhatsApp"};
+  $("#feed").innerHTML = events.length ? events.map(e => {
+    const d = e.detail || {};
+    const extra = e.kind === "wa_in" ? ` · ${d.chat || ""}` : e.kind === "wa_reply" ? ` · ${d.chat || ""} · ${d.source || ""}${d.ms ? " · " + (d.ms/1000).toFixed(1) + "s" : ""}` : e.kind === "chat" || e.kind === "error" ? ` · ${d.source || ""}${d.ms ? " · " + (d.ms/1000).toFixed(1) + "s" : ""}${d.error ? " · " + d.error : ""}` : e.kind === "session_failed" ? ` · ${d.reason || ""}` : e.kind === "settings" ? ` · ${(d.changed || []).join(", ")}` : "";
+    return `<div><time>${esc(new Date(e.ts).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}))}</time>${esc(label[e.kind] || e.kind)}${esc(extra)}</div>`;
+  }).join("") : `<div class="empty">Quiet in the kitchen.</div>`;
+}
+
+async function loadConversations() {
+  const convs = await api("/api/admin/conversations?limit=100");
+  $("#convList").innerHTML = convs.length ? convs.map(c => `<button class="row ${c.id === state.conv ? "on" : ""}" data-conv="${esc(c.id)}"><div class="q">${esc(c.last_question || "…")}</div><div class="m">${esc(c.turns)} question${c.turns == 1 ? "" : "s"} · ${ago(c.updated_at)} ago</div></button>`).join("") : `<div class="empty">No conversations yet.</div>`;
+}
+async function openConversation(id) {
+  state.conv = id;
+  const c = await api(`/api/admin/conversations/${encodeURIComponent(id)}`);
+  $("#convTitle").textContent = `${c.turns} question${c.turns == 1 ? "" : "s"} · started ${ago(c.started_at)} ago`;
+  $("#convChat").innerHTML = c.messages.map(m => `<div class="bubble ${m.role === "user" ? "user" : "assistant"}">${esc(m.text)}${m.role === "assistant" ? `<small>${sourceChip(m.source)} ${m.latency_ms ? (m.latency_ms/1000).toFixed(1) + "s" : ""}</small>` : ""}</div>`).join("");
+}
+document.addEventListener("click", e => {
+  const row = e.target.closest("[data-conv]");
+  if (!row) return;
+  if (state.tab !== "chats") document.querySelector('nav.tabs button[data-tab="chats"]').click();
+  openConversation(row.dataset.conv).then(loadConversations);
+});
+
+// ── WhatsApp ──
+const initial = n => esc((String(n || "?").match(/[\p{L}\p{N}]/u) || ["?"])[0].toUpperCase());
+const ava = c => c.pic ? `<span class="ava"><img alt="" src="/api/admin/wa/chats/${encodeURIComponent(c.id)}/picture?v=${esc(c.pic)}"></span>` : `<span class="ava">${initial(c.name)}</span>`;
+const waStatus = {urgent: ["warn", "waiting for the bridge"], pending: ["warn", "retrying"], sent: ["ok", "sent"], error: ["bad", "not sent"], superseded: ["", "replaced"]};
+async function loadWa() {
+  const w = state.status && state.status.whatsapp;
+  if (w) $("#waLine").textContent = !w.configured ? "Off: set the CRUMB_BRIDGE_TOKEN secret on the Space, and the same token in the PC bridge."
+    : w.bridge_online ? `Bridge online · last chat read ${w.last_sync_s != null ? w.last_sync_s + "s ago" : "not yet"} · ${w.waiting} waiting to send`
+    : `Bridge offline${w.bridge_last_seen_s != null ? ` (last seen ${Math.round(w.bridge_last_seen_s / 60)} min ago)` : ""}. Start it on the PC.`;
+  const chats = await api("/api/admin/wa/chats");
+  $("#waList").innerHTML = chats.length ? chats.map(c => `<button class="row wa-row ${c.id === state.wa ? "on" : ""}" data-wa="${esc(c.id)}">${ava(c)}<span class="txt"><div class="q">${esc(c.name)}</div><div class="m">${c.last_dir === "out" ? "↪ " : ""}${esc((c.last_text || "").slice(0, 70))}${c.last_at ? " · " + ago(c.last_at) + " ago" : ""}${c.auto_reply ? "" : " · Crumb off"}</div></span></button>`).join("")
+    : `<div class="empty">No WhatsApp chats yet.</div>`;
+  if (state.wa) await openWa(state.wa, true);
+}
+async function openWa(id, quiet) {
+  state.wa = id;
+  const c = await api(`/api/admin/wa/chats/${encodeURIComponent(id)}`);
+  $("#waTitle").textContent = c.name; $("#waTools").hidden = false; $("#waSend").hidden = false;
+  $("#waAuto").checked = !!c.auto_reply;
+  $("#waWhy").textContent = c.why_quiet ? `Crumb is quiet here: ${c.why_quiet}.` : "Crumb will answer the newest message.";
+  const box = $("#waChat"), atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  box.innerHTML = c.messages.length ? c.messages.map(m => {
+    const phone = m.direction === "out" && !m.source, [cls, label] = waStatus[m.wa_status] || ["", ""];
+    const who = m.direction === "in" ? "" : phone ? "from the phone" : m.source === "dashboard" ? "you, from here" : "";
+    return `<div class="bubble ${m.direction}${phone ? " phone" : ""}">${esc(m.text)}<small>${new Date(m.created_at).toLocaleString([], {day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"})}${who ? " · " + who : ""} ${m.source && m.source !== "dashboard" ? sourceChip(m.source) : ""} ${label ? `<span class="chip ${cls}">${label}</span>` : ""}</small></div>`;
+  }).join("") : `<div class="empty">No messages yet.</div>`;
+  if (!quiet || atEnd) box.scrollTop = box.scrollHeight;
+}
+document.addEventListener("click", e => { const row = e.target.closest("[data-wa]"); if (row) openWa(row.dataset.wa).then(loadWa); });
+$("#waAuto").addEventListener("change", async e => { await api(`/api/admin/wa/chats/${encodeURIComponent(state.wa)}`, {method: "PUT", body: JSON.stringify({auto_reply: e.target.checked})}); toast(e.target.checked ? "Crumb answers this chat." : "Crumb stays out of this chat."); loadWa(); });
+$("#waAnswer").addEventListener("click", async () => { const r = await api(`/api/admin/wa/chats/${encodeURIComponent(state.wa)}/answer`, {method: "POST"}); toast(r.queued ? "Reply queued for the bridge." : `Not now: ${r.reason}.`); openWa(state.wa); });
+$("#waSend").addEventListener("submit", async e => {
+  e.preventDefault(); const text = $("#waText").value.trim(); if (!text) return;
+  await api(`/api/admin/wa/chats/${encodeURIComponent(state.wa)}/send`, {method: "POST", body: JSON.stringify({text})});
+  $("#waText").value = ""; toast("Queued. The bridge sends it in a few seconds."); openWa(state.wa);
+});
+
+$("#tryForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const q = $("#tryQ").value.trim(); if (!q) return;
+  $("#tryBtn").disabled = true; $("#tryOut").innerHTML = `<div class="bubble user">${esc(q)}</div><div class="bubble assistant">Crumb is thinking…</div>`;
+  try { const r = await api("/api/admin/preview", {method: "POST", body: JSON.stringify({question: q})});
+    $("#tryOut").innerHTML = `<div class="bubble user">${esc(q)}</div><div class="bubble assistant">${esc(r.text)}<small>${sourceChip(r.source)} ${r.latency_ms ? (r.latency_ms/1000).toFixed(1) + "s" : ""}${r.error ? " · " + esc(r.error) : ""}</small></div>`;
+  } finally { $("#tryBtn").disabled = false; }
+});
+
+function fillSettings() {
+  const s = state.status.settings;
+  $("#sReady").checked = !!s.ready; $("#sWa").checked = !!s.wa_auto_reply; $("#sGreeting").value = s.greeting || ""; $("#sNotice").value = s.notice || "";
+  $("#sSuggestions").value = (s.suggestions || []).join("\n"); $("#sNotes").value = s.notes || "";
+}
+$("#setForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  const body = {ready: $("#sReady").checked, wa_auto_reply: $("#sWa").checked, greeting: $("#sGreeting").value, notice: $("#sNotice").value,
+    suggestions: $("#sSuggestions").value.split("\n").map(x => x.trim()).filter(Boolean).slice(0, 6), notes: $("#sNotes").value};
+  state.status.settings = await api("/api/admin/settings", {method: "PUT", body: JSON.stringify(body)});
+  renderStatus(); toast("Saved. Fresh out of the oven.");
+});
+
+async function loadEndpoints() {
+  const cat = await api("/api/admin/endpoints");
+  $("#epRows").innerHTML = cat.endpoints.map(e => `<tr><td>${e.status === "live" ? '<span class="chip ok">live</span>' : '<span class="chip warn">planned</span>'}</td><td><span class="method">${esc(e.method)}</span></td><td><code>${esc(e.path)}</code></td><td>${esc(e.summary)}${e.body ? `<div class="note">body: <code>${esc(JSON.stringify(e.body))}</code></div>` : ""}</td></tr>`).join("");
+}
+
+function renderSetup() {
+  const c = state.status.config;
+  const item = (ok, good, bad) => `<li>${ok ? '<span class="chip ok">done</span>' : '<span class="chip warn">to do</span>'} ${esc(ok ? good : bad)}</li>`;
+  $("#checks").innerHTML = [
+    item(c.model_configured, `Claude writes replies (${c.model}, effort ${c.effort}).`, "Add the ANTHROPIC_API_KEY secret so Claude writes replies. Until then Crumb answers from the bakery facts."),
+    item(c.person_check, `Person check on (Turnstile site key ${c.turnstile_site_key}).`, "Add TURNSTILE_SITE_KEY (variable) and TURNSTILE_SECRET_KEY (secret), and add this Space's hostname to the Turnstile widget in Cloudflare."),
+    item(true, "Kitchen password set (you're in).", ""),
+    item(state.status.whatsapp.configured, "WhatsApp bridge token set.", "For WhatsApp: add the CRUMB_BRIDGE_TOKEN secret (any long random text) and give the same token to the PC bridge."),
+    item(state.status.whatsapp.bridge_online, "PC bridge is online.", "Start the Crumb PC bridge (python crumb_login.py once, then install_crumb.ps1)."),
+  ].join("");
+  $("#limits").innerHTML = `<table><tbody>
+    <tr><td>Per visitor</td><td>${esc(c.rate_per_session)} questions / ${Math.round(c.rate_window_s / 60)} min</td></tr>
+    <tr><td>Per network</td><td>${esc(c.rate_per_ip)} questions / ${Math.round(c.rate_window_s / 60)} min</td></tr>
+    <tr><td>Model replies per day</td><td>${esc(c.daily_limit)}, then offline answers</td></tr>
+    <tr><td>Endpoints</td><td>${esc(state.status.endpoints.live)} live · ${esc(state.status.endpoints.planned)} planned</td></tr></tbody></table>`;
+}
+
+async function refresh() {
+  try { state.status = await api("/api/admin/status"); renderStatus(); if (state.tab === "overview") await loadOverview(); if (state.tab === "wa") await loadWa(); } catch (e) {}
+}
+(async () => {
+  const ls = await fetch("/api/admin/lock-state", {credentials: "include"}).then(r => r.json()).catch(() => ({}));
+  if (ls.unlocked) { hideLock(); refresh(); }
+  else showLock(ls.configured ? null : "Set the CRUMB_ADMIN_PASSWORD secret on the Space first, then refresh.");
+  setInterval(() => { if (!document.body.classList.contains("locked") && !document.hidden) refresh(); }, 8000);
+})();
+</script>
+</body>
+</html>

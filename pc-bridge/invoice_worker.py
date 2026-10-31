@@ -221,9 +221,12 @@ COMPANY_LINES = ["KARLCON CONSULTANCY", "(PRIVATE) LIMITED", "Reg. No. 15017/202
 COMPANY_SITE = "karl-con-elite-retreats.vercel.app"
 CHECK_IN_TIME, CHECK_OUT_TIME = "2:00 PM", "10:00 AM"
 SERVICE_FEE_PCT = float(os.environ.get("INVOICE_SERVICE_FEE_PCT", "15"))
+# Every EcoCash payment goes to this number (override with env if it changes).
+ECOCASH_NUMBER = os.environ.get("INVOICE_ECOCASH_NUMBER", "0780563561")
+ECOCASH_NAME = os.environ.get("INVOICE_ECOCASH_NAME", "Karl Muzunze")
 PAYMENT_METHODS = [
     "ZAR / USD Cash (in-person or mobile transfer)",
-    "EcoCash — USD Merchant Wallet (code shared via WhatsApp)",
+    f"EcoCash — {ECOCASH_NUMBER} ({ECOCASH_NAME})",
     "ZIPIT / Innbucks (USD equivalent)",
     "Bank Transfer — FBC / CBZ (USD)",
 ]
@@ -297,8 +300,8 @@ def build_invoice_html(invoice: dict, photo: BytesIO | None = None, listing: dic
         mime = "image/png" if data[:4] == b"\x89PNG" else "image/webp" if data[8:12] == b"WEBP" else "image/jpeg"
         img = f'<img class="photo" src="data:{mime};base64,{base64.b64encode(data).decode()}">'
     return f"""<!doctype html><html><head><meta charset="utf-8"><style>
-  @page {{ size: A4; margin: 16mm 14mm 14mm; }}
-  body {{ font-family: Helvetica, Arial, sans-serif; color: #222; font-size: 9.5pt; line-height: 1.45; margin: 0; }}
+  @page {{ size: A4; margin: 12mm 14mm 14mm; }}
+  body {{ font-family: Helvetica, Arial, sans-serif; color: #222; font-size: 9.5pt; line-height: 1.38; margin: 0; padding-bottom: 8mm; }}
   .top {{ display: flex; justify-content: space-between; align-items: flex-start; }}
   .brand h1 {{ margin: 0; font-size: 28pt; color: #2f4a3a; letter-spacing: .5pt; }}
   .brand div {{ letter-spacing: 3.5pt; font-size: 8pt; color: #666; margin-top: 2pt; }}
@@ -307,14 +310,15 @@ def build_invoice_html(invoice: dict, photo: BytesIO | None = None, listing: dic
   .inv .no {{ color: #555; margin: 3pt 0 6pt; }}
   .badge {{ display: inline-block; background: #c9973f; color: #fff; font-weight: 700; font-size: 7pt;
             padding: 3pt 0; width: 120pt; text-align: center; border-radius: 2pt; }}
-  hr {{ border: 0; border-top: 1px solid #ccc; margin: 14pt 0; }}
+  hr {{ border: 0; border-top: 1px solid #ccc; margin: 9pt 0; }}
   .label {{ font-size: 7.5pt; font-weight: 700; color: #666; letter-spacing: .3pt; margin-bottom: 5pt; }}
   .cols {{ display: flex; }} .cols > div {{ flex: 1; }}
+  .cols, .stay, table.items, .totals, tr {{ break-inside: avoid; }}
   .strong {{ font-weight: 700; font-size: 10pt; }}
   .muted {{ color: #666; }} a {{ color: #1a5fb4; text-decoration: none; }}
   .details td {{ padding: 1pt 0; }} .details td:first-child {{ color: #666; width: 70pt; }}
   .details td:last-child {{ font-weight: 700; }}
-  .stay {{ background: #efe0c8; padding: 10pt 6pt; display: flex; }}
+  .stay {{ background: #efe0c8; padding: 8pt 6pt; display: flex; }}
   .stay .p {{ flex: 2.2; }} .stay .c {{ flex: 1; }} .stay .g {{ flex: .6; text-align: right; }}
   .stay .label {{ color: #2f4a3a; }}
   .stay .t {{ color: #c9973f; font-weight: 700; }}
@@ -326,7 +330,7 @@ def build_invoice_html(invoice: dict, photo: BytesIO | None = None, listing: dic
   table.items tr.last td {{ border-bottom: 1px solid #ccc; }}
   .totals {{ width: 46%; margin: 10pt 0 0 auto; border-collapse: collapse; }}
   .totals td {{ padding: 6pt; }} .totals td:last-child {{ text-align: right; }}
-  .totals .gap td {{ padding-top: 14pt; }}
+  .totals .gap td {{ padding-top: 8pt; }}
   .totals .hl td {{ background: #efe0c8; font-weight: 700; font-size: 10pt; }}
   .totals .muted td:first-child {{ color: #666; }}
   ul {{ margin: 0; padding-left: 0; list-style: none; }} li:before {{ content: "• "; }}

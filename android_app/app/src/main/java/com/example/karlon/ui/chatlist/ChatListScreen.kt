@@ -216,9 +216,8 @@ fun ChatListScreen(
 }
 
 /**
- * The nav-bar brand mark: the physical KARLCON logo (mountain glyph +
- * wordmark, cropped from the brand sheet with the background stripped to
- * transparent) sitting on a pill-shaped green "ribbon" instead of a plain
+ * The nav-bar brand mark: the KARSHAPP logo (mountain glyph + wordmark,
+ * the centre of the badge on a transparent background) sitting on a pill-shaped green "ribbon" instead of a plain
  * text title. The ribbon carries a soft two-tone green gradient plus a
  * looping diagonal shine sweep — a subtle glint, like light passing over a
  * lacquered badge — so the brand corner reads as a designed mark rather
@@ -255,8 +254,8 @@ private fun BrandRibbon() {
             .padding(horizontal = 14.dp, vertical = 6.dp),
     ) {
         Image(
-            painter = painterResource(R.drawable.karlcon_wordmark),
-            contentDescription = "KARLCON Elite Retreats",
+            painter = painterResource(R.drawable.karshapp_wordmark),
+            contentDescription = "KarShApp Elite Retreats",
             contentScale = ContentScale.FillHeight,
             modifier = Modifier
                 .height(30.dp)

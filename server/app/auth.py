@@ -36,7 +36,21 @@ def _token() -> str:
 
 
 def _gated(path: str) -> bool:
+    # /davis has its own blurred lock screen (davis/router.py), not this page.
     return path == "/" or path.startswith("/chat/")
+
+
+def cookie_value(header: str, name: str) -> str:
+    for part in (header or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k == name:
+            return v
+    return ""
+
+
+def karlon_cookie_ok(header: str) -> bool:
+    """The cookie /login sets (the Karlon web password)."""
+    return bool(PASSWORD) and hmac.compare_digest(cookie_value(header, COOKIE), _token())
 
 
 def _cookie_ok(scope) -> bool:

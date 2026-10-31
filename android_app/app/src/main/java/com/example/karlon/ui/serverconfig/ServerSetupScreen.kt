@@ -60,10 +60,10 @@ fun ServerSetupScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Image(
-                painter = painterResource(id = R.drawable.karlon_logo),
-                contentDescription = "KARLCON Elite Retreats",
+                painter = painterResource(id = R.drawable.karshapp_badge),
+                contentDescription = "KarShApp Elite Retreats",
                 modifier = Modifier
-                    .fillMaxWidth(0.7f)
+                    .fillMaxWidth(0.45f)
                     .padding(bottom = 32.dp),
             )
 

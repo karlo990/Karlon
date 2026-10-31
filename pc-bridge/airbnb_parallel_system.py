@@ -120,7 +120,7 @@ OUTPUT_DIR = "./airbnb_data"
 MASTER_INDEX_FILE = Path(OUTPUT_DIR) / "master_index.json"
 CSV_FILE = Path(OUTPUT_DIR) / "master_index.csv"
 CHECKPOINT_FILE = Path(OUTPUT_DIR) / ".checkpoint.json"
-STORAGE_STATE_FILE = Path(OUTPUT_DIR) / "auth_state.json"  # saved login profile (cookies + localStorage)
+STORAGE_STATE_FILE = Path(OUTPUT_DIR) / "auth_state.json"  # saved login profile (cookies + localStorage); = local_config.AIRBNB_AUTH_STATE_FILE
 COORDS_FILE = Path(OUTPUT_DIR) / "coordinates.json"        # {listingId: {lat, lng, location}}
 
 # ---------- CURRENCY CONVERSION (ZAR -> USD) ----------
@@ -159,7 +159,9 @@ USER_AGENT = (
 # silently push listings to a *different* server than wa_bridge.py/
 # invoice_worker.py were talking to. Now reads the same KARLON_URL as
 # everything else (override via the KARLON_URL env var, or local_config.py).
-from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN
+from local_config import KARLON_URL as KARLON_SERVER_URL, KARLON_API_TOKEN, CHROMIUM_ARGS
+from local_config import KARLON_AIRBNB_HEADLESS, headless_choice
+from local_config import AIRBNB_FULL_SWEEP, AIRBNB_ONDEMAND_PARALLEL, AIRBNB_ONDEMAND_POLL_SEC
 ENABLE_KARLON_PUSH = True
 # Cold HuggingFace Spaces can take 20-30s to answer their first request after
 # idling — 10s made the very first ingest of a cycle fail. 60s covers a wake-up.
@@ -176,7 +178,9 @@ KARLON_PUSH_TIMEOUT_SECONDS = 60
 # completely unaffected either way.
 ENABLE_ONDEMAND_REFRESH = True
 ONDEMAND_REFRESH_PATH_PREFIX = "/api/houses/refresh"
-ONDEMAND_POLL_INTERVAL_SECONDS = 20
+ONDEMAND_POLL_INTERVAL_SECONDS = AIRBNB_ONDEMAND_POLL_SEC   # a guest is waiting: pick requests up fast
+ONDEMAND_IDLE_SAVE_SECONDS = 1800    # on-demand mode: re-save the login / exchange rate this often
+ONDEMAND_HEARTBEAT_SECONDS = 600     # an "idle" line now and then, so the supervisor knows we're alive
 ONDEMAND_MAX_LISTINGS_PER_JOB = 8   # small + fast — a guest is waiting on this, unlike the full sweep
 # How many of each listing's photos get pushed up — the app only ever shows/
 # sends a handful per property, so there's no point pushing every photo.
@@ -699,6 +703,22 @@ async def is_logged_in(page: Page) -> bool:
     return False
 
 
+async def wait_logged_in(page: Page, timeout: float = 20.0) -> bool:
+    """is_logged_in, given the page time to draw its header: a single check
+    right after domcontentloaded can miss the profile menu (headless above
+    all) and call a good saved login expired."""
+    deadline = time.time() + timeout
+    while True:
+        try:
+            if await is_logged_in(page):
+                return True
+        except Exception:
+            pass
+        if time.time() >= deadline:
+            return False
+        await sleep_ms(1000)
+
+
 async def wait_for_manual_continue(prompt: str) -> asyncio.Event:
     """Lets you press Enter in the console at any time to tell the script 'I'm logged
     in now, stop waiting on the automatic check and continue immediately'. Runs the
@@ -710,7 +730,9 @@ async def wait_for_manual_continue(prompt: str) -> asyncio.Event:
         try:
             input(prompt)
         except Exception:
-            pass
+            # No keyboard (started by the supervisor / scheduled task): that is
+            # NOT "I'm logged in" — only the automatic check can decide.
+            return
         loop.call_soon_threadsafe(event.set)
 
     loop.run_in_executor(None, _blocking_input)
@@ -750,6 +772,28 @@ def prompt_for_search_queries(default_queries: List[str]) -> List[str]:
     return queries or default_queries
 
 
+# ---------- BROWSER ----------
+async def launch_browser(p, headless: bool) -> Browser:
+    """Headless = the full browser in its new headless mode (same engine as the
+    visible one, so Airbnb sees the same browser), falling back to the
+    default headless build on older Playwright."""
+    if headless:
+        try:
+            return await p.chromium.launch(headless=True, channel="chromium", args=CHROMIUM_ARGS)
+        except Exception:
+            pass
+    return await p.chromium.launch(headless=headless, args=CHROMIUM_ARGS)
+
+
+async def save_session(context: BrowserContext) -> None:
+    """Re-save the login (Airbnb rotates its cookies), so the saved profile
+    stays fresh and the background browser stays logged in for weeks."""
+    try:
+        await context.storage_state(path=str(STORAGE_STATE_FILE))
+    except Exception as e:
+        print(f"  (could not refresh the saved login: {e})")
+
+
 # ---------- SESSION REUSE ----------
 async def try_restore_session(browser: Browser) -> Optional[BrowserContext]:
     """Reuse a previously saved login profile (cookies + localStorage) if it still works,
@@ -768,8 +812,7 @@ async def try_restore_session(browser: Browser) -> Optional[BrowserContext]:
     try:
         await page.goto("https://www.airbnb.com/", wait_until="domcontentloaded", timeout=NAV_TIMEOUT)
         await dismiss_overlays(page)
-        await sleep_ms(1500)
-        if await is_logged_in(page):
+        if await wait_logged_in(page):
             print("  Saved profile is still valid — skipping manual login.\n")
             await page.close()
             return context
@@ -2539,8 +2582,30 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
     session = await _karlon_http()
     pending_url = f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/pending"
     warned_missing_endpoint = False
+    sem = asyncio.Semaphore(AIRBNB_ONDEMAND_PARALLEL)
+    running: Set[asyncio.Task] = set()
+    last_beat = time.time()
+
+    async def work(job_id: int, location: str, check_in: date, check_out: date) -> None:
+        async with sem:                     # AIRBNB_ONDEMAND_PARALLEL guests' requests at a time
+            pushed = await run_ondemand_job(context, checkpoint, location, check_in, check_out, job_id=job_id)
+        try:
+            await session.post(
+                f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/{job_id}/complete",
+                json={"pushed": pushed},
+                timeout=aiohttp.ClientTimeout(total=60),
+            )
+        except Exception as e:
+            print(f"[ondemand] ⚠️ couldn't ack job {job_id} complete: {e}")
+
     while True:
         jobs = []
+        if time.time() - last_beat > ONDEMAND_HEARTBEAT_SECONDS:
+            print(f"[ondemand] waiting for guests' requests ({len(running)} running)")
+            last_beat = time.time()
+        if len(running) >= AIRBNB_ONDEMAND_PARALLEL:
+            await asyncio.sleep(ONDEMAND_POLL_INTERVAL_SECONDS)     # don't take work we can't start
+            continue
         try:
             async with session.get(pending_url, timeout=aiohttp.ClientTimeout(total=60)) as resp:
                 if resp.status == 404:
@@ -2567,15 +2632,10 @@ async def ondemand_poll_loop(context: BrowserContext, checkpoint: Checkpoint) ->
                 print(f"[ondemand] ⚠️ skipping malformed job {job}: {e}")
                 continue
 
-            pushed = await run_ondemand_job(context, checkpoint, location, check_in, check_out, job_id=job_id)
-            try:
-                await session.post(
-                    f"{KARLON_SERVER_URL}{ONDEMAND_REFRESH_PATH_PREFIX}/{job_id}/complete",
-                    json={"pushed": pushed},
-                    timeout=aiohttp.ClientTimeout(total=60),
-                )
-            except Exception as e:
-                print(f"[ondemand] ⚠️ couldn't ack job {job_id} complete: {e}")
+            task = asyncio.create_task(work(job_id, location, check_in, check_out))
+            running.add(task)
+            task.add_done_callback(running.discard)
+            last_beat = time.time()
 
         await asyncio.sleep(ONDEMAND_POLL_INTERVAL_SECONDS)
 
@@ -2660,22 +2720,37 @@ async def main():
     checkpoint = Checkpoint.load()
     print(f"Resuming: {len(checkpoint.scraped_urls)} scraped, {len(checkpoint.sent_urls)} messaged.")
 
-    SEARCH_QUERIES = prompt_for_search_queries(SEARCH_QUERIES)
-
     CURRENT_ZAR_TO_USD_RATE = await fetch_zar_to_usd_rate()
-    print(f"Cities queued ({MAX_SEARCH_WORKERS} run concurrently, each capped at "
-          f"{MAX_SECONDS_PER_CITY}s so none can starve the others): "
-          f"{', '.join(SEARCH_QUERIES)}\n")
+    if AIRBNB_FULL_SWEEP:
+        SEARCH_QUERIES = prompt_for_search_queries(SEARCH_QUERIES)
+        print(f"Cities queued ({MAX_SEARCH_WORKERS} run concurrently, each capped at "
+              f"{MAX_SECONDS_PER_CITY}s so none can starve the others): "
+              f"{', '.join(SEARCH_QUERIES)}\n")
+    else:
+        print("On demand only: homes are fetched just for the city and dates a guest asks for "
+              f"(up to {AIRBNB_ONDEMAND_PARALLEL} requests at once). AIRBNB_FULL_SWEEP=1 adds timed city sweeps.\n")
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
+        # Headless once a login is saved (python karlon_login.py), a visible
+        # window while one is needed. KARLON_AIRBNB_HEADLESS=0/1 forces it.
+        headless = headless_choice(KARLON_AIRBNB_HEADLESS, STORAGE_STATE_FILE.exists())
+        browser = await launch_browser(p, headless)
+        print(f"Browser: {'HEADLESS (background, saved login)' if headless else 'visible window'}")
 
         # Try the saved profile first; only fall back to the manual login flow if it's
         # missing or expired. The rest of the pipeline never starts without a working,
         # logged-in context — no more silent "proceeding without auth".
         context = await try_restore_session(browser)
+        if context is None and headless:
+            # The saved login expired: a person has to log in, so a window.
+            print("Saved Airbnb login no longer works — opening a visible window to log in again "
+                  "(or run: python karlon_login.py --only airbnb).")
+            await browser.close()
+            browser = await launch_browser(p, False)
         if context is None:
             context = await login_with_timeout(browser)
+        else:
+            await save_session(context)
 
         if context is None:
             print("\n❌ Could not establish a logged-in Airbnb session. Aborting — nothing will be scraped or messaged.")
@@ -2688,6 +2763,12 @@ async def main():
 
         cycle_num = 0
         try:
+            while not AIRBNB_FULL_SWEEP:
+                # On demand only: requests and reservations run in their own
+                # tasks; this just keeps the login and the exchange rate fresh.
+                await asyncio.sleep(ONDEMAND_IDLE_SAVE_SECONDS)
+                await save_session(context)
+                CURRENT_ZAR_TO_USD_RATE = await fetch_zar_to_usd_rate()
             while True:
                 cycle_num += 1
                 print(f"\n{'='*60}\n🔁 Starting cycle {cycle_num} — re-scanning all {len(SEARCH_QUERIES)} "
@@ -2788,6 +2869,7 @@ async def main():
                     print(f"  {city}: {count}")
 
                 CURRENT_ZAR_TO_USD_RATE = await fetch_zar_to_usd_rate()
+                await save_session(context)
 
                 print(f"\n💤 Sleeping {CYCLE_REST_SECONDS}s before the next full re-scan "
                       f"(cycle {cycle_num + 1})...")

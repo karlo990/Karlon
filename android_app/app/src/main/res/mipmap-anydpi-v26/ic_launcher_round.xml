@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- KARSHAPP badge on white. The badge PNG already sits inside the 66dp safe
+     circle of the 108dp canvas, so every launcher mask shape shows all of it. -->
 <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
     <background android:drawable="@drawable/ic_launcher_background" />
-    <foreground android:drawable="@drawable/ic_launcher_foreground_inset" />
-    <monochrome android:drawable="@drawable/ic_launcher_foreground_inset" />
+    <foreground android:drawable="@drawable/ic_launcher_badge" />
+    <monochrome android:drawable="@drawable/ic_launcher_badge" />
 </adaptive-icon>

@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Karlon — KARLCON's private messenger · Download for Android</title>
-  <meta name="description" content="Karlon is KARLCON's private messenger: real-time chat bridged with WhatsApp, with house search, invoices and Airbnb booking built in. Download the Android APK." />
+  <title>KarShApp — KARLCON's private messenger · Download for Android</title>
+  <meta name="description" content="KarShApp is KARLCON's private messenger: real-time chat bridged with WhatsApp, with house search, invoices and Airbnb booking built in. Download the Android APK." />
 
   <!-- Favicons / app icons -->
   <link rel="icon" href="favicon.ico" sizes="any" />
@@ -12,10 +12,10 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16.png" />
   <link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="assets/logo-192.png" />
-  <meta name="theme-color" content="#1D7A4C" />
+  <meta name="theme-color" content="#FFFFFF" />
 
   <!-- Social preview -->
-  <meta property="og:title" content="Karlon — KARLCON's private messenger" />
+  <meta property="og:title" content="KarShApp — KARLCON's private messenger" />
   <meta property="og:description" content="Real-time chat for KARLCON staff and partners — bridged with WhatsApp, self-hosted, accessible from any device." />
   <meta property="og:image" content="https://karlon-omega.vercel.app/assets/og-image.png" />
   <meta property="og:url" content="https://karlon-omega.vercel.app/" />
@@ -36,15 +36,15 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --gold:        #C9962E;
-      --gold-light:  #E8B84D;
-      --gold-dim:    #f5e9c8;
+      --gold:        #D6336C;   /* brand pink (was gold) */
+      --gold-light:  #F06292;
+      --gold-dim:    #FCE4EC;
       --green:       #1D7A4C;
       --green-dark:  #155C39;
       --brown:       #26201A;
       --brown-soft:  #5B5148;
       --white:       #FFFFFF;
-      --off-white:   #F7F3EC;
+      --off-white:   #FFF5F8;
       --radius:      14px;
       --font:        'Google Sans', 'Product Sans', 'Roboto', sans-serif;
     }
@@ -66,7 +66,7 @@
       z-index: 100;
       background: rgba(255,255,255,0.92);
       backdrop-filter: blur(12px);
-      border-bottom: 1px solid rgba(201,150,46,0.12);
+      border-bottom: 1px solid rgba(214,51,108,0.12);
       padding: 0 5vw;
       height: 64px;
       display: flex;
@@ -85,8 +85,7 @@
       width: 34px;
       height: 34px;
       display: block;
-      border-radius: 8px;
-      box-shadow: 0 2px 8px rgba(38,32,26,0.18);
+      object-fit: contain;
     }
 
     .nav-name {
@@ -215,11 +214,11 @@
       border: none;
       cursor: pointer;
       transition: background 0.18s, box-shadow 0.18s, transform 0.12s;
-      box-shadow: 0 4px 18px rgba(201,150,46,0.28);
+      box-shadow: 0 4px 18px rgba(214,51,108,0.28);
     }
     .btn-download:hover {
       background: var(--gold-light);
-      box-shadow: 0 6px 24px rgba(201,150,46,0.38);
+      box-shadow: 0 6px 24px rgba(214,51,108,0.38);
       transform: translateY(-1px);
     }
     .btn-download:active { transform: translateY(0); }
@@ -263,8 +262,8 @@
       right: 6%;
       width: 76px;
       height: 76px;
-      border-radius: 20px;
-      box-shadow: 0 14px 32px rgba(29,122,76,0.28), 0 3px 8px rgba(38,32,26,0.12);
+      object-fit: contain;
+      filter: drop-shadow(0 10px 18px rgba(29,122,76,0.28));
       animation: float 4.5s ease-in-out infinite;
       z-index: 2;
     }
@@ -293,8 +292,8 @@
 
     .backronym-grid {
       display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      gap: 14px;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 12px;
       margin-top: 44px;
     }
 
@@ -305,7 +304,7 @@
       gap: 10px;
       padding: 22px 10px 20px;
       background: var(--off-white);
-      border: 1px solid rgba(201,150,46,0.14);
+      border: 1px solid rgba(214,51,108,0.14);
       border-radius: var(--radius);
       transition: transform 0.15s, box-shadow 0.18s, border-color 0.18s;
     }
@@ -313,7 +312,7 @@
     .backronym-item:hover {
       transform: translateY(-3px);
       box-shadow: 0 10px 26px rgba(38,32,26,0.08);
-      border-color: rgba(201,150,46,0.35);
+      border-color: rgba(214,51,108,0.35);
     }
 
     .backronym-letter {
@@ -327,7 +326,12 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      box-shadow: 0 6px 16px rgba(201,150,46,0.32);
+      box-shadow: 0 6px 16px rgba(214,51,108,0.32);
+    }
+
+    .backronym-item:nth-child(even) .backronym-letter {
+      background: var(--green);
+      box-shadow: 0 6px 16px rgba(29,122,76,0.28);
     }
 
     .backronym-word {
@@ -343,7 +347,7 @@
     }
 
     @media (max-width: 900px) {
-      .backronym-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; }
+      .backronym-grid { grid-template-columns: repeat(4, 1fr); gap: 14px; }
     }
 
     @media (max-width: 480px) {
@@ -386,7 +390,7 @@
       background: var(--white);
       border-radius: var(--radius);
       padding: 28px 24px;
-      border: 1px solid rgba(201,150,46,0.10);
+      border: 1px solid rgba(214,51,108,0.10);
       transition: box-shadow 0.18s, transform 0.15s;
     }
     .feature-card:hover {
@@ -512,7 +516,7 @@
     /* ── FOOTER ───────────────────────────────────── */
     footer {
       background: var(--white);
-      border-top: 1px solid rgba(201,150,46,0.12);
+      border-top: 1px solid rgba(214,51,108,0.12);
       padding: 28px 5vw;
       display: flex;
       align-items: center;
@@ -574,20 +578,20 @@
     .ph-notch { position: absolute; top: 18px; left: 50%; transform: translateX(-50%); width: 82px; height: 20px; background: var(--brown); border-radius: 12px; z-index: 3; }
     .ph-screen { background: #fff; border-radius: 33px; height: 100%; overflow: hidden; display: flex; flex-direction: column; }
     .ph-status { display: flex; justify-content: space-between; padding: 12px 20px 4px; font-size: 10px; font-weight: 600; }
-    .ph-bar { display: flex; align-items: center; gap: 9px; padding: 8px 14px 10px; border-bottom: 1px solid #f0ebe4; }
+    .ph-bar { display: flex; align-items: center; gap: 9px; padding: 8px 14px 10px; border-bottom: 1px solid #F7E6EC; }
     .ph-bar strong { display: block; font-size: 12px; line-height: 1.2; }
     .ph-bar small { font-size: 9px; color: var(--green); }
     .ph-avatar { width: 30px; height: 30px; border-radius: 50%; background: var(--gold-dim); color: var(--gold); display: grid; place-items: center; font-weight: 700; font-size: 12px; }
-    .ph-chat { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 9.5px; overflow: hidden; background: #fbf9f5; }
+    .ph-chat { flex: 1; padding: 10px; display: flex; flex-direction: column; gap: 6px; font-size: 9.5px; overflow: hidden; background: #FFF8FA; }
     .bubble { max-width: 88%; padding: 6px 9px; border-radius: 12px; line-height: 1.4; }
     .bubble.out { align-self: flex-end; background: #DCEFE2; border-bottom-right-radius: 4px; }
-    .bubble.in { align-self: flex-start; background: #f0ebe4; border-bottom-left-radius: 4px; }
+    .bubble.in { align-self: flex-start; background: #F7E6EC; border-bottom-left-radius: 4px; }
     .bubble.card span, .bubble.card strong, .bubble.card em { display: block; }
     .bubble.card .opt { font-weight: 700; }
     .bubble.card strong { font-size: 10.5px; margin: 2px 0; }
     .bubble.card em { font-style: normal; margin-top: 4px; color: var(--brown-soft); }
     .bubble.tiles { display: grid; grid-template-columns: repeat(3, 38px); gap: 3px; padding: 4px; }
-    .bubble.tiles i { height: 38px; border-radius: 7px; background: linear-gradient(135deg, #e3d3b3, #bfa77c); }
+    .bubble.tiles i { height: 38px; border-radius: 7px; background: linear-gradient(135deg, #F8C8D8, #E89AB4); }
     .bubble.tiles i:nth-child(2) { background: linear-gradient(135deg, #cfd9cf, #8fae98); }
     .bubble.tiles i:nth-child(3) { background: linear-gradient(135deg, #d9cbc0, #a8917f); }
     .bubble.doc b { display: inline-block; background: #c0392b; color: #fff; font-size: 7.5px; padding: 1px 4px; border-radius: 3px; margin-right: 5px; }
@@ -595,7 +599,7 @@
     .ph-input .field { flex: 1; background: var(--off-white); border-radius: 16px; padding: 8px 12px; color: #9b9085; font-size: 10px; }
     .ph-input .send { width: 28px; height: 28px; border-radius: 50%; background: var(--gold); }
     .chip {
-      position: absolute; z-index: 2; background: #fff; border: 1px solid rgba(201,150,46,0.3); border-radius: 100px;
+      position: absolute; z-index: 2; background: #fff; border: 1px solid rgba(214,51,108,0.3); border-radius: 100px;
       padding: 7px 14px; font-size: 12px; font-weight: 600; color: var(--brown); box-shadow: 0 10px 24px rgba(38,32,26,0.14);
     }
     .chip-a { left: -4%; top: 36%; animation: float 5s ease-in-out infinite; }
@@ -604,7 +608,7 @@
     /* ── WORKFLOW ─────────────────────────────────── */
     .flow { padding: 80px 5vw; background: var(--white); }
     .flow-grid { list-style: none; display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; }
-    .flow-card { background: var(--off-white); border: 1px solid rgba(201,150,46,0.14); border-radius: var(--radius); padding: 22px 18px; }
+    .flow-card { background: var(--off-white); border: 1px solid rgba(214,51,108,0.14); border-radius: var(--radius); padding: 22px 18px; }
     .flow-card .n { width: 34px; height: 34px; border-radius: 50%; background: var(--green); color: var(--white); font-weight: 700; display: grid; place-items: center; margin-bottom: 14px; }
     .flow-card h3 { font-size: 15px; margin-bottom: 6px; }
     .flow-card p { font-size: 13px; color: var(--brown-soft); line-height: 1.6; }
@@ -612,7 +616,7 @@
     /* ── FAQ ──────────────────────────────────────── */
     .faq { padding: 80px 5vw; background: var(--off-white); }
     .faq-list { max-width: 760px; }
-    .faq details { background: var(--white); border: 1px solid rgba(201,150,46,0.18); border-radius: 12px; padding: 0 18px; margin-bottom: 10px; }
+    .faq details { background: var(--white); border: 1px solid rgba(214,51,108,0.18); border-radius: 12px; padding: 0 18px; margin-bottom: 10px; }
     .faq summary { cursor: pointer; padding: 16px 0; font-weight: 600; font-size: 15px; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
     .faq summary::-webkit-details-marker { display: none; }
     .faq summary::after { content: '+'; color: var(--gold); font-size: 22px; line-height: 1; }
@@ -647,6 +651,38 @@
       footer { flex-direction: column; align-items: flex-start; }
     }
 
+
+    /* ── START-UP SPLASH (badge + iPhone-style progress bar) ── */
+    .splash {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 36px;
+      background: radial-gradient(circle at 50% 40%, #ffffff 0%, #ffffff 45%, #FDEEF3 100%);
+      transition: opacity 0.45s ease, visibility 0.45s;
+    }
+    .splash.done { opacity: 0; visibility: hidden; }
+    .splash img { width: min(46vw, 210px); height: auto; }
+    .ios-bar {
+      width: min(52vw, 190px);
+      height: 5px;
+      border-radius: 5px;
+      background: #F3D3DF;
+      overflow: hidden;
+    }
+    .ios-bar span {
+      display: block;
+      width: 0;
+      height: 100%;
+      border-radius: 5px;
+      background: linear-gradient(90deg, var(--green) 0%, #2E9A5E 60%, #E5568A 100%);
+      transition: width 0.35s ease;
+    }
+
     @media (prefers-reduced-motion: reduce) {
       * { transition: none !important; animation: none !important; }
     }
@@ -654,11 +690,17 @@
 </head>
 <body>
 
+  <!-- ── START-UP SPLASH ──────────────────────────────── -->
+  <div class="splash" id="splash" role="progressbar" aria-label="Loading KarShApp" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <img src="assets/badge-600.png" width="300" height="360" alt="KarShApp · Elite Retreats" />
+    <div class="ios-bar"><span id="splash-bar"></span></div>
+  </div>
+
   <!-- ── NAV ────────────────────────────────────────── -->
   <nav aria-label="Main">
     <a class="nav-brand" href="#top">
-      <img class="nav-logo" src="assets/logo-128.png" width="34" height="34" alt="Karlon logo" />
-      <span class="nav-name">Karl<span>on</span></span>
+      <img class="nav-logo" src="assets/logo-128.png" width="34" height="34" alt="KarShApp logo" />
+      <span class="nav-name">Kar<span>Sh</span>App</span>
     </a>
     <div class="nav-links">
       <a href="#features">Features</a>
@@ -667,7 +709,7 @@
       <a href="#faq">FAQ</a>
     </div>
     <!-- Was href="#download": that only scrolled to the hero button. It now downloads. -->
-    <a class="nav-pill" href="karlon.apk" download="karlon.apk">Download APK</a>
+    <a class="nav-pill" href="karshapp.apk" download="karshapp.apk">Download APK</a>
   </nav>
 
   <!-- ── HERO ───────────────────────────────────────── -->
@@ -683,7 +725,7 @@
         Find a house, send the options, invoice and reserve it, all from one chat.
       </p>
       <div class="cta-row">
-        <a class="btn-download" href="karlon.apk" id="download" download="karlon.apk">
+        <a class="btn-download" href="karshapp.apk" id="download" download="karshapp.apk">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M6 18c0 .55.45 1 1 1h1v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h2v3.5c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5V19h1c.55 0 1-.45 1-1V8H6v10zm-2.5-10C2.67 8 2 8.67 2 9.5v7c0 .83.67 1.5 1.5 1.5S5 17.33 5 16.5v-7C5 8.67 4.33 8 3.5 8zm17 0c-.83 0-1.5.67-1.5 1.5v7c0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5v-7c0-.83-.67-1.5-1.5-1.5zM15.53 2.16l1.3-1.3c.2-.2.2-.51 0-.71-.2-.2-.51-.2-.71 0l-1.48 1.48A5.84 5.84 0 0 0 12 1c-.588 0-1.153.08-1.645.63L8.88.15c-.2-.2-.51-.2-.71 0-.2.2-.2.51 0 .71l1.31 1.31C8.02 3.27 7 5 7 7h10c0-2-.97-3.73-2.47-4.84zM10 5H9V4h1v1zm5 0h-1V4h1v1z" fill="white"/>
           </svg>
@@ -704,10 +746,10 @@
 
     <!-- Phone mockup: the real flow, with sample data -->
     <div class="phone-wrap">
-      <img class="app-badge" src="assets/logo-192.png" width="76" height="76" alt="Karlon app icon" />
+      <img class="app-badge" src="assets/logo-192.png" width="76" height="76" alt="KarShApp app icon" />
       <span class="chip chip-a">KCER 248 · $128.50/night</span>
       <span class="chip chip-b">Invoice PDF ✓</span>
-      <div class="phone" role="img" aria-label="Karlon chat showing a house option, an invoice PDF and a reservation confirmation">
+      <div class="phone" role="img" aria-label="KarShApp chat showing a house option, an invoice PDF and a reservation confirmation">
         <div class="ph-notch"></div>
         <div class="ph-screen">
           <div class="ph-status"><span>9:41</span><span>100%</span></div>
@@ -737,7 +779,7 @@
   <!-- ── BACKRONYM (what the name stands for) ─────────── -->
   <section class="backronym">
     <p class="section-label">The Name</p>
-    <h2 class="section-heading">What KARLON stands for</h2>
+    <h2 class="section-heading">What KARSHAPP stands for</h2>
     <div class="backronym-grid">
       <div class="backronym-item">
         <span class="backronym-letter">K</span>
@@ -752,28 +794,36 @@
         <span class="backronym-word"><strong>R</strong>elationships</span>
       </div>
       <div class="backronym-item">
-        <span class="backronym-letter">L</span>
-        <span class="backronym-word"><strong>L</strong>eadership</span>
+        <span class="backronym-letter">S</span>
+        <span class="backronym-word"><strong>S</strong>ervice</span>
       </div>
       <div class="backronym-item">
-        <span class="backronym-letter">O</span>
-        <span class="backronym-word"><strong>O</strong>pportunities</span>
+        <span class="backronym-letter">H</span>
+        <span class="backronym-word"><strong>H</strong>ospitality</span>
       </div>
       <div class="backronym-item">
-        <span class="backronym-letter">N</span>
-        <span class="backronym-word"><strong>N</strong>etwork</span>
+        <span class="backronym-letter">A</span>
+        <span class="backronym-word"><strong>A</strong>ssurance</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">P</span>
+        <span class="backronym-word"><strong>P</strong>artnerships</span>
+      </div>
+      <div class="backronym-item">
+        <span class="backronym-letter">P</span>
+        <span class="backronym-word"><strong>P</strong>rogress</span>
       </div>
     </div>
   </section>
 
   <!-- ── FEATURES ────────────────────────────────────── -->
   <section class="features" id="features">
-    <p class="section-label">Why Karlon</p>
+    <p class="section-label">Why KarShApp</p>
     <h2 class="section-heading">Built for KARLCON. Not for everyone.</h2>
     <div class="features-grid">
       <div class="feature-card">
         <div class="feature-icon">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" fill="#C9962E"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2z" fill="#D6336C"/></svg>
         </div>
         <h3 class="feature-title">Real-time messaging</h3>
         <p class="feature-desc">WebSocket-powered chat with sub-second delivery. Messages land before you finish reading them.</p>
@@ -789,7 +839,7 @@
 
       <div class="feature-card">
         <div class="feature-icon">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" fill="#C9962E"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" fill="#D6336C"/></svg>
         </div>
         <h3 class="feature-title">Houses, numbered KCER</h3>
         <p class="feature-desc">Search all 20 cities by date range, in KCER order from KCER 101. Send details as one message, then the photos as real photos.</p>
@@ -805,7 +855,7 @@
 
       <div class="feature-card">
         <div class="feature-icon">
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" fill="#C9962E"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z" fill="#D6336C"/></svg>
         </div>
         <h3 class="feature-title">Invoices and Terms as PDFs</h3>
         <p class="feature-desc">Tap an option you already sent to a guest and the invoice fills itself in. Numbered KCER-2026-0001 and sent as a PDF document.</p>
@@ -844,7 +894,7 @@
         <div class="step-num">1</div>
         <div class="step-content">
           <p class="step-title">Download the APK</p>
-          <p class="step-desc">Tap <a class="inline-link" href="karlon.apk" download="karlon.apk">Download APK</a> to save <code>karlon.apk</code> to your phone's Downloads folder.</p>
+          <p class="step-desc">Tap <a class="inline-link" href="karshapp.apk" download="karshapp.apk">Download APK</a> to save <code>karshapp.apk</code> to your phone's Downloads folder.</p>
         </div>
       </div>
 
@@ -860,7 +910,7 @@
         <div class="step-num">3</div>
         <div class="step-content">
           <p class="step-title">Enter the server URL</p>
-          <p class="step-desc">Launch Karlon and paste the KARLCON server address. You're in, and your chats load instantly.</p>
+          <p class="step-desc">Launch KarShApp and paste the KARLCON server address. You're in, and your chats load instantly.</p>
         </div>
       </div>
 
@@ -874,15 +924,15 @@
     <div class="faq-list">
       <details>
         <summary>Android says "App not installed" when I update</summary>
-        <p>Android only updates an app when the new file is signed with the same key as the one installed. If you installed an earlier build, uninstall Karlon first, then install this one. Your chats stay on the server; you only re-enter the server address and your name.</p>
+        <p>Android only updates an app when the new file is signed with the same key as the one installed. If you installed an earlier build, uninstall the old Karlon app first, then install KarShApp. Your chats stay on the server; you only re-enter the server address and your name.</p>
       </details>
       <details>
         <summary>Play Protect warns me about the app</summary>
-        <p>Karlon is installed from this page, not the Play Store, so Google shows a generic warning for apps it doesn't know. Tap <strong>More details</strong>, then <strong>Install anyway</strong>.</p>
+        <p>KarShApp is installed from this page, not the Play Store, so Google shows a generic warning for apps it doesn't know. Tap <strong>More details</strong>, then <strong>Install anyway</strong>.</p>
       </details>
       <details>
         <summary>What server address do I enter?</summary>
-        <p>The address of the KARLCON server, given to you by the KARLCON admin. Without it the app has nothing to show, which is by design: Karlon is for the KARLCON team and partners.</p>
+        <p>The address of the KARLCON server, given to you by the KARLCON admin. Without it the app has nothing to show, which is by design: KarShApp is for the KARLCON team and partners.</p>
       </details>
       <details>
         <summary>Which Android versions are supported?</summary>
@@ -899,8 +949,8 @@
   <section class="bottom-cta">
     <img src="assets/logo-128.png" width="56" height="56" alt="" style="border-radius:14px;margin-bottom:20px;box-shadow:0 10px 24px rgba(0,0,0,0.35);" />
     <h2>Ready to chat?</h2>
-    <p>Download Karlon and join the KARLCON team channel.</p>
-    <a class="btn-download" href="karlon.apk" download="karlon.apk" style="display:inline-flex;">
+    <p>Download KarShApp and join the KARLCON team channel.</p>
+    <a class="btn-download" href="karshapp.apk" download="karshapp.apk" style="display:inline-flex;">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 20h14v-2H5v2zM19 9h-4V3H9v6H5l7 7 7-7z" fill="white"/></svg>
       Download APK
     </a>
@@ -921,11 +971,36 @@
   </footer>
 
   <script>
+    // Start-up splash: the bar creeps like the iPhone boot bar, finishes when
+    // the page has loaded, then fades. Shown once per visit.
+    (function () {
+      var splash = document.getElementById('splash');
+      var bar = document.getElementById('splash-bar');
+      var seen = false;
+      try { seen = sessionStorage.getItem('karshapp-splash') === '1'; } catch (e) {}
+      if (seen) { splash.remove(); return; }
+      try { sessionStorage.setItem('karshapp-splash', '1'); } catch (e) {}
+      var pct = 0, finished = false;
+      function set(v) { pct = v; bar.style.width = v + '%'; splash.setAttribute('aria-valuenow', String(Math.round(v))); }
+      var tick = setInterval(function () { if (!finished && pct < 88) set(pct + Math.max(1, (88 - pct) / 7)); }, 120);
+      function finish() {
+        if (finished) return;
+        finished = true;
+        clearInterval(tick);
+        set(100);
+        setTimeout(function () { splash.classList.add('done'); }, 450);
+        setTimeout(function () { splash.remove(); }, 1000);
+      }
+      if (document.readyState === 'complete') setTimeout(finish, 900);
+      else window.addEventListener('load', function () { setTimeout(finish, 600); });
+      setTimeout(finish, 4000);   // never hold the page longer than this
+    })();
+
     // Show the real size of the APK currently on the server, so the page never
-    // goes stale when karlon.apk is replaced.
+    // goes stale when karshapp.apk is replaced.
     (function () {
       try {
-        fetch('karlon.apk', { method: 'HEAD', cache: 'no-store' }).then(function (r) {
+        fetch('karshapp.apk', { method: 'HEAD', cache: 'no-store' }).then(function (r) {
           var len = r.ok ? Number(r.headers.get('content-length')) : 0;
           if (len > 0) document.getElementById('apk-size').textContent = '~' + Math.round(len / 1048576) + ' MB';
         }).catch(function () {});
